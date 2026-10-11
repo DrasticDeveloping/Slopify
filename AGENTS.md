@@ -58,4 +58,43 @@
 - Reviewers report findings only. They do not edit files or launch further agents.
 - Address material findings before handing the work back. Explain any finding you decline.
 - Request another review only when substantial fixes or unresolved concerns justify it.
-- Use at most two review rounds per task unless the user requests more. Continue fixing concrete issues and report any remaining disagreements or limitations.
+- Use at most two broad independent review rounds per task unless the user requests more. Short smoke gates and targeted rechecks of concrete fixes are verification steps; do not relabel a full review as a targeted check to bypass this limit. Continue fixing concrete issues and report unresolved limitations.
+
+## Efficient implementation and verification
+
+- GPT-6.1-Sol handles this project's compile/build checks, testing, and bug finding. The implementor writes code and fixes reported defects. Keep every delegation fresh and self-contained.
+- As soon as the basic app shell runs, delegate a short gate: typecheck, build, normal startup, and reload. Stop broad QA if startup fails; report the blocker immediately and fix it before continuing. Do not build elaborate bypass fixtures or proxies unless the user specifically requests isolated testing.
+- After code fixes, delegate the smallest checks that verify the affected behavior before another broad review. Relevant regressions include two consecutive persistence reloads, crossfade/pause/clip boundaries, and menu -> dialog -> Cancel/Escape focus restoration. Document-only changes need a document review, not app builds or browser tests.
+- Use patches scoped to the intended function or class. Avoid file-wide string replacements for repeated code; if a scripted replacement is necessary, assert its intended match count and inspect the diff.
+
+## Stable QA handoffs
+
+- Bind each review to a fixed source snapshot; execution/browser QA also needs a dedicated server URL. Include uncommitted changes and the files required for the checks, including the lockfile, backend, and runtime configuration when applicable. A commit hash alone does not identify dirty source. Use an authorized checkpoint or an immutable copy outside the repo. Do not commit merely to create a QA snapshot.
+- Keep implementation edits separate from the reviewed snapshot. If isolation is unavailable, pause edits to the reviewed files until the reviewer finishes. If the app refreshes unexpectedly, invalidate affected checks and rerun only those checks against an identified version.
+- Each brief must include the user's request and reason, exact snapshot/path and URL when applicable, test ownership, relevant previous findings and fixes, known environment restrictions and validated remedies, and a bounded checklist. Split code review and browser QA responsibilities to avoid duplicate full regressions. Return verified findings with reproduction steps and the tested snapshot.
+
+## Tool failures and browser state
+
+- Never repeat an identical tool call after an actionable schema or argument error. Correct the arguments first. Record reusable tool constraints in the next handoff so fresh reviewers do not repeat them.
+- With T3 browser locators, do not append `[exact=true]`; it is unsupported. Use locators from the current snapshot or supported scoped selectors. Use the documented key name for Space, not a literal whitespace key.
+- After a browser timeout or missing element, take a fresh snapshot and check the route, dialog, viewport, visibility, and tab ownership before trying again. Do not type or click inside a dialog until opening it succeeds. Prefer the visible mobile navigation when desktop controls are hidden.
+- Retry a transient failure at most once, with an explicit reason. A second failure requires diagnosis or a supported alternative; do not continue a chain of actions whose prerequisite failed. Keep outputs bounded: return selected values rather than whole DOM trees or repeated full source dumps.
+
+## Windows preflight
+
+- In Windows PowerShell, use `npm.cmd` and `npx.cmd` to avoid blocked `.ps1` shims. Read package scripts and config files before choosing commands; this app uses `tsconfig.json`, not `tsconfig.app.json`.
+- For this app, the standard checks are `npm.cmd run typecheck` and `npm.cmd run build`, executed in the reviewed snapshot. Run dependent checks sequentially and stop when a required check fails.
+- A Vite build `spawn EPERM` may be a sandbox restriction. Use the supported permission retry only when permitted; preserve the exact command and report any rejection. Do not disable execution policy, relax sandboxing globally, or treat an environment failure as an application defect.
+- Carry working commands, actual paths, tool syntax, and any permitted retry procedure into subsequent briefs. Do not ask a fresh reviewer to rediscover them.
+
+## Dev server lifecycle
+
+- Prefer app-managed launch tasks when available. Before launching or restarting, check the requested port and identify its owning process and command line. Reuse a healthy server for the same snapshot; use another port for a separate snapshot. Never kill an unrelated listener.
+- Record the actual server PID, snapshot/path, URL, launch command, and log location. A stopped command wrapper does not prove its child server stopped. Check the child process and HTTP readiness before restarting or claiming the app is available.
+- Use hidden windows for background helpers. Preserve the existing server during review unless a restart is necessary; coordinate any restart with the reviewer. Stop or clean up owned resources only within the user's authorization.
+
+## Checkpoints and provider limits
+
+- Before a long handoff and after a meaningful batch of fixes, update a concise project checkpoint with completed work, remaining work, snapshot/path, relevant findings, working commands, server ownership, and known blockers. Use an existing project note location or `docs/agent-checkpoint.md`; omit secrets and large logs. A resumable checkpoint does not require a commit.
+- When a provider reports a usage limit, record the exact reset time if supplied and stop automatic retries until reset. If it appears in logs after interruption, reconstruct the checkpoint from the current source and reports before resuming. A user-requested retry may be attempted once; another rejection should be reported without a retry loop.
+- Use a fallback provider only if the user has authorized it, and supply the checkpoint without replacing an explicitly requested reviewer model. Do not create schedules unless the user requests them. Distinguish productive verification, avoidable retries, and provider restrictions; do not invent token-cost estimates.
