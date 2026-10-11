@@ -83,6 +83,7 @@ function CandidateRow({ s, r, c, index, order }: { s: ImportState; r: Resolution
       <span className="title-text">
         <span className="t-name">{title}</span>
         <span className="t-sub">{candidateDetails(r, c)}</span>
+        {c.requiresReview && c.importMetadata ? <span className="t-sub">Matched upload: {c.title || "Untitled"}{c.artist ? ` · ${c.artist}` : ""}. Preview it before importing.</span> : null}
       </span>
       <span className="cand-pill">{candidatePill(r, c, index)}</span>
       {showPreviews ? (

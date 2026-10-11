@@ -11,10 +11,15 @@ import { Shell } from "./Shell";
 const BARS = 96;
 const MIN_LEN = 3;
 
+/** Accepts plain seconds ("123"), or m:ss and h:mm:ss as formatTime shows them, with optional decimals. */
 function parseTime(text: string) {
-  const m = text.trim().match(/^(?:(\d+):)?(\d{1,2})(?:\.(\d+))?$/);
+  const m = text.trim().match(/^(?:(\d+):)?(?:(\d+):)?(\d+(?:\.\d+)?)$/);
   if (!m) return null;
-  return Number(m[1] ?? 0) * 60 + Number(m[2]) + (m[3] ? Number(`0.${m[3]}`) : 0);
+  const [hours, minutes] = m[2] === undefined ? [0, Number(m[1] ?? 0)] : [Number(m[1]), Number(m[2])];
+  const seconds = Number(m[3]);
+  // After a colon, seconds (and minutes that follow hours) stay under 60.
+  if ((m[1] !== undefined && seconds >= 60) || (m[2] !== undefined && minutes >= 60)) return null;
+  return hours * 3600 + minutes * 60 + seconds;
 }
 
 function TimeInput({ value, onCommit, label }: { value: number; onCommit: (v: number) => void; label: string }) {
@@ -57,6 +62,11 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
   const wave = useRef<HTMLDivElement>(null);
   const head = useRef<HTMLSpanElement>(null);
   const dragging = useRef<"start" | "end" | null>(null);
+
+  // A song opened before its length was known starts as the whole song once the length arrives.
+  useEffect(() => {
+    if (duration) setRange((r) => (r.end === 0 ? { start: 0, end: duration } : r));
+  }, [duration]);
 
   // Keep the live player honouring the draft while the editor is open.
   useEffect(() => {

@@ -8,7 +8,7 @@ import { Icon } from "./Icon";
 import { DRAG_MIME } from "./TrackList";
 
 const nav: Array<{ route: Route; label: string; icon: string; match: Route["name"][] }> = [
-  { route: { name: "home" }, label: "Home", icon: "home", match: ["home", "mix"] },
+  { route: { name: "home" }, label: "Home", icon: "home", match: ["home"] },
   { route: { name: "search", q: "" }, label: "Search", icon: "search", match: ["search"] },
   { route: { name: "library" }, label: "Library", icon: "library", match: ["library", "album", "artist"] },
   { route: { name: "playlists" }, label: "Playlists", icon: "playlists", match: ["playlists"] },

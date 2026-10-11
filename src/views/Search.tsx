@@ -1,21 +1,11 @@
 import { useMemo, type CSSProperties } from "react";
 import { Art, PlaylistArt, TrackArt } from "../components/Artwork";
-import { Icon } from "../components/Icon";
 import { Card, PlayFab, Shelf } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
-import type { Genre } from "../data/types";
 import { plural } from "../lib/format";
-import { isPlayable, mixIds, mixNames, navigate } from "../state/actions";
-import { getState, useStore } from "../state/store";
+import { isPlayable, navigate } from "../state/actions";
+import { useStore } from "../state/store";
 import { Empty } from "./Collection";
-
-const browse: Array<{ genre: Genre; label: string; hue: number }> = [
-  { genre: "synthwave", label: "Synthwave", hue: 300 },
-  { genre: "lofi", label: "Lo-fi", hue: 30 },
-  { genre: "house", label: "House", hue: 190 },
-  { genre: "indie", label: "Indie", hue: 140 },
-  { genre: "ambient", label: "Ambient", hue: 230 },
-];
 
 function score(text: string, q: string) {
   const t = text.toLowerCase();
@@ -36,27 +26,32 @@ export function SearchView({ q }: { q: string }) {
 
   const results = useMemo(() => {
     if (!needle) return null;
-    const genreMatch = (Object.keys(mixNames) as Genre[]).find((g) => g.startsWith(needle) || needle.startsWith(g));
+    // Artists and albums of library songs only (streamed recommendations are not in the library).
+    const inLibrary = trackIds.map((id) => tracks[id]).filter(Boolean);
+    const libraryArtists = new Set(inLibrary.map((t) => t.artistId));
+    const libraryAlbums = new Set(inLibrary.map((t) => t.albumId));
     const songs = trackIds
       .map((id) => tracks[id])
       .filter(Boolean)
-      .map((t) => ({ id: t.id, s: Math.max(score(t.title, needle) * 1.2, score(artists[t.artistId]?.name ?? "", needle) * 0.8, score(albums[t.albumId]?.title ?? "", needle) * 0.6, genreMatch && artists[t.artistId]?.genre === genreMatch ? 15 : 0) }))
+      .map((t) => ({ id: t.id, s: Math.max(score(t.title, needle) * 1.2, score(artists[t.artistId]?.name ?? "", needle) * 0.8, score(albums[t.albumId]?.title ?? "", needle) * 0.6) }))
       .filter((r) => r.s > 0)
       .sort((a, b) => b.s - a.s || tracks[b.id].plays - tracks[a.id].plays)
       .map((r) => r.id);
     const arts = Object.values(artists)
-      .map((a) => ({ a, s: Math.max(score(a.name, needle), genreMatch && a.genre === genreMatch ? 15 : 0) }))
+      .filter((a) => libraryArtists.has(a.id))
+      .map((a) => ({ a, s: score(a.name, needle) }))
       .filter((r) => r.s > 0)
       .sort((x, y) => y.s - x.s)
       .map((r) => r.a);
     const albs = Object.values(albums)
+      .filter((a) => libraryAlbums.has(a.id))
       .map((a) => ({ a, s: Math.max(score(a.title, needle), score(artists[a.artistId]?.name ?? "", needle) * 0.7) }))
       .filter((r) => r.s > 0)
       .sort((x, y) => y.s - x.s)
       .map((r) => r.a);
     const pls = playlists.filter((p) => score(p.name, needle) > 0);
     const topArtist = arts[0] && score(arts[0].name, needle) >= 40 ? arts[0] : null;
-    return { songs, artists: arts, albums: albs, playlists: pls, topArtist, genreMatch };
+    return { songs, artists: arts, albums: albs, playlists: pls, topArtist };
   }, [needle, tracks, trackIds, artists, albums, playlists]);
 
   if (!results) {
@@ -64,16 +59,10 @@ export function SearchView({ q }: { q: string }) {
       <div className="view">
         <h1 className="section-title big">Browse all</h1>
         <div className="browse-grid">
-          {browse.map(({ genre, label, hue }) => {
-            const ids = mixIds(getState(), genre);
-            const first = ids[0] ? tracks[ids[0]] : undefined;
-            return (
-              <button key={genre} type="button" className="browse-tile" style={{ "--h": hue } as CSSProperties} onClick={() => navigate({ name: "search", q: genre })}>
-                <strong>{label}</strong>
-                {first ? <TrackArt trackId={first.id} className="browse-art" /> : null}
-              </button>
-            );
-          })}
+          <button type="button" className="browse-tile" style={{ "--h": 260 } as CSSProperties} onClick={() => navigate({ name: "library" })}>
+            <strong>Your library</strong>
+            <Art palette={{ a: "hsl(260 70% 60%)", b: "hsl(290 60% 45%)", c: "hsl(240 55% 25%)" }} icon="library" className="browse-art" />
+          </button>
           <button type="button" className="browse-tile" style={{ "--h": 350 } as CSSProperties} onClick={() => navigate({ name: "playlist", id: "liked" })}>
             <strong>Liked Songs</strong>
             <Art palette={playlists[0].palette} icon="heartFill" className="browse-art" />
@@ -150,13 +139,6 @@ export function SearchView({ q }: { q: string }) {
             <Card key={p.id} art={<PlaylistArt playlist={p} />} title={p.name} subtitle={plural(p.trackIds.length, "song")} onOpen={() => navigate({ name: "playlist", id: p.id })} />
           ))}
         </Shelf>
-      ) : null}
-      {results.genreMatch ? (
-        <button type="button" className="mix-banner" onClick={() => navigate({ name: "mix", genre: results.genreMatch! })}>
-          <Icon name="sparkle" size={20} />
-          Open your {mixNames[results.genreMatch]}
-          <Icon name="chevronRight" size={18} />
-        </button>
       ) : null}
     </div>
   );

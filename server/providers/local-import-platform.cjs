@@ -150,14 +150,21 @@ function safeFilename(value) {
   return sanitizeWindowsFilename(value, { pathInput: false });
 }
 
+// Slopify: claims the name by creating an empty placeholder (exclusive create), so two
+// imports running at once can never choose the same file. The finished file replaces it,
+// and importConfirmedSource removes it if the import fails first.
 async function uniqueDestination(directory, preferred) {
   const clean = safeFilename(preferred) || `Track-${Date.now()}.m4a`;
   const extension = path.extname(clean) || ".m4a";
   const base = path.basename(clean, path.extname(clean));
   let candidate = path.join(directory, `${base}${extension}`);
   for (let counter = 2; ; counter += 1) {
-    try { await fs.access(candidate); }
-    catch { return candidate; }
+    try {
+      await (await fs.open(candidate, "wx")).close();
+      return candidate;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
     candidate = path.join(directory, windowsCollisionFilename(`${base}${extension}`, counter));
   }
 }

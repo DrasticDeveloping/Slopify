@@ -140,8 +140,12 @@ export function ArtistView({ id }: { id: string }) {
   const tracks = useStore((s) => s.tracks);
   const albums = useStore((s) => s.albums);
   const [more, setMore] = useState(false);
-  const popular = useMemo(() => Object.values(tracks).filter((t) => t.artistId === id).sort((a, b) => b.plays - a.plays).map((t) => t.id), [tracks, id]);
-  const discography = useMemo(() => Object.values(albums).filter((a) => a.artistId === id).sort((a, b) => b.year - a.year), [albums, id]);
+  // Library songs only: streamed recommendations are not in it.
+  const popular = useMemo(() => Object.values(tracks).filter((t) => t.artistId === id && !t.stream).sort((a, b) => b.plays - a.plays).map((t) => t.id), [tracks, id]);
+  const discography = useMemo(() => {
+    const owned = new Set(popular.map((t) => tracks[t].albumId));
+    return Object.values(albums).filter((a) => a.artistId === id && owned.has(a.id)).sort((a, b) => b.year - a.year);
+  }, [albums, id, popular, tracks]);
   if (!artist) return null;
   const route: Route = { name: "artist", id };
   const playable = popular.filter((t) => isPlayable(tracks[t]));
@@ -152,16 +156,13 @@ export function ArtistView({ id }: { id: string }) {
           <Art palette={artist.palette} glyph={4} />
         </div>
         <div className="artist-hero-copy">
-          <span className="verified"><Icon name="checkCircle" size={18} />Verified artist</span>
+          <span className="verified">Artist</span>
           <h1 className="hero-title lg">{artist.name}</h1>
-          <p>{artist.listeners.toLocaleString("en")} monthly listeners</p>
+          <p>{plural(popular.length, "song")} in your library</p>
         </div>
       </header>
       <div className="action-bar">
         <PlayFab ids={playable} label={artist.name} route={route} size="lg" />
-        <button type="button" className="btn ghost" onClick={() => navigate({ name: "search", q: artist.genre })}>
-          {artist.genre[0].toUpperCase() + artist.genre.slice(1)}
-        </button>
       </div>
       <h2 className="section-title">Popular</h2>
       <TrackList ids={more ? popular.slice(0, 10) : popular.slice(0, 5)} context={{ label: artist.name, route }} showAlbum={false} showPlays sortable={false} />

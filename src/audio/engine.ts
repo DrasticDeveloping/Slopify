@@ -1,8 +1,4 @@
-import type { Genre } from "../data/types";
-import { schedulePad, scheduleStep, styleFor, type SongStyle } from "./synth";
 import { releaseVideo, setCurrentVideo } from "./video";
-
-const LOOKAHEAD = 0.15;
 
 interface Voice {
   position(): number;
@@ -20,126 +16,6 @@ function retire(ctx: AudioContext, node: GainNode, seconds: number) {
   node.gain.setValueAtTime(node.gain.value, now);
   node.gain.linearRampToValueAtTime(0, now + seconds);
   setTimeout(() => node.disconnect(), (seconds + 0.6) * 1000);
-}
-
-class SynthVoice implements Voice {
-  private out: GainNode;
-  private notes: GainNode;
-  private style: SongStyle;
-  private stepDur: number;
-  private playing = false;
-  private anchorCtx = 0;
-  private anchorPos = 0;
-  private nextStep = 0;
-  private timer = 0;
-  private rate: number;
-  private ctx: AudioContext;
-  private end: number;
-
-  constructor(ctx: AudioContext, dest: AudioNode, seed: number, genre: Genre, start: number, end: number, rate: number, fadeIn: number) {
-    this.ctx = ctx;
-    this.style = styleFor(seed, genre);
-    this.stepDur = 60 / this.style.bpm / 4;
-    this.rate = rate;
-    this.end = end;
-    this.anchorPos = start;
-    this.out = ctx.createGain();
-    this.out.gain.setValueAtTime(0, ctx.currentTime);
-    this.out.gain.linearRampToValueAtTime(1, ctx.currentTime + Math.max(0.02, fadeIn));
-    this.out.connect(dest);
-    this.notes = ctx.createGain();
-    this.notes.connect(this.out);
-  }
-
-  setEnd(end: number) {
-    this.end = end;
-  }
-
-  position() {
-    if (!this.playing) return this.anchorPos;
-    return this.anchorPos + (this.ctx.currentTime - this.anchorCtx) * this.rate;
-  }
-
-  /** Replaces the note bus so notes already queued in the lookahead are silenced. */
-  private freshNotes() {
-    retire(this.ctx, this.notes, 0.04);
-    this.notes = this.ctx.createGain();
-    this.notes.connect(this.out);
-  }
-
-  private velocityAt(pos: number) {
-    const fadeIn = Math.min(1, 0.35 + pos / 2);
-    const fadeOut = Math.max(0, Math.min(1, (this.end - pos) / 4));
-    return Math.min(fadeIn, fadeOut);
-  }
-
-  private startFrom(pos: number) {
-    this.anchorPos = pos;
-    this.anchorCtx = this.ctx.currentTime + 0.03;
-    this.nextStep = Math.ceil(pos / this.stepDur - 1e-6);
-    // Fill the rest of the current bar so a mid-bar seek is not silent.
-    const barLen = this.stepDur * 16 * (this.style.genre === "ambient" ? 2 : 1);
-    const barStart = Math.floor(pos / barLen) * barLen;
-    const remaining = barStart + barLen - pos;
-    if (pos - barStart > 0.05 && remaining > 0.3) {
-      const bar = Math.floor(pos / (this.stepDur * 16));
-      schedulePad(this.ctx, this.notes, this.style, bar, this.anchorCtx, remaining / this.rate, this.velocityAt(pos));
-    }
-    this.tick();
-  }
-
-  private tick = () => {
-    if (!this.playing) return;
-    const horizon = this.ctx.currentTime + LOOKAHEAD;
-    for (;;) {
-      const stepPos = this.nextStep * this.stepDur;
-      if (stepPos >= this.end) break;
-      const t = this.anchorCtx + (stepPos - this.anchorPos) / this.rate;
-      if (t > horizon) break;
-      if (t >= this.ctx.currentTime - 0.01) {
-        scheduleStep(this.ctx, this.notes, this.style, this.nextStep, t, this.stepDur / this.rate, this.velocityAt(stepPos));
-      }
-      this.nextStep++;
-    }
-  };
-
-  play() {
-    if (this.playing) return;
-    this.playing = true;
-    this.startFrom(this.anchorPos);
-    this.timer = window.setInterval(this.tick, 25);
-  }
-
-  pause() {
-    if (!this.playing) return;
-    this.anchorPos = this.position();
-    this.playing = false;
-    clearInterval(this.timer);
-    this.freshNotes();
-  }
-
-  seek(position: number) {
-    this.freshNotes();
-    if (this.playing) this.startFrom(position);
-    else this.anchorPos = position;
-  }
-
-  setRate(rate: number) {
-    if (this.playing) {
-      this.anchorPos = this.position();
-      this.anchorCtx = this.ctx.currentTime;
-    }
-    this.rate = rate;
-  }
-
-  fadeOut(seconds: number) {
-    // Keep scheduling during a crossfade so the outgoing song keeps playing.
-    retire(this.ctx, this.out, seconds);
-    setTimeout(() => {
-      this.playing = false;
-      clearInterval(this.timer);
-    }, seconds * 1000 + 200);
-  }
 }
 
 class MediaVoice implements Voice {
@@ -228,8 +104,6 @@ export interface LoadOptions {
 
 export interface EngineTrack {
   id: string;
-  seed: number;
-  genre: Genre;
   fileUrl?: string;
   /** Play `fileUrl` through a visible <video> element. */
   video?: boolean;
@@ -266,10 +140,19 @@ export class AudioEngine {
   onError: (trackId: string) => void = () => undefined;
   /** The browser refused to start playback (e.g. autoplay rules), so nothing is audible. */
   onBlocked: (trackId: string) => void = () => undefined;
+  /** Position samples for listening credit: where playback is, when, at what rate, and whether it can be heard. */
+  onProgress: (position: number, clock: number, rate: number, audible: boolean) => void = () => undefined;
+  /** Playback jumped or changed pace, so the next sample must not be compared with the last one. */
+  onDiscontinuity: () => void = () => undefined;
+
+  captureProgress() {
+    this.onProgress(this.position, performance.now(), this.rate, this.playing && this.ctx?.state === "running" && !this.muted && this.volume > 0);
+  }
 
   private mediaEnded(id: string) {
     if (id !== this.trackId || !this.playing || this.firedEnd) return;
     this.firedEnd = true;
+    this.captureProgress();
     this.onEnded();
   }
 
@@ -340,6 +223,7 @@ export class AudioEngine {
   }
 
   load(track: EngineTrack, options: LoadOptions) {
+    this.onDiscontinuity();
     const ctx = this.ensure();
     const crossfade = options.crossfade ?? 0;
     this.retireVoice(crossfade > 0 ? crossfade : 0.12);
@@ -350,21 +234,28 @@ export class AudioEngine {
     this.firedNear = false;
     this.trackId = track.id;
     const id = track.id;
-    this.voice = track.fileUrl
-      ? new MediaVoice(
-        ctx, this.mix!, track.fileUrl, Boolean(track.video), start, this.rate, crossfade,
-        (d) => this.onDuration(id, d),
-        () => this.onError(id),
-        () => this.mediaEnded(id),
-        () => this.onBlocked(id),
-      )
-      : new SynthVoice(ctx, this.mix!, track.seed, track.genre, start, options.end, this.rate, crossfade);
+    if (!track.fileUrl) {
+      // Every song is a real file or stream; one without audio can only fail.
+      this.voice = null;
+      this.playing = false;
+      queueMicrotask(() => this.onError(id));
+      return;
+    }
+    this.voice = new MediaVoice(
+      ctx, this.mix!, track.fileUrl, Boolean(track.video), start, this.rate, crossfade,
+      (d) => this.onDuration(id, d),
+      () => this.onError(id),
+      () => this.mediaEnded(id),
+      () => this.onBlocked(id),
+    );
     if (options.autoplay) this.play();
     else this.playing = false;
   }
 
   /** Updates the playable range; playback outside the new range snaps to its start. */
   setRange(start: number, end: number) {
+    this.captureProgress();
+    this.onDiscontinuity();
     this.start = start;
     this.setEnd(end);
     // Use the raw voice position; the `position` getter is already clamped to the new end.
@@ -374,7 +265,6 @@ export class AudioEngine {
 
   setEnd(end: number) {
     this.end = end;
-    if (this.voice instanceof SynthVoice) this.voice.setEnd(end);
     if (this.position < end - this.leadPos()) this.firedNear = false;
     if (this.position < end) this.firedEnd = false;
   }
@@ -382,6 +272,7 @@ export class AudioEngine {
   play() {
     if (!this.voice) return;
     this.ensure();
+    this.onDiscontinuity();
     if (this.position >= this.end - 0.05 || this.position < this.start - 0.05) this.seek(this.start);
     this.voice.play();
     this.playing = true;
@@ -390,6 +281,8 @@ export class AudioEngine {
   }
 
   pause() {
+    this.captureProgress();
+    this.onDiscontinuity();
     this.voice?.pause();
     this.killRetiring();
     this.playing = false;
@@ -398,6 +291,8 @@ export class AudioEngine {
 
   seek(position: number) {
     if (!this.voice) return;
+    this.captureProgress();
+    this.onDiscontinuity();
     // Stay inside the clip range.
     const p = Math.max(this.start, Math.min(position, Math.max(this.start, this.end - 0.05)));
     this.killRetiring();
@@ -414,12 +309,16 @@ export class AudioEngine {
   }
 
   setVolume(volume: number, muted = this.muted) {
+    this.captureProgress();
+    this.onDiscontinuity();
     this.volume = volume;
     this.muted = muted;
     this.applyVolume();
   }
 
   setRate(rate: number) {
+    this.captureProgress();
+    this.onDiscontinuity();
     this.rate = rate;
     this.voice?.setRate(rate);
   }
@@ -442,6 +341,7 @@ export class AudioEngine {
 
   private check = () => {
     if (!this.voice || !this.playing) return;
+    this.captureProgress();
     const pos = this.voice.position();
     const lead = this.leadPos();
     if (lead > 0 && !this.firedNear && pos >= this.end - lead) {

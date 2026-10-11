@@ -4,11 +4,10 @@ import { Hero } from "../components/Hero";
 import { Icon } from "../components/Icon";
 import { PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
-import type { Genre } from "../data/types";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
-import { downloadTracks, mixIds, mixNames, navigate, openModal, toggleShuffle } from "../state/actions";
-import { getState, useStore, type Route } from "../state/store";
+import { downloadTracks, navigate, openModal, toggleShuffle } from "../state/actions";
+import { useStore, type Route } from "../state/store";
 
 function ShuffleToggle() {
   const shuffle = useStore((s) => s.shuffle);
@@ -159,40 +158,6 @@ export function AlbumView({ id }: { id: string }) {
       </div>
       <TrackList ids={ids} context={{ label: album.title, route }} showAlbum={false} showAdded={false} sortable={false} />
       <p className="fine-print">© {album.year} {artist.name}. Generated for the Slopify mockup.</p>
-    </div>
-  );
-}
-
-export function MixView({ genre }: { genre: Genre }) {
-  const tracks = useStore((st) => st.tracks);
-  const artistMap = useStore((st) => st.artists);
-  const albums = useStore((st) => st.albums);
-  const status = useStore((st) => st.server.status);
-  const ids = useMemo(() => mixIds(getState(), genre), [tracks, artistMap, status, genre]);
-  const route: Route = { name: "mix", genre };
-  const name = mixNames[genre];
-  const firstAlbum = ids[0] ? albums[tracks[ids[0]].albumId] : undefined;
-  const palette = firstAlbum?.palette ?? { a: "#7c5cff", b: "#5b3cc4", c: "#2a1a66" };
-  const artists = [...new Set(ids.map((t) => artistMap[tracks[t].artistId]?.name))].slice(0, 3);
-  return (
-    <div className="view">
-      <Hero
-        art={<Art palette={palette} glyph={3} className="mix-art" />}
-        kind="Made for you"
-        title={name}
-        description={`${artists.join(", ")} and more. Refreshed daily.`}
-        tint={palette.b}
-        play={{ ids, label: name, route }}
-        meta={<><Icon name="sparkle" size={16} /><strong>Slopify</strong><span>{plural(ids.length, "song")}</span></>}
-      />
-      <div className="action-bar">
-        <PlayFab ids={ids} label={name} route={route} size="lg" />
-        <ShuffleToggle />
-        <button type="button" className="icon-btn lg" onClick={(e) => openTrackMenu(e.currentTarget, ids, { context: { label: name, route, ids } })} aria-label="More options">
-          <Icon name="more" size={24} />
-        </button>
-      </div>
-      <TrackList ids={ids} context={{ label: name, route }} showAdded={false} />
     </div>
   );
 }

@@ -16,7 +16,7 @@ import {
 } from "./state/actions";
 import { syncServerLibrary } from "./state/importer";
 import { getState, setState, useStore, type Route } from "./state/store";
-import { AlbumView, MixView, PlaylistView } from "./views/Collection";
+import { AlbumView, PlaylistView } from "./views/Collection";
 import { HistoryView } from "./views/History";
 import { HomeView } from "./views/Home";
 import { ArtistView, LibraryView, PlaylistsView } from "./views/Library";
@@ -40,8 +40,6 @@ function View({ route }: { route: Route }) {
       return <AlbumView id={route.id} />;
     case "artist":
       return <ArtistView id={route.id} />;
-    case "mix":
-      return <MixView genre={route.genre} />;
     case "storage":
       return <StorageView />;
     case "server":
@@ -109,6 +107,7 @@ function useShortcuts() {
       if (e.key === "Escape") {
         if (s.menu) closeMenu();
         else if (s.modal) closeModal();
+        else if (s.fullPlayer && document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
         else if (s.fullPlayer) setState({ fullPlayer: false });
         else if (s.selection.length) setState({ selection: [] });
         return;

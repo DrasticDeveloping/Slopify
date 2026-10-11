@@ -1,5 +1,5 @@
-import { useLayoutEffect, useRef } from "react";
-import { attachVideoHost, currentVideo, useHasVideo } from "../audio/video";
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { attachVideoHost, useHasVideo } from "../audio/video";
 import { TrackArt } from "./Artwork";
 
 /**
@@ -23,7 +23,20 @@ export function VideoSurface({ trackId, priority, label }: { trackId: string; pr
   );
 }
 
-export function enterVideoFullscreen() {
-  const el = currentVideo();
-  if (el && document.fullscreenEnabled) void el.requestFullscreen().catch(() => undefined);
+/**
+ * Full screen covers the whole app rather than the bare <video>, so the player's
+ * own controls, menus and toasts keep working on top of it.
+ */
+export function toggleFullscreen() {
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+  else if (document.fullscreenEnabled) void document.documentElement.requestFullscreen().catch(() => undefined);
+}
+
+function subscribeFullscreen(listener: () => void) {
+  document.addEventListener("fullscreenchange", listener);
+  return () => document.removeEventListener("fullscreenchange", listener);
+}
+
+export function useIsFullscreen() {
+  return useSyncExternalStore(subscribeFullscreen, () => document.fullscreenElement !== null);
 }

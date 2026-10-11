@@ -7,6 +7,8 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { pipeline } from "node:stream/promises";
+import { createRecommendations } from "./recommendations.mjs";
 
 const require = createRequire(import.meta.url);
 const { LocalImportError } = require("./providers/local-import-core.cjs");
@@ -75,6 +77,15 @@ function ndjson(res) {
   };
 }
 
+/**
+ * Pipes a file into the response. pipeline() closes the file when the player
+ * seeks or disconnects, and a file that vanishes mid-request ends that response
+ * instead of throwing an unhandled stream error.
+ */
+function streamFile(filePath, res, range) {
+  pipeline(createReadStream(filePath, range), res).catch(() => undefined);
+}
+
 /** Serves a file with HTTP Range support so the player can seek. */
 async function sendFile(req, res, filePath, contentType) {
   let info;
@@ -97,12 +108,12 @@ async function sendFile(req, res, filePath, contentType) {
     }
     res.writeHead(206, { ...headers, "Content-Range": `bytes ${start}-${end}/${total}`, "Content-Length": end - start + 1 });
     if (req.method === "HEAD") return res.end();
-    createReadStream(filePath, { start, end }).pipe(res);
+    streamFile(filePath, res, { start, end });
     return;
   }
   res.writeHead(200, { ...headers, "Content-Length": total });
   if (req.method === "HEAD") return res.end();
-  createReadStream(filePath).pipe(res);
+  streamFile(filePath, res);
 }
 
 function ffmpegPath() {
@@ -137,30 +148,51 @@ class Library {
     this.artworkDir = path.join(dataDir, "artwork");
     this.file = path.join(dataDir, "library.json");
     this.tracks = null;
+    this.loading = null;
     this.writing = Promise.resolve();
   }
 
-  async load() {
-    if (this.tracks) return this.tracks;
+  /** Reads the library once. Requests that arrive together share the read, so they all edit the same array. */
+  load() {
+    this.loading ??= this.read().catch((error) => {
+      this.loading = null;
+      throw error;
+    });
+    return this.loading;
+  }
+
+  async read() {
     await fs.mkdir(this.mediaDir, { recursive: true });
     await fs.mkdir(this.artworkDir, { recursive: true });
+    let text;
     try {
-      const parsed = JSON.parse(await fs.readFile(this.file, "utf8"));
-      this.tracks = Array.isArray(parsed?.tracks) ? parsed.tracks : [];
-    } catch {
-      this.tracks = [];
+      text = await fs.readFile(this.file, "utf8");
+    } catch (error) {
+      // Only a missing file means a new, empty library. Any other failure must
+      // not be treated as empty, or the next save would overwrite the real one.
+      if (error?.code === "ENOENT") return (this.tracks = []);
+      throw error;
     }
-    return this.tracks;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // Reported below.
+    }
+    if (!Array.isArray(parsed?.tracks)) throw new Error(`Slopify's library file is damaged (${this.file}). Repair or move it, then try again.`);
+    return (this.tracks = parsed.tracks);
   }
 
   save() {
     // Serialize writes and replace atomically so a crash never leaves half a file.
-    this.writing = this.writing.then(async () => {
+    // A failed write fails only its own save; later saves still run.
+    const write = this.writing.catch(() => undefined).then(async () => {
       const temp = `${this.file}.${process.pid}.tmp`;
       await fs.writeFile(temp, JSON.stringify({ version: 1, tracks: this.tracks }, null, 2));
       await fs.rename(temp, this.file);
     });
-    return this.writing;
+    this.writing = write;
+    return write;
   }
 
   find(id) {
@@ -212,14 +244,22 @@ class Previews {
     if (resolved.contentLength > MAX_PREVIEW_BYTES) {
       throw new LocalImportError("previewing", "PREVIEW_TOO_LARGE", "This source is too large to preview. You can still select and import it.");
     }
-    const filePath = path.join(await this.directory(), `${key}${soundCloud ? ".mp3" : ".m4a"}`);
-    await fs.rm(filePath, { force: true });
-    if (soundCloud) await downloadResolvedSoundCloudAudio(resolved, filePath, signal);
-    else await downloadResolvedAudio(resolved, filePath, signal);
+    // Each request downloads to its own file: two previews of the same source can run at once.
+    const filePath = path.join(await this.directory(), `${key}-${randomUUID()}${soundCloud ? ".mp3" : ".m4a"}`);
+    try {
+      if (soundCloud) await downloadResolvedSoundCloudAudio(resolved, filePath, signal);
+      else await downloadResolvedAudio(resolved, filePath, signal);
+    } catch (error) {
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      throw error;
+    }
     const durationSeconds = Math.min(PREVIEW_SECONDS, resolved.durationSeconds || PREVIEW_SECONDS);
+    const replaced = this.items.get(key);
+    this.items.delete(key);
     this.items.set(key, { filePath, durationSeconds, contentType: soundCloud ? "audio/mpeg" : "audio/mp4" });
-    // Keep only a handful of previews on disk.
-    for (const [k, v] of [...this.items].slice(0, Math.max(0, this.items.size - 6))) {
+    if (replaced) await fs.rm(replaced.filePath, { force: true }).catch(() => undefined);
+    // Keep only a handful of previews on disk (recommended songs stream in full from these, so a few more than a dialog needs).
+    for (const [k, v] of [...this.items].slice(0, Math.max(0, this.items.size - 12))) {
       this.items.delete(k);
       await fs.rm(v.filePath, { force: true }).catch(() => undefined);
     }
@@ -230,6 +270,7 @@ class Previews {
 export function createImportApi({ dataDir }) {
   const library = new Library(dataDir);
   const previews = new Previews();
+  const recommendations = createRecommendations();
 
   async function resolve(req, res) {
     const body = await readJSON(req);
@@ -276,52 +317,65 @@ export function createImportApi({ dataDir }) {
 
       const id = randomUUID();
       let artwork = null;
+      let track = null;
+      // Until the song is recorded, any failure or cancel removes the files it left behind.
       try {
-        if (result.artwork?.startsWith("data:")) {
-          // Video imports return their cover as a data URL.
-          const [, type, b64] = /^data:([^;]+);base64,(.*)$/.exec(result.artwork) ?? [];
-          const ext = Object.entries(IMAGE_TYPES).find(([, t]) => t === type)?.[0];
-          if (ext && b64) {
-            artwork = `${id}${ext}`;
-            await fs.writeFile(path.join(library.artworkDir, artwork), Buffer.from(b64, "base64"));
-          }
-        } else if (result.metadata.artworkURL) {
-          const temp = await fs.mkdtemp(path.join(os.tmpdir(), "slopify-art-"));
-          try {
-            const cover = await fetchArtwork(result.metadata.artworkURL, temp, stream.signal);
-            if (cover) {
-              artwork = `${id}${path.extname(cover).toLowerCase()}`;
-              await fs.copyFile(cover, path.join(library.artworkDir, artwork));
+        try {
+          if (result.artwork?.startsWith("data:")) {
+            // Video imports return their cover as a data URL.
+            const [, type, b64] = /^data:([^;]+);base64,(.*)$/.exec(result.artwork) ?? [];
+            const ext = Object.entries(IMAGE_TYPES).find(([, t]) => t === type)?.[0];
+            if (ext && b64) {
+              artwork = `${id}${ext}`;
+              await fs.writeFile(path.join(library.artworkDir, artwork), Buffer.from(b64, "base64"));
             }
-          } finally {
-            await fs.rm(temp, { recursive: true, force: true }).catch(() => undefined);
+          } else if (result.metadata.artworkURL) {
+            const temp = await fs.mkdtemp(path.join(os.tmpdir(), "slopify-art-"));
+            try {
+              const cover = await fetchArtwork(result.metadata.artworkURL, temp, stream.signal);
+              if (cover) {
+                artwork = `${id}${path.extname(cover).toLowerCase()}`;
+                await fs.copyFile(cover, path.join(library.artworkDir, artwork));
+              }
+            } finally {
+              await fs.rm(temp, { recursive: true, force: true }).catch(() => undefined);
+            }
           }
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          if (artwork) await fs.rm(path.join(library.artworkDir, artwork), { force: true }).catch(() => undefined);
+          artwork = null;
         }
-      } catch (error) {
-        if (error?.name === "AbortError") throw error;
-        artwork = null;
-      }
 
-      const probed = await probeDuration(result.filePath);
-      const requested = Number(body.durationSeconds);
-      const track = {
-        id,
-        title: result.metadata.title,
-        artist: result.metadata.artist,
-        album: result.metadata.album,
-        durationSeconds: probed || (Number.isFinite(requested) && requested > 0 ? requested : null),
-        mediaKind,
-        file: path.basename(result.filePath),
-        size: result.size,
-        artwork,
-        addedAt: Date.now(),
-        sourceURL: result.sourceURL || body.sourceURL || null,
-        sourceIdentity: result.sourceIdentity || null,
-        sourceSha256: result.sourceSha256 || null,
-        contentSha256: result.contentSha256 || null,
-      };
-      tracks.unshift(track);
-      await library.save();
+        const probed = await probeDuration(result.filePath);
+        if (stream.signal.aborted) throw new DOMException("Import cancelled", "AbortError");
+        const requested = Number(body.durationSeconds);
+        track = {
+          id,
+          title: result.metadata.title,
+          artist: result.metadata.artist,
+          album: result.metadata.album,
+          durationSeconds: probed || (Number.isFinite(requested) && requested > 0 ? requested : null),
+          mediaKind,
+          file: path.basename(result.filePath),
+          size: result.size,
+          artwork,
+          addedAt: Date.now(),
+          sourceURL: result.sourceURL || body.sourceURL || null,
+          sourceIdentity: result.sourceIdentity || null,
+          sourceSha256: result.sourceSha256 || null,
+          contentSha256: result.contentSha256 || null,
+        };
+        tracks.unshift(track);
+        await library.save();
+      } catch (error) {
+        // A failed save leaves the file on disk unchanged, so forget the song again.
+        const at = track ? tracks.indexOf(track) : -1;
+        if (at >= 0) tracks.splice(at, 1);
+        await fs.rm(result.filePath, { force: true }).catch(() => undefined);
+        if (artwork) await fs.rm(path.join(library.artworkDir, artwork), { force: true }).catch(() => undefined);
+        throw error;
+      }
       stream.progress({ stage: "local_complete" });
       stream.finish({ ok: true, result: { kind: "created", track: library.publicTrack(track) } });
     } catch (error) {
@@ -352,7 +406,13 @@ export function createImportApi({ dataDir }) {
     const index = tracks.findIndex((t) => t.id === id);
     if (index < 0) return sendJSON(res, 404, { ok: false });
     const [track] = tracks.splice(index, 1);
-    await library.save();
+    try {
+      await library.save();
+    } catch (error) {
+      // Keep memory in line with the file, so the client's retry finds the song again.
+      tracks.splice(index, 0, track);
+      throw error;
+    }
     await fs.rm(path.join(library.mediaDir, path.basename(track.file)), { force: true }).catch(() => undefined);
     if (track.artwork) await fs.rm(path.join(library.artworkDir, path.basename(track.artwork)), { force: true }).catch(() => undefined);
     sendJSON(res, 200, { ok: true });
@@ -366,6 +426,20 @@ export function createImportApi({ dataDir }) {
     try {
       if (parts[0] === "health" && method === "GET") {
         return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()) });
+      }
+      if (parts[0] === "recommendations" && parts[1] === "related" && parts.length === 2 && method === "POST") {
+        const body = await readJSON(req);
+        // Stop asking upstream services once the browser gives up on the answer.
+        const controller = new AbortController();
+        const closed = () => { if (!res.writableFinished) controller.abort(); };
+        res.on("close", closed);
+        try {
+          const result = await recommendations.related(body, controller.signal);
+          if (!res.destroyed) sendJSON(res, 200, { ok: true, result });
+        } finally {
+          res.off("close", closed);
+        }
+        return;
       }
       if (parts[0] === "library" && parts.length === 1 && method === "GET") {
         const tracks = await library.load();

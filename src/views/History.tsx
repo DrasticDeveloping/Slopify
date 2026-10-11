@@ -1,13 +1,12 @@
 import { useMemo, useState, type CSSProperties } from "react";
 import { Art, TrackArt } from "../components/Artwork";
-import { seededHistory } from "../data/library";
-import { formatLongDuration, plural } from "../lib/format";
+import { recentDays } from "../data/library";
+import { formatLongDuration, plural, todayKey } from "../lib/format";
 import { navigate, playList } from "../state/actions";
 import { Empty } from "./Collection";
 import { useStore } from "../state/store";
 
 const RANGES = [7, 30, 90] as const;
-const seeded = seededHistory(90);
 
 function niceMax(v: number) {
   const step = v > 120 ? 60 : v > 60 ? 30 : 15;
@@ -88,10 +87,13 @@ function StatsView() {
   const [range, setRange] = useState<(typeof RANGES)[number]>(30);
   const [hover, setHover] = useState<number | null>(null);
 
+  // Recomputed per day, so a tab left open past midnight shows the new day once listening updates the log.
+  const today = todayKey();
   const days = useMemo(() => {
-    const merged = seeded.map((d) => ({ ...d, minutes: d.minutes + Math.round((log[d.date] ?? 0) / 60) }));
+    // Only real listening: the minutes the player logged each day.
+    const merged = recentDays(90).map((date) => ({ date, minutes: Math.round((log[date] ?? 0) / 60) }));
     return merged.slice(-range);
-  }, [log, range]);
+  }, [log, range, today]);
 
   const total = days.reduce((n, d) => n + d.minutes, 0);
   const active = days.filter((d) => d.minutes > 0).length;
@@ -108,7 +110,7 @@ function StatsView() {
   }, [tracks]);
   const maxArtistPlays = topArtists[0]?.[1] || 1;
 
-  const fmtDay = (iso: string, opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" }) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en", opts);
+  const fmtDay = (iso: string, opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" }) => new Date(`${iso}T12:00:00`).toLocaleDateString("en", opts);
   const labelEvery = range === 7 ? 1 : range === 30 ? 7 : 15;
 
   return (

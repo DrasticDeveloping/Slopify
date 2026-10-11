@@ -38,6 +38,9 @@ export function StorageView() {
     { key: "other", label: "Other apps", bytes: OTHER_APPS, count: 0, color: "var(--series-muted)" },
   ];
 
+  // Only songs in the current view count, so nothing hidden is removed or totalled.
+  const shown = list.filter((t) => picked.has(t.id));
+
   const toggle = (id: string) => setPicked((p) => {
     const n = new Set(p);
     if (n.has(id)) n.delete(id);
@@ -113,7 +116,7 @@ export function StorageView() {
       <div className="toolbar">
         <div className="segmented" role="group" aria-label="Storage scope">
           {(["songs", "downloads", "files"] as Scope[]).map((s) => (
-            <button key={s} type="button" className={scope === s ? "on" : ""} aria-pressed={scope === s} onClick={() => setScope(s)}>
+            <button key={s} type="button" className={scope === s ? "on" : ""} aria-pressed={scope === s} onClick={() => { setScope(s); setPicked(new Set()); }}>
               {s === "songs" ? "All" : s === "downloads" ? "Downloads" : "Imported"}
             </button>
           ))}
@@ -130,12 +133,12 @@ export function StorageView() {
 
       {editing ? (
         <div className="selection-bar">
-          <button type="button" className="btn ghost sm" onClick={() => setPicked(picked.size === list.length ? new Set() : new Set(list.map((t) => t.id)))}>
-            {picked.size === list.length ? "Clear" : "Select all"}
+          <button type="button" className="btn ghost sm" onClick={() => setPicked(shown.length === list.length ? new Set() : new Set(list.map((t) => t.id)))}>
+            {shown.length === list.length ? "Clear" : "Select all"}
           </button>
-          <span><strong>{picked.size}</strong> selected · {formatBytes(list.filter((t) => picked.has(t.id)).reduce((n, t) => n + t.size, 0))}</span>
+          <span><strong>{shown.length}</strong> selected · {formatBytes(shown.reduce((n, t) => n + t.size, 0))}</span>
           <span className="spacer" />
-          <button type="button" className="btn danger sm" disabled={!picked.size} onClick={() => { deleteFromDevice([...picked]); finish(); }}>
+          <button type="button" className="btn danger sm" disabled={!shown.length} onClick={() => { deleteFromDevice(shown.map((t) => t.id)); finish(); }}>
             <Icon name="trash" size={16} />
             Remove from device
           </button>

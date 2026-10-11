@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from "react";
-import { formatCount, formatTime, plural } from "../lib/format";
+import { formatTime, plural } from "../lib/format";
 import { useCurrent } from "../lib/hooks";
 import { openTrackMenu } from "../lib/menus";
 import { clearUpNext, isLiked, togglePlay, jumpToOrderIndex, jumpToUpNext, navigate, nextTrackId, openModal, playTrackNow, removeFromUpNext, toggleLike } from "../state/actions";
@@ -155,7 +155,6 @@ function DetailsView() {
         <span className="artist-card-label">About the artist</span>
         <span className="artist-card-body">
           <strong>{artist.name}</strong>
-          <small>{formatCount(artist.listeners)} monthly listeners · {artist.genre}</small>
           <small>{plural(albumCount, "song")} on “{album.title}”</small>
         </span>
       </button>

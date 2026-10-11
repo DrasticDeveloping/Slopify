@@ -66,7 +66,8 @@ export function TrackList({ ids, context, playlistId, showAlbum = true, showAdde
 
   const onDrop = (e: DragEvent, index: number) => {
     setDropAt(null);
-    if (!editable || !playlistId) return;
+    // Files dropped from the desktop carry no index (getData gives "", which Number reads as 0).
+    if (!editable || !playlistId || !e.dataTransfer.types.includes("text/x-resonance-index")) return;
     const from = Number(e.dataTransfer.getData("text/x-resonance-index"));
     if (Number.isNaN(from) || from === index || from + 1 === index || !sorted[from]) return;
     e.preventDefault();

@@ -1,6 +1,8 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { setServerStatus, updateSettings } from "../../state/actions";
-import { resetDemo, useStore, type Settings, type SettingsTab, type Theme } from "../../state/store";
+import { plural } from "../../lib/format";
+import { qualified, reasonWeight, type ReasonKind, type TasteState } from "../../recommend/taste";
+import { resetRecommendations, setServerStatus, showHiddenRecommendations, updateSettings } from "../../state/actions";
+import { resetAppData, useStore, type Settings, type SettingsTab, type Theme } from "../../state/store";
 import { Icon } from "../Icon";
 import { Slider } from "../Slider";
 import { Shell, Toggle } from "./Shell";
@@ -35,6 +37,31 @@ function Row({ icon, title, desc, children, column }: { icon: string; title: str
   );
 }
 
+const KIND_NAMES: Partial<Record<ReasonKind, string>> = {
+  liked: "songs you liked",
+  saved: "songs in your playlists",
+  enjoyed: "songs you replay",
+  artist: "artists you play",
+  genre: "your favourite genres",
+  playlist: "playlist neighbours",
+  after: "songs you play in sequence",
+  similar: "songs like the one playing",
+  linked: "ListenBrainz listener matches",
+  fresh: "songs you haven't heard",
+  "discover-song": "related songs from outside your library",
+  "discover-artist": "related artists from outside your library",
+};
+
+/** One line on what the recommender has learned from kept and skipped suggestions. */
+function learnedSummary(taste: TasteState) {
+  const kinds = Object.keys(KIND_NAMES) as ReasonKind[];
+  const named = (list: ReasonKind[]) => list.map((k) => KIND_NAMES[k]).join(", ");
+  const more = kinds.filter((k) => reasonWeight(taste, k) >= 1.15);
+  const less = kinds.filter((k) => reasonWeight(taste, k) <= 0.85);
+  if (!more.length && !less.length) return "Nothing learned yet: keep or skip a few suggestions and it adapts.";
+  return [more.length ? `Leaning towards ${named(more)}.` : "", less.length ? `Playing down ${named(less)}.` : ""].filter(Boolean).join(" ");
+}
+
 const shortcuts: Array<[string, string]> = [
   ["Space", "Play / pause"],
   ["Ctrl →  /  Ctrl ←", "Next / previous song"],
@@ -43,9 +70,9 @@ const shortcuts: Array<[string, string]> = [
   ["M", "Mute"],
   ["L", "Like current song"],
   ["S", "Shuffle"],
-  ["R", "Cycle repeat"],
+  ["R", "Repeat: loop song, repeat all, off"],
   ["Q", "Toggle queue"],
-  ["F", "Full screen player"],
+  ["F", "Full screen player (full screen while watching a video)"],
   ["Ctrl K  /  /", "Search"],
   ["Alt ←  /  Alt →", "Back / forward"],
   ["Ctrl ,", "Settings"],
@@ -56,6 +83,8 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
   const [tab, setTab] = useState<SettingsTab>(initial ?? "general");
   const settings = useStore((s) => s.settings);
   const status = useStore((s) => s.server.status);
+  const taste = useStore((s) => s.taste);
+  const hiddenCount = Object.keys(taste.hidden).length + Object.keys(taste.hiddenDiscoveries).length;
   const [url, setUrl] = useState(settings.serverUrl);
   const set = <K extends keyof Settings>(key: K) => (value: Settings[K]) => updateSettings({ [key]: value } as Partial<Settings>);
   const fmtSec = (v: number) => `${Math.round(v)} seconds`;
@@ -92,10 +121,27 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                   <input className="input sm" value={settings.profileName} maxLength={24} onChange={(e) => updateSettings({ profileName: e.target.value || "You" })} aria-label="Display name" />
                 </Row>
               </div>
-              <h3 className="set-section">Demo</h3>
+              <h3 className="set-section">Recommendations</h3>
               <div className="set-group">
-                <Row icon="sync" title="Reset demo data" desc="Restores the sample library, playlists, and settings.">
-                  <button type="button" className="btn danger sm" onClick={resetDemo}>Reset</button>
+                <Row icon="library" title="Include songs from your library" desc="Recommended for you shows only new songs by default. Turn this on to also get suggestions from songs you already have.">
+                  <Toggle checked={settings.recommendLibrary} onChange={set("recommendLibrary")} label="Include songs from your library" />
+                </Row>
+                <Row
+                  icon="sparkle"
+                  title="What shapes your suggestions"
+                  desc={`${plural(taste.listens.filter(qualified).length, "listen")}, ${plural(Object.keys(taste.likes).length, "like")} and ${plural(Object.keys(taste.saves).length, "playlist save")} recorded on this device. ${learnedSummary(taste)}`}
+                />
+                <Row icon="close" title="Hidden suggestions" desc={hiddenCount ? `${plural(hiddenCount, "song")} you said you're not interested in.` : "Nothing hidden."}>
+                  <button type="button" className="btn sm" disabled={!hiddenCount} onClick={showHiddenRecommendations}>Show again</button>
+                </Row>
+                <Row icon="sync" title="Reset recommendations" desc="Forget listening, likes and saves as signals, and what was learned. Your library and playlists stay.">
+                  <button type="button" className="btn sm" onClick={resetRecommendations}>Reset</button>
+                </Row>
+              </div>
+              <h3 className="set-section">Data</h3>
+              <div className="set-group">
+                <Row icon="sync" title="Reset app data" desc="Clears playlists, settings and recommendations on this device. Songs you imported from the web stay and come back.">
+                  <button type="button" className="btn danger sm" onClick={resetAppData}>Reset</button>
                 </Row>
               </div>
             </>

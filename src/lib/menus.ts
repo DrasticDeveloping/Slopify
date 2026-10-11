@@ -1,8 +1,10 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  addToPlaylist, addToQueue, deleteFromDevice, deletePlaylist, downloadTracks, isLiked, isPlayable, likeMany, navigate, openMenu,
-  openModal, playList, playNext, removeFromPlaylist, toggleLike,
+  addToPlaylist, addToQueue, deleteFromDevice, deletePlaylist, dismissStream, downloadTracks, hideRecommendation, isLiked, isPlayable, likeMany, navigate,
+  openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toggleLike, unhideRecommendation,
 } from "../state/actions";
+import type { Track } from "../data/types";
+import type { ReasonKind } from "../recommend/taste";
 import { getState, type MenuItem, type Route } from "../state/store";
 import { plural } from "./format";
 
@@ -23,14 +25,34 @@ function playlistSubmenu(ids: string[]): MenuItem[] {
   ];
 }
 
-export function trackMenu(ids: string[], opts: { playlistId?: string; context?: { label: string; route?: Route; ids: string[] } } = {}): MenuItem[] {
+/** A streamed recommendation: it plays like any song, and can be added to the library (playlists need it there first). */
+function streamMenu(t: Track, context?: { label: string; route?: Route; ids: string[] }): MenuItem[] {
+  const liked = isLiked(t.id);
+  return [
+    { label: "Play", icon: "play", run: () => (context ? playList(context.ids, t.id, context) : playList([t.id], t.id, { label: "Recommended for you" })) },
+    { label: "Play next", icon: "queue", run: () => playNext([t.id]) },
+    { label: "Add to queue", icon: "list", run: () => addToQueue([t.id]) },
+    { separator: true },
+    { label: "Add to library", icon: "download", run: () => saveStream(t.id) },
+    { label: liked ? "Remove from Liked Songs" : "Add to Liked Songs", icon: liked ? "heartFill" : "heart", run: () => toggleLike(t.id) },
+    { separator: true },
+    { label: "Start song radio", icon: "radio", run: () => startRadio(t.id) },
+    { label: "Not interested", icon: "close", run: () => dismissStream(t.id) },
+    { label: "Go to artist", icon: "user", run: () => navigate({ name: "artist", id: t.artistId }) },
+  ];
+}
+
+/** `why`: the reason a recommendation was shown, so hiding it teaches the recommender. */
+export function trackMenu(ids: string[], opts: { playlistId?: string; context?: { label: string; route?: Route; ids: string[] }; why?: ReasonKind } = {}): MenuItem[] {
   const s = getState();
   const tracks = ids.map((id) => s.tracks[id]).filter(Boolean);
   const single = tracks.length === 1 ? tracks[0] : null;
+  if (single?.stream) return streamMenu(single, opts.context);
   const playlist = opts.playlistId ? s.playlists.find((p) => p.id === opts.playlistId) : undefined;
   const anyPlayable = tracks.some((t) => isPlayable(t, s));
   const serverOnly = tracks.filter((t) => t.storage === "server");
-  const local = tracks.filter((t) => t.storage !== "server");
+  // Streamed recommendations are not on this device, so there is nothing to remove.
+  const local = tracks.filter((t) => t.storage !== "server" && !t.stream);
   const items: MenuItem[] = [
     {
       label: single ? "Play" : `Play ${tracks.length} songs`, icon: "play", disabled: !anyPlayable,
@@ -49,6 +71,10 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
   if (single) {
     items.push(
       { separator: true },
+      { label: "Start song radio", icon: "radio", disabled: !isPlayable(single, s), run: () => startRadio(single.id) },
+      s.taste.hidden[single.id]
+        ? { label: "Show in recommendations", icon: "sparkle", run: () => unhideRecommendation(single.id) }
+        : { label: "Hide from recommendations", icon: "close", run: () => hideRecommendation(single.id, opts.why) },
       { label: "Go to artist", icon: "user", run: () => navigate({ name: "artist", id: single.artistId }) },
       { label: "Go to album", icon: "music", run: () => navigate({ name: "album", id: single.albumId }) },
       { label: "Edit clip…", icon: "scissors", disabled: !isPlayable(single, s), run: () => openModal({ type: "clipEditor", trackId: single.id }) },

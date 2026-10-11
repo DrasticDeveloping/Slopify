@@ -4,7 +4,7 @@
 
 A redesigned, web-based UI for [Resonance](https://github.com/Drastics-Experiments/resonance), the Spotify-inspired music player. It reimagines the old Electron desktop UI (Library, Playlists, Song Storage, Music Server, Now Playing, Clip Editor, Listening History, Listen Along, Import, Settings) as a smoother React app.
 
-Everything runs locally with a mock library. Each sample song is generated live with the Web Audio API, so playback, seeking, speed, crossfade, clip ranges, and the visualizer all work without any audio files. You can also drop your own audio files in to play them.
+Everything runs locally. The library starts empty: import songs or whole playlists from Spotify, SoundCloud or YouTube, or drop your own audio files in. Home → Recommended for you then suggests new songs, which play in full straight away (see [docs/recommendations.md](docs/recommendations.md)).
 
 ```bash
 npm install
