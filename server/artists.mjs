@@ -4,6 +4,7 @@ const normalize = (s) => String(s ?? "").normalize("NFKC").toLowerCase().replace
 const text = (v, max = 6000) => typeof v === "string" ? v.trim().slice(0, max) : "";
 const image = (v) => { try { const u = new URL(v); return u.protocol === "https:" ? u.href : undefined; } catch { return undefined; } };
 const UA = "Slopify/2.0 (https://github.com/DrasticDeveloping/Slopify)";
+const releaseArt = (id) => /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id ?? "") ? `https://coverartarchive.org/release-group/${id}/front-250` : undefined;
 
 /** Public artist metadata. Exact identities only; collaboration credits are labelled individually. */
 export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay } = {}) {
@@ -51,10 +52,10 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
     }
     return { partial };
   }
-  async function lookup(name, signal) {
+  async function lookup(name, signal, musicBrainzId) {
     const clean = name.replace(/\s+-\s+Topic$|VEVO$/giu, "").trim();
     let row;
-    try { const data = await audio("search", { s: clean }, signal); row = data.artists?.find((a) => [a.strArtist, a.strArtistAlternate].some((n) => normalize(n) === normalize(clean))); } catch { /* MusicBrainz fallback below. */ }
+    try { const data = await audio("search", { s: clean }, signal); row = data.artists?.find((a) => (!musicBrainzId || a.strMusicBrainzID?.toLowerCase() === musicBrainzId) && [a.strArtist, a.strArtistAlternate].some((n) => normalize(n) === normalize(clean))); } catch { /* MusicBrainz fallback below. */ }
     const result = { name: clean, biography: "", genres: [], country: "", formed: "", formedLabel: "Active since", image: undefined, banner: undefined, sourceUrl: "", tracks: [], releases: [], partial: false };
     if (row) {
       Object.assign(result, { name: text(row.strArtist, 180), biography: text(row.strBiographyEN), genres: [text(row.strGenre, 100), text(row.strStyle, 100)].filter(Boolean), country: text(row.strCountry, 100), formed: text(row.intFormedYear, 20), image: image(row.strArtistThumb), banner: image(row.strArtistFanart), sourceUrl: `https://www.theaudiodb.com/artist/${encodeURIComponent(row.idArtist)}` });
@@ -66,7 +67,7 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
         try {
           const data = await request(new URL(`https://musicbrainz.org/ws/2/release-group?artist=${row.strMusicBrainzID}&limit=50&fmt=json`), signal);
           const covers = new Map(result.releases.map((a) => [normalize(a.title), a.artwork]));
-          const groups = (data["release-groups"] ?? []).map((a) => ({ id: `mb-${a.id}`, title: text(a.title, 250), artist: result.name, year: a["first-release-date"]?.slice(0, 4) ?? "", type: a["primary-type"] ?? "Release", artwork: covers.get(normalize(a.title)), sourceUrl: `https://musicbrainz.org/release-group/${a.id}` }));
+          const groups = (data["release-groups"] ?? []).map((a) => ({ id: `mb-${a.id}`, title: text(a.title, 250), artist: result.name, year: a["first-release-date"]?.slice(0, 4) ?? "", type: a["primary-type"] ?? "Release", artwork: covers.get(normalize(a.title)) || releaseArt(a.id), sourceUrl: `https://musicbrainz.org/release-group/${a.id}` }));
           if (groups.length) result.releases = groups;
         } catch { result.partial = true; }
       }
@@ -76,8 +77,8 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
     try {
       const url = new URL("https://musicbrainz.org/ws/2/artist/");
       url.searchParams.set("query", `artist:"${clean.replace(/[\\"]/g, "\\$&")}"`); url.searchParams.set("fmt", "json"); url.searchParams.set("limit", "10");
-      const data = await request(url, signal);
-      const exact = (data.artists ?? []).filter((a) => normalize(a.name) === normalize(clean));
+      const data = musicBrainzId ? { artists: [await request(new URL(`https://musicbrainz.org/ws/2/artist/${musicBrainzId}?fmt=json`), signal)] } : await request(url, signal);
+      const exact = (data.artists ?? []).filter((a) => musicBrainzId ? a.id === musicBrainzId : normalize(a.name) === normalize(clean));
       if (exact.length !== 1) return null;
       const artist = exact[0];
       Object.assign(result, { name: artist.name, country: artist.area?.name ?? artist.country ?? "", formed: artist["life-span"]?.begin ?? "", formedLabel: artist.type === "Person" ? "Born" : "Formed", genres: (artist.tags ?? []).slice(0, 4).map((t) => t.name), sourceUrl: `https://musicbrainz.org/artist/${artist.id}` });
@@ -86,7 +87,7 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
         request(new URL(`https://musicbrainz.org/ws/2/release-group?artist=${artist.id}&limit=50&fmt=json`), signal),
       ]);
       result.partial = detail.status === "rejected" || releases.status === "rejected";
-      if (releases.status === "fulfilled") result.releases = (releases.value["release-groups"] ?? []).map((a) => ({ id: `mb-${a.id}`, title: a.title, artist: artist.name, year: a["first-release-date"]?.slice(0, 4) ?? "", type: a["primary-type"] ?? "Release", sourceUrl: `https://musicbrainz.org/release-group/${a.id}` }));
+      if (releases.status === "fulfilled") result.releases = (releases.value["release-groups"] ?? []).map((a) => ({ id: `mb-${a.id}`, title: a.title, artist: artist.name, year: a["first-release-date"]?.slice(0, 4) ?? "", type: a["primary-type"] ?? "Release", artwork: releaseArt(a.id), sourceUrl: `https://musicbrainz.org/release-group/${a.id}` }));
       const wiki = detail.status === "fulfilled" ? (detail.value.relations ?? []).find((r) => r.type === "wikipedia" && r.url?.resource?.startsWith("https://en.wikipedia.org/wiki/")) : undefined;
       if (wiki) {
         try {
@@ -101,15 +102,17 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
   async function profile(body) {
     const name = text(body?.name, 181);
     if (!name || name.length > 180 || ["unknownartist", "localfiles", "variousartists"].includes(normalize(name))) throw Object.assign(new Error("Send a real artist name."), { status: 400 });
-    const key = normalize(name);
+    const musicBrainzId = typeof body?.musicBrainzId === "string" ? body.musicBrainzId.toLowerCase() : undefined;
+    if (musicBrainzId && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(musicBrainzId)) throw Object.assign(new Error("Invalid artist identity."), { status: 400 });
+    const key = `${normalize(name)}:${musicBrainzId || ""}`;
     const hit = cache.get(key); if (hit && hit.until > now()) return hit.value;
     if (pending.has(key)) return pending.get(key);
     const task = (async () => {
       const signal = AbortSignal.timeout(45_000);
       let profiles = [];
-      const exact = await lookup(name, signal);
+      const exact = await lookup(name, signal, musicBrainzId);
       if (exact) profiles = [exact];
-      else {
+      else if (!musicBrainzId) {
         const parts = name.split(/\s*(?:&|,|\bfeat\.?\s|\bft\.?\s|\band\b)\s*/iu).filter(Boolean).slice(0, 3);
         if (parts.length > 1) for (const part of parts) { const found = await lookup(part, signal); if (found) profiles.push(found); }
       }
@@ -120,5 +123,33 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
     })().finally(() => pending.delete(key));
     pending.set(key, task); return task;
   }
-  return { profile };
+  async function search(body, signal = AbortSignal.timeout(20_000)) {
+    const query = text(body?.query, 181);
+    if (!query || query.length > 180) throw Object.assign(new Error("Enter an artist name (up to 180 characters)."), { status: 400 });
+    const key = `search:${normalize(query)}`;
+    const hit = cache.get(key); if (hit && hit.until > now()) return hit.value;
+    const url = new URL("https://musicbrainz.org/ws/2/artist/");
+    url.searchParams.set("query", `artist:"${query.replace(/[\\"]/g, "\\$&")}"`);
+    url.searchParams.set("fmt", "json"); url.searchParams.set("limit", "8");
+    const [mb, adb] = await Promise.allSettled([request(url, signal), audio("search", { s: query }, signal)]);
+    signal.throwIfAborted();
+    if (mb.status === "rejected" && adb.status === "rejected") throw Object.assign(new Error("Artist search is temporarily unavailable. Try again."), { status: 503 });
+    const audioRows = adb.status === "fulfilled" ? adb.value.artists ?? [] : [];
+    const results = mb.status === "fulfilled" ? (mb.value.artists ?? []).filter((a) => text(a.name) && /^[a-f0-9-]{36}$/i.test(a.id ?? "") && Number(a.score) >= 50).map((a) => {
+      const row = audioRows.find((r) => r.strMusicBrainzID?.toLowerCase() === a.id.toLowerCase());
+      return { id: `mb-${a.id}`, musicBrainzId: a.id, name: text(a.name, 180), image: image(row?.strArtistThumb), description: [text(a.disambiguation, 250), text(a.type, 40), text(a.area?.name || a.country, 100)].filter(Boolean).join(" · "), sourceUrl: `https://musicbrainz.org/artist/${a.id}` };
+    }) : [];
+    for (const row of audioRows) {
+      const musicBrainzId = text(row.strMusicBrainzID, 36).toLowerCase();
+      const hasIdentity = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(musicBrainzId);
+      if (!text(row.strArtist) || results.some((a) => hasIdentity ? a.musicBrainzId === musicBrainzId : normalize(a.name) === normalize(row.strArtist))) continue;
+      results.push({ id: `audiodb-${text(row.idArtist, 30)}`, ...(hasIdentity ? { musicBrainzId } : {}), name: text(row.strArtist, 180), image: image(row.strArtistThumb), description: [text(row.strGenre, 100), text(row.strCountry, 100)].filter(Boolean).join(" · "), sourceUrl: `https://www.theaudiodb.com/artist/${encodeURIComponent(row.idArtist)}` });
+    }
+    results.sort((a, b) => Number(normalize(b.name) === normalize(query)) - Number(normalize(a.name) === normalize(query)));
+    const value = { artists: results.slice(0, 8), partial: mb.status === "rejected" || adb.status === "rejected" };
+    cache.set(key, { value, until: now() + (value.partial ? 60_000 : 600_000) });
+    while (cache.size > 100) cache.delete(cache.keys().next().value);
+    return value;
+  }
+  return { profile, search };
 }

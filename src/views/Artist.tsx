@@ -18,7 +18,7 @@ export function ArtistView({ id }: { id: string }) {
 function ArtistPage({ id, name }: { id: string; name: string }) {
   const artist = useStore((s) => s.artists[id]);
   const tracks = useStore((s) => s.tracks);
-  const metadata = useArtistMetadata(id, name);
+  const metadata = useArtistMetadata(id, name, artist.musicBrainzId);
   const [fans, setFans] = useState<string[]>([]);
   const popular = useMemo(() => Object.values(tracks).filter((t) => t.artistId === id && !t.stream).sort((a, b) => b.plays - a.plays).map((t) => t.id), [tracks, id]);
   const profiles = metadata.result?.profiles ?? [];
@@ -48,7 +48,7 @@ function ArtistPage({ id, name }: { id: string; name: string }) {
     <div className="action-bar"><PlayFab ids={popular} label={name} route={route} size="lg" /><button type="button" className="btn" onClick={() => startCollectionRadio(popular, name)}><Icon name="radio" size={18} />Artist radio</button></div>
     {metadata.loading ? <p className="muted" role="status">Finding artist details online…</p> : metadata.error || !profiles.length ? <p className="muted" role="status">{metadata.error || "No verified artist profile found yet."} <button type="button" className="text-btn" onClick={metadata.retry}>Retry</button></p> : null}
     {metadata.result?.status === "partial" ? <p className="muted" role="status">Some artist details couldn't be loaded. <button type="button" className="text-btn" onClick={metadata.retry}>Retry</button></p> : null}
-    {profiles.map((p) => <section className="artist-about panel" key={p.name}>
+    {profiles.filter((p) => p.biography?.trim()).map((p) => <section className="artist-about panel" key={p.name}>
       {p.image ? <img src={p.image} alt={p.name} loading="lazy" /> : null}
       <div><h2>{metadata.result?.collaboration ? `About ${p.name}` : "About"}</h2><p className="muted">{[p.country, p.formed && p.formed !== "0" ? `${p.formedLabel ?? "Since"} ${p.formed}` : "", ...p.genres].filter(Boolean).join(" · ")}</p>{p.biography ? <p className="artist-bio">{p.biography}</p> : <p className="muted">No biography available from this source.</p>}<a className="link" href={p.sourceUrl} target="_blank" rel="noreferrer">Artist metadata source</a>{p.biographyUrl ? <p><a className="link" href={p.biographyUrl} target="_blank" rel="noreferrer">Biography · Wikipedia (CC BY-SA)</a></p> : null}</div>
     </section>)}

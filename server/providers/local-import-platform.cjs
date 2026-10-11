@@ -140,7 +140,7 @@ function cleanMetadata(value, fallback = "", maximum = 500) {
 function normalizedMetadata(value, fallback = {}) {
   const title = cleanMetadata(value?.title, cleanMetadata(fallback.title, "Untitled"));
   const artist = cleanMetadata(value?.artist, cleanMetadata(fallback.artist, "Unknown Artist"));
-  const album = cleanMetadata(value?.album, cleanMetadata(fallback.album, "Imported"));
+  const album = cleanMetadata(value?.album, cleanMetadata(fallback.album)) || null;
   const sourceURL = typeof value?.sourceURL === "string" ? value.sourceURL.slice(0, 8_192) : fallback.sourceURL || null;
   const artworkURL = typeof value?.artworkURL === "string" ? value.artworkURL.slice(0, 2_048) : fallback.artworkURL || null;
   return { title, artist, album, sourceURL, artworkURL };
@@ -175,7 +175,8 @@ async function hashFile(filePath) {
     const stream = createReadStream(filePath);
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
-    stream.on("end", () => resolve(hash.digest("hex")));
+    // A completed read still has to release its file handle before the caller moves it.
+    stream.on("close", () => stream.readableEnded ? resolve(hash.digest("hex")) : reject(new Error("The local file closed before it could be verified.")));
   });
 }
 
@@ -348,11 +349,18 @@ async function tagM4A(input, output, metadata, artwork, signal) {
 }
 
 async function moveFile(source, destination) {
-  try { await fs.rename(source, destination); }
-  catch (error) {
-    if (error?.code !== "EXDEV") throw error;
-    await fs.copyFile(source, destination);
-    await fs.rm(source, { force: true });
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.rename(source, destination); return; }
+    catch (error) {
+      if (error?.code === "EXDEV") {
+        await fs.copyFile(source, destination);
+        await fs.rm(source, { force: true });
+        return;
+      }
+      // Windows scanners can briefly lock a freshly tagged file or its reserved name.
+      if (process.platform !== "win32" || !["EPERM", "EBUSY"].includes(error?.code) || attempt >= 3) throw error;
+      await new Promise((resolve) => setTimeout(resolve, [100, 250, 500][attempt]));
+    }
   }
 }
 
@@ -907,7 +915,7 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
     const metadata = normalizedMetadata({ ...input.metadata, ...(enrichedMetadata || {}) }, {
       title: result.preview.title,
       artist: result.preview.author || "Unknown uploader",
-      album: "Imported",
+      album: null,
       artworkURL: result.preview.thumbnailURL,
       sourceURL: result.preview.sourceURL,
     });

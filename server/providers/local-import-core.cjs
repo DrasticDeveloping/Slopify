@@ -642,7 +642,7 @@ function safeThumbnail(value) {
       try {
         const url = new URL(candidate);
         return url.protocol === "https:" &&
-          (url.hostname === "i.ytimg.com" || url.hostname.endsWith(".ytimg.com") || url.hostname.endsWith(".ggpht.com"));
+          (url.hostname === "i.ytimg.com" || url.hostname.endsWith(".ytimg.com") || url.hostname.endsWith(".ggpht.com") || url.hostname === "yt3.googleusercontent.com");
       } catch {
         return false;
       }
@@ -749,6 +749,8 @@ function webCandidate(renderer) {
     album: null,
     durationSeconds: parseDuration(rendererText(renderer.lengthText)),
     thumbnailURL: safeThumbnail(renderer.thumbnail),
+    videoThumbnailURL: safeThumbnail(renderer.thumbnail),
+    creatorAvatarURL: safeThumbnail(renderer.channelThumbnailSupportedRenderers?.channelThumbnailWithLinkRenderer?.thumbnail),
     sourceProvider: "youtube",
     officialArtist: /\btopic$/i.test(artist || "") || badges.some((badge) => {
       const metadataBadge = isRecord(badge) ? badge.metadataBadgeRenderer : null;

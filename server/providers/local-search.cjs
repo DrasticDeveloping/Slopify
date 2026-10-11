@@ -183,6 +183,10 @@ async function searchYouTube(query, signal, fetchImpl) {
   ]) {
     const existing = unique.get(candidate.videoID);
     if (!existing || candidate.sourceProvider === "youtube_music") unique.set(candidate.videoID, candidate);
+    else {
+      if (candidate.creatorAvatarURL && !existing.creatorAvatarURL) existing.creatorAvatarURL = candidate.creatorAvatarURL;
+      if (candidate.videoThumbnailURL) existing.videoThumbnailURL = candidate.videoThumbnailURL;
+    }
   }
   return [...unique.values()]
     .sort((left, right) => queryRelevance(query, right) - queryRelevance(query, left))
@@ -253,12 +257,17 @@ async function searchAllPlatforms(value, signal, fetchImpl = fetch, options = {}
       trackNumber: null,
       durationSeconds: candidate.durationSeconds || null,
       artworkURL: candidate.thumbnailURL || null,
+      creatorAvatarURL: candidate.creatorAvatarURL || null,
       embedURL: "",
       sourceURL: `https://www.youtube.com/watch?v=${candidate.videoID}`,
     };
     return resultCandidate("youtube", track, [directYouTubeCandidate(candidate)]);
   });
-  const candidates = [...spotify, ...soundcloud, ...youtube];
+  const candidates = [...spotify, ...soundcloud, ...youtube].sort((left, right) => {
+    const relevance = (c) => queryRelevance(query, c.importMetadata || c)
+      + (c.officialArtist && c.searchProvider === "youtube" ? 0.05 : 0);
+    return relevance(right) - relevance(left);
+  });
   if (!candidates.length) throw searchError("NO_SEARCH_RESULTS", "Spotify, SoundCloud, and YouTube returned no previewable results for that search.");
   const providerCounts = {
     spotify: spotify.length,

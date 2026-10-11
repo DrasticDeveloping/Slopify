@@ -45,7 +45,7 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
         { label: "Music server", icon: "server", run: () => navigate({ name: "server" }) },
         { label: "Clip editor", icon: "scissors", run: () => openModal({ type: "clipEditor", trackId: getState().currentId ?? undefined }) },
         { label: "Listen along", icon: "users", run: () => openModal({ type: "listenAlong" }) },
-        { label: "Import music", icon: "download", run: () => openModal({ type: "import" }) },
+        { label: "Find music", icon: "search", run: () => openModal({ type: "import" }) },
         { separator: true },
         { label: "Settings", icon: "settings", hint: "Ctrl ,", run: () => openModal({ type: "settings" }) },
         { label: "Keyboard shortcuts", icon: "keyboard", hint: "?", run: () => openModal({ type: "settings", tab: "shortcuts" }) },
@@ -57,6 +57,7 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
 
   return (
     <div className={`topbar${scrolled ? " scrolled" : ""}${showTitle ? " titled" : ""}`} style={header ? ({ "--tint": header.tint } as CSSProperties) : undefined}>
+      <div className="topbar-start">
       <div className="history-btns">
         <button type="button" className="icon-btn round" onClick={goBack} disabled={!back} aria-label="Go back" title="Back (Alt ←)">
           <Icon name="chevronLeft" size={20} />
@@ -79,6 +80,7 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
           </button>
         ) : null}
         <strong>{header?.title}</strong>
+      </div>
       </div>
 
       <label className={`search-box${route.name === "search" ? " active" : ""}`}>
@@ -108,10 +110,6 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
       </label>
 
       <div className="topbar-actions">
-        <button type="button" className="btn ghost sm hide-narrow" onClick={() => openModal({ type: "import" })}>
-          <Icon name="download" size={17} />
-          Import
-        </button>
         <button type="button" className={`icon-btn round${listen !== "idle" ? " on" : ""}`} onClick={() => openModal({ type: "listenAlong" })} aria-label="Listen along" title="Listen along">
           <Icon name="users" size={19} />
         </button>

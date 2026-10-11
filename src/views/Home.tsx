@@ -110,7 +110,7 @@ export function HomeView() {
           </div>
           <button type="button" className="btn primary" onClick={() => openModal({ type: "import" })}>
             <Icon name="download" size={18} />
-            Import from Web
+            Find music
           </button>
         </section>
       ) : null}

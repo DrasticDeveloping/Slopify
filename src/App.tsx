@@ -297,7 +297,7 @@ export function App() {
                 { label: "Music server", icon: "server", run: () => navigate({ name: "server" }) },
                 { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
                 { separator: true },
-                { label: "Import music", icon: "download", run: () => openModal({ type: "import" }) },
+                { label: "Find music", icon: "search", run: () => openModal({ type: "import" }) },
                 { label: "Listen along", icon: "users", run: () => openModal({ type: "listenAlong" }) },
                 { label: "Settings", icon: "settings", run: () => openModal({ type: "settings" }) },
               ],

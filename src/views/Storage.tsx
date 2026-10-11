@@ -64,7 +64,7 @@ export function StorageView() {
         <div className="page-actions">
           <button type="button" className="btn" onClick={() => openModal({ type: "import" })}>
             <Icon name="download" size={18} />
-            Import
+            Find music
           </button>
           <button type="button" className={`btn${editing ? " primary" : ""}`} onClick={() => (editing ? finish() : setEditing(true))} disabled={!list.length && !editing}>
             <Icon name={editing ? "check" : "edit"} size={18} />

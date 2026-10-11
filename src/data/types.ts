@@ -16,6 +16,7 @@ export interface Artist {
   palette: Palette;
   listeners: number;
   image?: string;
+  musicBrainzId?: string;
 }
 
 export interface Album {

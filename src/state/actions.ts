@@ -279,6 +279,11 @@ let modalOpener: HTMLElement | null = null;
  * When opened from a menu item, the menu's own opener is used instead.
  */
 export function openModal(modal: Modal) {
+  if (modal.type === "import") {
+    navigate({ name: "search", q: "" });
+    setState((s) => ({ menu: null, searchFocusNonce: s.searchFocusNonce + 1 }));
+    return;
+  }
   if (!getState().modal) {
     const active = document.activeElement as HTMLElement | null;
     modalOpener = active?.closest(".menu-layer") ? menuOpener : active;
@@ -1113,7 +1118,7 @@ export function importFiles(files: FileList | File[]) {
     }
     const seed = hashString(file.name + file.size);
     const albumId = `al_file_${seed}`;
-    albums[albumId] = { id: albumId, title: "Imported", artistId, year: new Date().getFullYear(), palette: paletteFromSeed(seed), glyph: seed % 6 };
+    albums[albumId] = { id: albumId, title: maybeTitle.trim(), artistId, year: new Date().getFullYear(), palette: paletteFromSeed(seed), glyph: seed % 6 };
     const id = `file_${seed}_${Date.now().toString(36)}`;
     const url = URL.createObjectURL(file);
     tracks[id] = { id, title: maybeTitle.trim(), artistId, albumId, duration: 0, addedAt: Date.now(), kind: video ? "video" : "audio", storage: "files", size: file.size, plays: 0, seed, fileUrl: url };

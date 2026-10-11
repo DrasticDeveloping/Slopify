@@ -59,7 +59,7 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
         <div className="page-actions">
           <button type="button" className="btn" onClick={() => openModal({ type: "import" })}>
             <Icon name="download" size={18} />
-            Import
+            Find music
           </button>
         </div>
       </header>

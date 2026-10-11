@@ -250,6 +250,7 @@ function parseSoundCloudTrack(record, position = null) {
     trackNumber: Number.isSafeInteger(position) ? position : null,
     durationSeconds: durationMilliseconds ? Math.round(durationMilliseconds / 1_000) : null,
     artworkURL: soundCloudArtworkURL(record.artwork_url) || soundCloudArtworkURL(record.user?.avatar_url),
+    creatorAvatarURL: soundCloudArtworkURL(record.user?.avatar_url),
     embedURL: "",
     sourceURL,
     directlyImportable,

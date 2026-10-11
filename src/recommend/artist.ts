@@ -16,7 +16,7 @@ export interface ArtistMetadata {
   releases: Array<{ id: string; title: string; artist: string; year: string; type: string; artwork?: string; sourceUrl: string }>;
 }
 interface Result { status: string; collaboration: boolean; profiles: ArtistMetadata[] }
-export function useArtistMetadata(id: string, name: string) {
+export function useArtistMetadata(id: string, name: string, musicBrainzId?: string) {
   const [result, setResult] = useState<Result | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -24,7 +24,7 @@ export function useArtistMetadata(id: string, name: string) {
   useEffect(() => {
     const controller = new AbortController();
     setResult(null); setLoading(true); setError("");
-    const key = `slopify.artist.${name.toLowerCase()}`;
+    const key = `slopify.artist.v2.${name.toLowerCase()}${musicBrainzId ? `.${musicBrainzId}` : ""}`;
     const apply = (value: Result) => {
       setResult(value);
       const p = !value.collaboration ? value.profiles[0] : undefined;
@@ -32,10 +32,19 @@ export function useArtistMetadata(id: string, name: string) {
       if (artist && p?.image && artist.image !== p.image) setState((s) => ({ artists: { ...s.artists, [id]: { ...s.artists[id], image: p.image } } }));
     };
     try {
-      const cached = JSON.parse(localStorage.getItem(key) ?? "null");
-      if (!retry && cached?.at > Date.now() - 86_400_000 && Array.isArray(cached.value?.profiles)) { apply(cached.value); setLoading(false); return () => controller.abort(); }
+      const cached = JSON.parse(localStorage.getItem(key) ?? "null") ?? (!musicBrainzId ? JSON.parse(localStorage.getItem(`slopify.artist.${name.toLowerCase()}`) ?? "null") : null);
+      if (!retry && cached?.at > Date.now() - 86_400_000 && Array.isArray(cached.value?.profiles)) {
+        const value: Result = { ...cached.value, profiles: cached.value.profiles.map((p: ArtistMetadata) => ({ ...p, releases: (p.releases ?? []).map((release) => {
+          const mbid = release.id?.slice(3);
+          return !release.artwork && release.id?.startsWith("mb-") && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(mbid) ? { ...release, artwork: `https://coverartarchive.org/release-group/${mbid}/front-250` } : release;
+        }) })) };
+        apply(value); setLoading(false);
+        // Keep the original lifetime; migration must not make old metadata fresh.
+        try { localStorage.setItem(key, JSON.stringify({ at: cached.at, value })); } catch { /* display remains available */ }
+        return () => controller.abort();
+      }
     } catch { /* refetch malformed cache */ }
-    void fetch("/api/metadata/artist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(50_000)]) }).then(async (res) => {
+    void fetch("/api/metadata/artist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, musicBrainzId }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(50_000)]) }).then(async (res) => {
       const body = await res.json();
       if (!res.ok || !body.ok || !Array.isArray(body.result?.profiles)) throw new Error("Artist metadata is unavailable.");
       if (controller.signal.aborted) return;
@@ -43,6 +52,6 @@ export function useArtistMetadata(id: string, name: string) {
       if (body.result.status === "available") try { localStorage.setItem(key, JSON.stringify({ at: Date.now(), value: body.result })); } catch { /* session cache only */ }
     }).catch(() => { if (!controller.signal.aborted) setError("Couldn't reach artist metadata services."); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [id, name, retry]);
+  }, [id, name, musicBrainzId, retry]);
   return { result, loading, error, retry: () => setRetry((n) => n + 1) };
 }

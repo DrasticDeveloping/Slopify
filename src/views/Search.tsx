@@ -1,11 +1,14 @@
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { ExternalSearch } from "../components/ExternalSearch";
+import { ExternalArtists } from "../components/ExternalArtists";
+import { inputIsLink } from "../state/importer";
+import { Icon } from "../components/Icon";
 import { Art, PlaylistArt, TrackArt } from "../components/Artwork";
 import { Card, PlayFab, Shelf } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { plural } from "../lib/format";
-import { isPlayable, navigate } from "../state/actions";
+import { importFiles, isPlayable, navigate } from "../state/actions";
 import { useStore } from "../state/store";
-import { Empty } from "./Collection";
 
 function score(text: string, q: string) {
   const t = text.toLowerCase();
@@ -17,6 +20,8 @@ function score(text: string, q: string) {
 }
 
 export function SearchView({ q }: { q: string }) {
+  const [mode, setMode] = useState<"all" | "music" | "artists">("all");
+  const file = useRef<HTMLInputElement>(null);
   const tracks = useStore((s) => s.tracks);
   const trackIds = useStore((s) => s.trackIds);
   const artists = useStore((s) => s.artists);
@@ -58,6 +63,9 @@ export function SearchView({ q }: { q: string }) {
     return (
       <div className="view">
         <h1 className="section-title big">Browse all</h1>
+        <p className="muted">Find songs on YouTube, Spotify and SoundCloud using the search bar above. You can also paste playlist links.</p>
+        <input ref={file} type="file" accept="audio/*,video/*,.flac,.m4a,.opus" multiple hidden onChange={(e) => { if (e.target.files) importFiles(e.target.files); e.target.value = ""; }} />
+        <button type="button" className="btn" onClick={() => file.current?.click()}><Icon name="folder" size={18} />Add files from your computer</button>
         <div className="browse-grid">
           <button type="button" className="browse-tile" style={{ "--h": 260 } as CSSProperties} onClick={() => navigate({ name: "library" })}>
             <strong>Your library</strong>
@@ -77,21 +85,19 @@ export function SearchView({ q }: { q: string }) {
   }
 
   const nothing = !results.songs.length && !results.artists.length && !results.albums.length && !results.playlists.length;
-  if (nothing) {
-    return (
-      <div className="view">
-        <Empty icon="search" title={`No results for “${q}”`} body="Check the spelling, or try fewer or different keywords." />
-      </div>
-    );
-  }
 
   const top = results.topArtist;
   const topSong = !top && results.songs[0] ? tracks[results.songs[0]] : null;
   const topIds = top ? Object.values(tracks).filter((t) => t.artistId === top.id && isPlayable(t)).sort((a, b) => b.plays - a.plays).map((t) => t.id) : results.songs;
+  const artistSearch = !inputIsLink(q.trim());
+  const showMusic = mode !== "artists" || !artistSearch;
 
   return (
     <div className="view search-view">
-      <div className="search-top">
+      {artistSearch ? <div className="chips search-categories" role="group" aria-label="Search categories">{([["all", "All"], ["music", "Music"], ["artists", "Artists"]] as const).map(([value, label]) => <button type="button" key={value} className={`chip${mode === value ? " on" : ""}`} aria-pressed={mode === value} onClick={() => setMode(value)}>{label}</button>)}</div> : null}
+      {artistSearch && mode !== "music" ? <ExternalArtists query={q.trim()} showStatus={mode === "artists"} /> : null}
+      {showMusic ? <ExternalSearch query={q.trim()} /> : null}
+      {showMusic && !nothing ? <><h2 className="section-title">In your library</h2><div className="search-top">
         <section>
           <h2 className="section-title">Top result</h2>
           {top || topSong ? (
@@ -112,28 +118,28 @@ export function SearchView({ q }: { q: string }) {
           <h2 className="section-title">Songs</h2>
           <TrackList ids={results.songs.slice(0, 5)} context={{ label: `Search “${q}”`, route: { name: "search", q } }} showAlbum={false} showAdded={false} sortable={false} />
         </section>
-      </div>
-      {results.songs.length > 5 ? (
+      </div></> : null}
+      {showMusic && results.songs.length > 5 ? (
         <section>
           <h2 className="section-title">All songs <span className="muted">{results.songs.length}</span></h2>
           <TrackList ids={results.songs} context={{ label: `Search “${q}”`, route: { name: "search", q } }} showAdded={false} />
         </section>
       ) : null}
-      {results.artists.length ? (
-        <Shelf title="Artists">
+      {mode !== "music" && results.artists.length ? (
+        <Shelf title="Artists in your library">
           {results.artists.map((a) => (
             <Card key={a.id} round art={<Art palette={a.palette} glyph={4} round image={a.image} />} title={a.name} subtitle="Artist" onOpen={() => navigate({ name: "artist", id: a.id })} />
           ))}
         </Shelf>
       ) : null}
-      {results.albums.length ? (
+      {showMusic && results.albums.length ? (
         <Shelf title="Albums">
           {results.albums.map((a) => (
             <Card key={a.id} art={<Art palette={a.palette} glyph={a.glyph} image={a.artworkUrl} />} title={a.title} subtitle={`${a.year} · ${artists[a.artistId]?.name}`} onOpen={() => navigate({ name: "album", id: a.id })} />
           ))}
         </Shelf>
       ) : null}
-      {results.playlists.length ? (
+      {showMusic && results.playlists.length ? (
         <Shelf title="Playlists">
           {results.playlists.map((p) => (
             <Card key={p.id} art={<PlaylistArt playlist={p} />} title={p.name} subtitle={plural(p.trackIds.length, "song")} onOpen={() => navigate({ name: "playlist", id: p.id })} />

@@ -4,7 +4,7 @@ import { hashString, paletteFromSeed } from "../data/library";
 import type { Album, Artist, Genre, Track } from "../data/types";
 import type { ReasonKind } from "../recommend/taste";
 import {
-  addToPlaylist, cancelServerDelete, closeModal, connectStreams, createPlaylist, hideDiscovery, isServerDeletePending, keepDiscovery, linkSavedStream, navigate, openModal,
+  addToPlaylist, cancelServerDelete, closeModal, connectStreams, createPlaylist, hideDiscovery, isServerDeletePending, keepDiscovery, linkSavedStream, navigate,
   playList, retryServerDeletes, toast, togglePlay, updateToast,
 } from "./actions";
 import { getState, setState, subscribe as subscribeApp } from "./store";
@@ -36,6 +36,7 @@ export interface SourceTrack {
   trackNumber?: number | null;
   durationSeconds?: number | null;
   artworkURL?: string | null;
+  creatorAvatarURL?: string | null;
   sourceURL?: string | null;
   sourcePageURL?: string | null;
 }
@@ -46,6 +47,8 @@ export interface Candidate {
   album?: string | null;
   durationSeconds?: number | null;
   thumbnailURL?: string | null;
+  videoThumbnailURL?: string | null;
+  creatorAvatarURL?: string | null;
   sourceProvider?: string;
   searchProvider?: Provider;
   sourceURL: string;
@@ -315,8 +318,8 @@ async function streamCall<T>(path: string, body: unknown, signal: AbortSignal, o
 /* ───────────────────────── discovery (Home → Discover new music) ───────────────────────── */
 
 /** A provider search for discovery. It has its own request, so an open import dialog is left alone. */
-export async function searchDiscovery(query: string, signal: AbortSignal): Promise<Resolution> {
-  const result = await streamCall<Resolution>("/api/import/resolve", { source: query, mediaKind: "audio" }, signal, () => undefined, "searching_candidates");
+export async function searchDiscovery(query: string, signal: AbortSignal, mediaKind: MediaKind = "audio"): Promise<Resolution> {
+  const result = await streamCall<Resolution>("/api/import/resolve", { source: query, mediaKind }, signal, () => undefined, "searching_candidates");
   // Nothing found is an answer, not a failure.
   if (!result.ok && result.error.code === "NO_SEARCH_RESULTS") return { kind: "search_results", mediaKind: "audio", track: {}, candidates: [] };
   if (!result.ok) throw result.error;
@@ -340,7 +343,18 @@ export function reviewDiscoveredSong(candidate: Candidate, kind: ReasonKind, opt
   if (!isDownloadable(candidate) || importBusy()) return;
   discovery = { candidate, kind, ...options };
   prepareImportDialog();
-  openModal({ type: "import" });
+  navigate({ name: "search", q: state.source });
+}
+
+/** Saves explicitly chosen search results using the durable download pipeline. */
+export async function saveSearchResults(source: string, resolution: Resolution, selected: number[]) {
+  if (importBusy()) return;
+  resolveController?.abort();
+  clearAuto();
+  stopPreview({ resume: true });
+  if (discovery?.candidate !== resolution.candidates[selected[0]]) discovery = null;
+  set({ source, resolution, selected: selected.filter((i) => isDownloadable(resolution.candidates[i])), mediaKind: resolution.mediaKind, busy: null, error: null, upload: canUploadToServer() });
+  await confirmImport();
 }
 
 /** Downloads a suggestion into the library and plays it. Matches that need a source check go through review instead. */
@@ -428,15 +442,18 @@ function whenImportIdle() {
   });
 }
 
-/** Resolves once the import dialog is closed (a source check is up to the user). */
-function whenDialogClosed() {
+/** A queued save stays pending while the user reviews its source in Search. */
+function whenReviewFinished(candidate: Candidate) {
   return new Promise<void>((resolve) => {
-    if (getState().modal?.type !== "import") return resolve();
-    const stop = subscribeApp(() => {
-      if (getState().modal?.type === "import") return;
-      stop();
-      resolve();
-    });
+    const check = () => {
+      const route = getState().route;
+      if (discovery?.candidate === candidate && (route.name !== "search" || route.q !== state.source)) discovery = null;
+      if (discovery?.candidate === candidate || state.busy === "import") return;
+      stopApp(); stopImport(); resolve();
+    };
+    const stopApp = subscribeApp(check);
+    const stopImport = subscribe(check);
+    check();
   });
 }
 
@@ -466,7 +483,7 @@ function saveStreamToLibrary(id: string, then?: (libraryId: string) => void) {
     .then(async () => {
       if (source.candidate.requiresReview) {
         reviewDiscoveredSong(source.candidate, source.kind, { play: false, done });
-        await whenDialogClosed();
+        await whenReviewFinished(source.candidate);
         await whenImportIdle();
       } else await addDiscoveredSong(source.candidate, source.kind, { play: false, done });
     })
@@ -498,6 +515,8 @@ export async function checkImportService() {
 
 const GENRES: Genre[] = ["indie", "lofi", "synthwave", "house", "ambient"];
 
+const serverAlbumTitle = (p: ServerTrack) => p.album?.trim() && !/^(import|imported)$/i.test(p.album.trim()) ? p.album.trim() : p.title;
+
 function placeServerTrack(p: ServerTrack, artists: Record<string, Artist>, albums: Record<string, Album>): Track {
   const name = p.artist?.trim() || "Unknown artist";
   let artist = Object.values(artists).find((a) => a.name.toLowerCase() === name.toLowerCase());
@@ -510,7 +529,7 @@ function placeServerTrack(p: ServerTrack, artists: Record<string, Artist>, album
   const albumId = `al_srv_${p.id}`;
   albums[albumId] = {
     id: albumId,
-    title: p.album?.trim() || p.title,
+    title: serverAlbumTitle(p),
     artistId: artist.id,
     year: new Date(p.addedAt || Date.now()).getFullYear(),
     palette: paletteFromSeed(seed),
@@ -592,8 +611,8 @@ export async function syncServerLibrary() {
         refreshed = true;
       }
       const album = albums[known.albumId];
-      if (album && (p.artworkUrl ?? undefined) !== album.artworkUrl) {
-        albums[known.albumId] = { ...album, artworkUrl: p.artworkUrl ?? undefined };
+      if (album && ((p.artworkUrl ?? undefined) !== album.artworkUrl || album.title !== serverAlbumTitle(p))) {
+        albums[known.albumId] = { ...album, title: serverAlbumTitle(p), artworkUrl: p.artworkUrl ?? undefined };
         refreshed = true;
       }
       continue;

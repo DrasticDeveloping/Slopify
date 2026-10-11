@@ -205,7 +205,7 @@ class Library {
       id: t.id,
       title: t.title,
       artist: t.artist,
-      album: t.album,
+      album: /^(import|imported)$/i.test(t.album?.trim() || "") ? null : t.album,
       durationSeconds: t.durationSeconds,
       mediaKind: t.mediaKind,
       size: t.size,
@@ -436,6 +436,17 @@ export function createImportApi({ dataDir }) {
       if (parts[0] === "metadata" && parts[1] === "artist" && parts.length === 2 && method === "POST") {
         const result = await artists.profile(await readJSON(req));
         if (!res.destroyed) sendJSON(res, 200, { ok: true, result });
+        return;
+      }
+      if (parts[0] === "metadata" && parts[1] === "artists" && parts.length === 2 && method === "POST") {
+        const body = await readJSON(req);
+        const controller = new AbortController();
+        const closed = () => { if (!res.writableFinished) controller.abort(); };
+        res.on("close", closed);
+        try {
+          const result = await artists.search(body, AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]));
+          if (!res.destroyed) sendJSON(res, 200, { ok: true, result });
+        } finally { res.off("close", closed); }
         return;
       }
       if (parts[0] === "recommendations" && parts[1] === "related" && parts.length === 2 && method === "POST") {

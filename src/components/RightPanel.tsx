@@ -118,7 +118,7 @@ function DetailsView() {
   return (
     <div className="q-scroll np-details" key={track.id}>
       {track.kind === "video" && (track.mediaUrl || track.fileUrl) ? (
-        <button type="button" className="np-art video" onClick={() => setState({ fullPlayer: true })} aria-label="Watch in the full screen player">
+        <button type="button" className="np-art video" onClick={() => setState({ fullPlayer: true })} aria-label="Open full screen player">
           <VideoSurface trackId={track.id} priority={1} />
         </button>
       ) : (
