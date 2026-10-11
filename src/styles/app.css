@@ -1436,3 +1436,22 @@ button.th:not(:disabled):hover { color: var(--text); }
   .full-player.video-mode .fp-queue { top: 64px; bottom: 300px; }
 }
 .art-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+/* Online artist profiles and playlist discovery. */
+.artist-about { display: flex; gap: 24px; margin: 24px 0; padding: 24px; align-items: flex-start; }
+.artist-about > img { width: 160px; height: 160px; border-radius: 12px; object-fit: cover; flex: none; }
+.artist-about h2 { margin: 0 0 8px; }
+.artist-bio { white-space: pre-line; line-height: 1.65; max-width: 80ch; max-height: 320px; overflow-y: auto; }
+.artist-about a { display: inline-block; margin-top: 12px; }
+.playlist-suggestions { margin-top: 40px; }
+.suggestion-row { display: flex; gap: 14px; align-items: center; padding: 10px; border-radius: 8px; }
+.suggestion-row:hover { background: var(--surface-2, #ffffff08); }
+.suggestion-row > .art { width: 48px; height: 48px; flex: none; border-radius: 6px; }
+.suggestion-title { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 4px; }
+.suggestion-title strong, .suggestion-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mix-empty { padding: 24px; }
+@media (max-width: 680px) {
+  .artist-about { flex-direction: column; padding: 18px; }
+  .artist-about > img { width: 100px; height: 100px; }
+  .suggestion-row { gap: 8px; padding: 8px 0; }
+  .suggestion-row > .art { width: 36px; height: 36px; }
+}

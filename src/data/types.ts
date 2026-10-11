@@ -15,6 +15,7 @@ export interface Artist {
   genre: Genre;
   palette: Palette;
   listeners: number;
+  image?: string;
 }
 
 export interface Album {

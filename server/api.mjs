@@ -9,6 +9,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { createRecommendations } from "./recommendations.mjs";
+import { createArtists } from "./artists.mjs";
 
 const require = createRequire(import.meta.url);
 const { LocalImportError } = require("./providers/local-import-core.cjs");
@@ -221,6 +222,7 @@ class Previews {
   constructor() {
     this.dir = null;
     this.items = new Map();
+    this.protected = new Map();
   }
 
   async directory() {
@@ -234,6 +236,8 @@ class Previews {
     if (cached) {
       try {
         await fs.access(cached.filePath);
+        this.items.delete(key);
+        this.items.set(key, cached);
         return { token: key, durationSeconds: cached.durationSeconds };
       } catch {
         this.items.delete(key);
@@ -259,7 +263,8 @@ class Previews {
     this.items.set(key, { filePath, durationSeconds, contentType: soundCloud ? "audio/mpeg" : "audio/mp4" });
     if (replaced) await fs.rm(replaced.filePath, { force: true }).catch(() => undefined);
     // Keep only a handful of previews on disk (recommended songs stream in full from these, so a few more than a dialog needs).
-    for (const [k, v] of [...this.items].slice(0, Math.max(0, this.items.size - 12))) {
+    for (const [k, until] of this.protected) if (until < Date.now()) this.protected.delete(k);
+    for (const [k, v] of [...this.items].filter(([k]) => !this.protected.has(k)).slice(0, Math.max(0, this.items.size - 12))) {
       this.items.delete(k);
       await fs.rm(v.filePath, { force: true }).catch(() => undefined);
     }
@@ -271,6 +276,7 @@ export function createImportApi({ dataDir }) {
   const library = new Library(dataDir);
   const previews = new Previews();
   const recommendations = createRecommendations();
+  const artists = createArtists();
 
   async function resolve(req, res) {
     const body = await readJSON(req);
@@ -427,6 +433,11 @@ export function createImportApi({ dataDir }) {
       if (parts[0] === "health" && method === "GET") {
         return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()) });
       }
+      if (parts[0] === "metadata" && parts[1] === "artist" && parts.length === 2 && method === "POST") {
+        const result = await artists.profile(await readJSON(req));
+        if (!res.destroyed) sendJSON(res, 200, { ok: true, result });
+        return;
+      }
       if (parts[0] === "recommendations" && parts[1] === "related" && parts.length === 2 && method === "POST") {
         const body = await readJSON(req);
         // Stop asking upstream services once the browser gives up on the answer.
@@ -463,12 +474,19 @@ export function createImportApi({ dataDir }) {
         return await sendFile(req, res, file, IMAGE_TYPES[path.extname(file).toLowerCase()] || "application/octet-stream");
       }
       if (parts[0] === "import") {
+        if (parts[1] === "protect" && parts.length === 2 && method === "POST") {
+          const body = await readJSON(req);
+          if (!Array.isArray(body.tokens) || body.tokens.length > 2 || body.tokens.some((token) => typeof token !== "string" || !/^[a-f0-9]{32}$/.test(token))) return sendJSON(res, 400, { ok: false });
+          previews.protected = new Map(body.tokens.map((token) => [token, Date.now() + 10 * 60_000]));
+          return sendJSON(res, 200, { ok: true });
+        }
         if (parts[1] === "resolve" && method === "POST") return await resolve(req, res);
         if (parts[1] === "start" && method === "POST") return await startImport(req, res);
         if (parts[1] === "preview" && parts.length === 2 && method === "POST") return await preview(req, res);
-        if (parts[1] === "preview" && parts.length === 3 && /^[a-f0-9]{32}$/.test(parts[2]) && method === "GET") {
+        if (parts[1] === "preview" && parts.length === 3 && /^[a-f0-9]{32}$/.test(parts[2]) && (method === "GET" || method === "HEAD")) {
           const item = previews.items.get(parts[2]);
           if (!item) return res.writeHead(404).end();
+          if (method === "HEAD") { await fs.access(item.filePath); return res.writeHead(200, { "Content-Type": item.contentType }).end(); }
           return await sendFile(req, res, item.filePath, item.contentType);
         }
       }

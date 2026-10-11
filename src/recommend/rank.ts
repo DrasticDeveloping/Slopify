@@ -7,6 +7,8 @@ export interface RankOptions {
   mode?: RankMode;
   /** The song radio or autoplay continues from. */
   seedId?: string;
+  /** Radio with web discovery can leave out library songs with no connection to its seed. */
+  requireRelated?: boolean;
   /** Mixes: only songs whose genre is known (the demo catalog), never guessed for imports. */
   genre?: Genre;
   exclude?: Iterable<string>;
@@ -127,6 +129,7 @@ export function recommend(input: RankInput, options: RankOptions = {}): Recommen
     // Radio and autoplay follow the seed: your favourites only count in full when they fit it,
     // so an unrelated saved song never jumps ahead of one that sounds like what was playing.
     const relevance = Math.max(best, followed > 0 ? 1 : 0, Math.min(1, linked));
+    if (seeded && options.requireRelated && relevance <= 0) return [];
     const personalScale = seeded ? 0.3 + 0.7 * relevance : 1;
     let score = 0;
     let top: [ReasonKind, number, string] | null = null;

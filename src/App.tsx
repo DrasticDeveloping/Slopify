@@ -19,7 +19,10 @@ import { getState, setState, useStore, type Route } from "./state/store";
 import { AlbumView, PlaylistView } from "./views/Collection";
 import { HistoryView } from "./views/History";
 import { HomeView } from "./views/Home";
-import { ArtistView, LibraryView, PlaylistsView } from "./views/Library";
+import { MixView } from "./views/Mix";
+import { LibraryView, PlaylistsView } from "./views/Library";
+import { ArtistView } from "./views/Artist";
+import "./recommend/radio";
 import { SearchView } from "./views/Search";
 import { ServerView } from "./views/Server";
 import { StorageView } from "./views/Storage";
@@ -28,6 +31,8 @@ function View({ route }: { route: Route }) {
   switch (route.name) {
     case "home":
       return <HomeView />;
+    case "mix":
+      return <MixView id={route.id} />;
     case "search":
       return <SearchView q={route.q} />;
     case "library":

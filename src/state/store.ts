@@ -12,6 +12,7 @@ export type Route =
   | { name: "playlist"; id: string }
   | { name: "album"; id: string }
   | { name: "artist"; id: string }
+  | { name: "mix"; id: string }
   | { name: "storage" }
   | { name: "server" }
   | { name: "history" };
@@ -84,6 +85,7 @@ export interface PlaybackContext {
   ids: string[];
   /** Why each song was recommended, when the collection came from the recommender. */
   picks?: Record<string, ReasonKind>;
+  radioKey?: string;
 }
 
 export interface AppState {
@@ -327,6 +329,7 @@ export function resetAppData() {
   persistenceStopped = true;
   clearTimeout(persistTimer);
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem("slopify.mix-editions.v1");
   location.reload();
 }
 

@@ -7,6 +7,8 @@ import type { Track } from "../data/types";
 import type { ReasonKind } from "../recommend/taste";
 import { getState, type MenuItem, type Route } from "../state/store";
 import { plural } from "./format";
+import { discoveryKey } from "../recommend/discover";
+import { hideFromMix } from "../recommend/mixes";
 
 export function menuPosition(e: ReactMouseEvent | { clientX: number; clientY: number } | HTMLElement) {
   if (e instanceof HTMLElement) {
@@ -47,13 +49,16 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
   const s = getState();
   const tracks = ids.map((id) => s.tracks[id]).filter(Boolean);
   const single = tracks.length === 1 ? tracks[0] : null;
-  if (single?.stream) return streamMenu(single, opts.context);
+  const mix = opts.context?.route?.name === "mix" ? opts.context.route.id : undefined;
+  const mixHide: MenuItem[] = mix && single ? [{ label: "Hide from this mix", icon: "close", run: () => hideFromMix(mix, single.stream ? discoveryKey(s.artists[single.artistId]?.name, single.title) : single.id) }] : [];
+  if (single?.stream) return [...streamMenu(single, opts.context), ...mixHide];
   const playlist = opts.playlistId ? s.playlists.find((p) => p.id === opts.playlistId) : undefined;
   const anyPlayable = tracks.some((t) => isPlayable(t, s));
   const serverOnly = tracks.filter((t) => t.storage === "server");
   // Streamed recommendations are not on this device, so there is nothing to remove.
   const local = tracks.filter((t) => t.storage !== "server" && !t.stream);
   const items: MenuItem[] = [
+    ...mixHide,
     {
       label: single ? "Play" : `Play ${tracks.length} songs`, icon: "play", disabled: !anyPlayable,
       run: () => (single && opts.context ? playList(opts.context.ids, single.id, opts.context) : playList(ids, ids[0], { label: "Selection" })),

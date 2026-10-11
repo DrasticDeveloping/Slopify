@@ -64,6 +64,9 @@ const cleanTitle = (title: string | null | undefined) => normalize((title ?? "")
 /** Artist names compared without channel suffixes, spacing or punctuation: "DuaLipaVEVO" and "Dua Lipa - Topic" are "dualipa". */
 const cleanArtist = (artist: string | null | undefined) =>
   normalize((artist ?? "").replace(/\s+-\s+topic$/iu, "").replace(/vevo$/iu, "")).replace(/[^\p{L}\p{N}]+/gu, "");
+/** A collaborator's own artist page includes songs explicitly credited to that collaborator. */
+const creditedArtist = (credit: string, name: string) => cleanArtist(credit) === cleanArtist(name)
+  || credit.split(/\s*(?:&|,|\bfeat\.?\s|\bft\.?\s|\bwith\b)\s*/iu).some((part) => cleanArtist(part) === cleanArtist(name));
 /** One song however a service decorates it: "Creo - Topic / Flow (Official Audio)" is "creo|flow". Used for ownership, duplicates and dismissals. */
 export const discoveryKey = (artist: string | null | undefined, title: string | null | undefined) => `${cleanArtist(artist)}|${cleanTitle(title)}`;
 
@@ -155,8 +158,6 @@ export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]
   const known = new Set(library.map((t) => cleanArtist(input.artists[t.artistId]?.name)));
   const penalties = artistPenalties(input, now);
   const damp = (artist: string) => 1 / (1 + (penalties.get(cleanArtist(artist)) ?? 0));
-  const songWeight = reasonWeight(input.taste, "discover-song");
-  const artistWeight = reasonWeight(input.taste, "discover-artist");
 
   const songs = new Map<string, DiscoveryQuery>();
   const maxSong = Math.max(1e-9, ...seeds.songs.map((s) => s.weight));
@@ -167,7 +168,7 @@ export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]
       const key = discoveryKey(s.artist, s.title);
       if (owned.has(key) || input.taste.hiddenDiscoveries[key]) continue;
       // Unfamiliar artists are the point of discovery; known ones still qualify, a little lower.
-      const affinity = s.affinity * (seed.weight / maxSong) * damp(s.artist) / (known.has(cleanArtist(s.artist)) ? 1.25 : 1) * songWeight;
+      const affinity = s.affinity * (seed.weight / maxSong) * damp(s.artist) / (known.has(cleanArtist(s.artist)) ? 1.25 : 1);
       if ((songs.get(key)?.affinity ?? 0) < affinity) songs.set(key, { text: `${s.artist} ${s.title}`, kind: "discover-song", artist: s.artist, title: s.title, because: `“${seed.title}”`, affinity });
     }
   }
@@ -195,7 +196,7 @@ export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]
     [...list].map((q) => ({ ...q, affinity: q.kind === "discover-artist" ? q.affinity * damp(q.text) * weight : q.affinity }))
       .sort((a, b) => b.affinity - a.affinity || a.text.localeCompare(b.text)).slice(0, 80);
   const songPool = rank(songs.values(), 1);
-  const artistPool = rank(artists.values(), artistWeight).map(({ strongest: _, ...q }) => q as DiscoveryQuery);
+  const artistPool = rank(artists.values(), 1).map(({ strongest: _, ...q }) => q as DiscoveryQuery);
 
   const picked: DiscoveryQuery[] = [];
   const sameArtist = (a: DiscoveryQuery, b: DiscoveryQuery) => !!a.artist && !!b.artist && cleanArtist(a.artist) === cleanArtist(b.artist);
@@ -214,13 +215,16 @@ export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]
   // Short on relationships: other songs by the artists you play (the ones you own are filtered out later).
   for (const seed of seeds.artists) {
     if (picked.length >= MIN_QUERIES) break;
-    const q: DiscoveryQuery = { text: seed.name, kind: "discover-search", artist: seed.name, because: `More from ${seed.name}`, affinity: 0 };
+    const q: DiscoveryQuery = { text: `${seed.name}${refresh ? [" songs", " music", " official audio", " singles"][refresh % 4] : ""}`, kind: "discover-search", artist: seed.name, because: `More from ${seed.name}`, affinity: 0 };
     if (!picked.some((x) => x.kind === "discover-search" && sameArtist(x, q))) picked.push(q);
   }
   // Imported songs have no real genre, so a genre search only happens for demo-song taste or a cold start.
   if (picked.length < MIN_QUERIES) {
     const genre = [...tasteProfile(input, now).genres].sort((a, b) => b[1] - a[1])[0]?.[0];
-    if (genre || !seeds.artists.length) picked.push({ text: `${genre ?? "lofi"} music`, kind: "discover-search", because: `Exploring ${genre ?? "lofi"}`, affinity: 0 });
+    if (genre || !seeds.artists.length) {
+      const subject = genre ?? ["indie", "electronic", "pop", "alternative", "soul", "lofi"][refresh % 6];
+      picked.push({ text: `${subject} music`, kind: "discover-search", because: `Exploring ${subject}`, affinity: 0 });
+    }
   }
   // Reserves, in the same order of strength, for when the first wave comes back thin.
   if (firstWave) {
@@ -240,7 +244,7 @@ export const discoverable = (c: Candidate) => Boolean(c.sourceURL) && (c.actiona
  * mixes, and anything that does not really match its query (a loose search hit
  * never borrows a relationship's reason), then spaces out artists and services.
  */
-export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, limit = SHELF_SIZE, now = Date.now()): DiscoveredSong[] {
+export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, limit = SHELF_SIZE, now = Date.now(), exclude: Set<string> = new Set(), perArtist = 2): DiscoveredSong[] {
   const penalties = artistPenalties(input, now);
   const library = Object.values(input.tracks).filter((t) => !t.stream);
   const ownedUrls = new Set(library.map((t) => t.sourceUrl).filter(Boolean));
@@ -256,17 +260,17 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       let artist = meta.artist || candidate.artist || "Unknown artist";
       // Uploads often put the artist in the title ("Dua Lipa - New Rules" on a channel called DuaLipaVEVO).
       const credited = title.match(/^(.+?)\s+[-–—]\s+(.+)$/u);
-      if (credited && [query.artist, artist].some((a) => a && cleanArtist(a) === cleanArtist(credited[1]))) [artist, title] = [credited[1].trim(), credited[2].trim()];
+      if (credited && [query.artist, artist].some((a) => a && creditedArtist(credited[1], a))) [artist, title] = [credited[1].trim(), credited[2].trim()];
       if (!title) return;
       const durations = [meta.durationSeconds, candidate.durationSeconds].filter((d): d is number => typeof d === "number" && Number.isFinite(d));
       if (durations.some((d) => d > 20 * 60) || LONG_FORM.test(title)) return;
       // Every query about an artist (related or "More from") must return that artist; only genre searches range freely.
-      const sameArtist = !!query.artist && cleanArtist(artist) === cleanArtist(query.artist);
+      const sameArtist = !!query.artist && creditedArtist(artist, query.artist);
       if (query.artist && !sameArtist) return;
       if (query.kind === "discover-song" && cleanTitle(title) !== cleanTitle(query.title)) return;
       const key = discoveryKey(artist, title);
       const sourceUrls = [candidate.sourceURL, candidate.sourcePageURL, candidate.importMetadata?.sourceURL, candidate.importMetadata?.sourcePageURL].filter((v): v is string => !!v);
-      if (input.taste.hiddenDiscoveries[key] || ownedKeys.has(key) || seen.has(key) || sourceUrls.some((u) => ownedUrls.has(u) || urls.has(u))) return;
+      if (exclude.has(key) || input.taste.hiddenDiscoveries[key] || ownedKeys.has(key) || seen.has(key) || sourceUrls.some((u) => ownedUrls.has(u) || urls.has(u))) return;
       seen.add(key);
       sourceUrls.forEach((u) => urls.add(u));
       const reason = query.kind === "discover-song" ? `Listeners of ${query.because} also play this · ListenBrainz`
@@ -289,7 +293,7 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       - picked.slice(-2).filter((s) => s.provider === r.provider).length * 0.5;
     results.sort((a, b) => adjusted(b) - adjusted(a) || a.key.localeCompare(b.key));
     const next = results.shift()!;
-    if (picked.filter((s) => cleanArtist(s.artist) === cleanArtist(next.artist)).length < 2) picked.push(next);
+    if (picked.filter((s) => cleanArtist(s.artist) === cleanArtist(next.artist)).length < perArtist) picked.push(next);
   }
   return picked.map(({ score: _score, provider: _provider, ...song }) => song);
 }

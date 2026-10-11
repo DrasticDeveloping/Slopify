@@ -69,7 +69,7 @@ export const meaningfulArtist = (name: string | null | undefined) => !!normalize
 export const songKey = (artist: string | null | undefined, title: string | null | undefined) => `${normalize(artist)}|${normalize(title)}`;
 /** Songs imported from the web or from files; their genre is decoration, not evidence. */
 export const isImported = (t: Track) => !t.stream && Boolean(t.mediaUrl || t.fileUrl);
-export const trustedGenre = (t: Track, artists: Record<string, Artist>): Genre | undefined => (isImported(t) ? undefined : artists[t.artistId]?.genre);
+export const trustedGenre = (t: Track, artists: Record<string, Artist>): Genre | undefined => (t.stream || isImported(t) ? undefined : artists[t.artistId]?.genre);
 export function artistKey(t: Track, artists: Record<string, Artist>) {
   const name = artists[t.artistId]?.name;
   return meaningfulArtist(name) ? normalize(name) : undefined;

@@ -4,9 +4,10 @@ import { Hero } from "../components/Hero";
 import { Icon } from "../components/Icon";
 import { PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
+import { PlaylistSuggestions } from "../components/PlaylistSuggestions";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
-import { downloadTracks, navigate, openModal, toggleShuffle } from "../state/actions";
+import { downloadTracks, navigate, openModal, startCollectionRadio, toggleShuffle } from "../state/actions";
 import { useStore, type Route } from "../state/store";
 
 function ShuffleToggle() {
@@ -121,6 +122,7 @@ export function PlaylistView({ id }: { id: string }) {
           )
         }
       />
+      {editable && ids.length ? <PlaylistSuggestions id={id} name={playlist.name} seedIds={ids} /> : null}
     </div>
   );
 }
@@ -146,6 +148,7 @@ export function AlbumView({ id }: { id: string }) {
       />
       <div className="action-bar">
         <PlayFab ids={ids} label={album.title} route={route} size="lg" />
+        <button type="button" className="btn" onClick={() => startCollectionRadio(ids, album.title)}><Icon name="radio" size={18} />Album radio</button>
         <ShuffleToggle />
         {serverOnly.length ? (
           <button type="button" className="icon-btn lg" onClick={() => downloadTracks(serverOnly)} aria-label="Download album" title="Download album">

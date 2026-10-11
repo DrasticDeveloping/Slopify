@@ -1,4 +1,6 @@
-import { useMemo, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, type MouseEvent, type ReactNode } from "react";
+import { ensureMixes, mixSeed, useMixes } from "../recommend/mixes";
+import { paletteFromSeed } from "../data/library";
 import { Art, PlaylistArt, TrackArt } from "../components/Artwork";
 import { Bars, Icon } from "../components/Icon";
 import { DiscoveryShelf } from "../components/DiscoveryShelf";
@@ -24,6 +26,7 @@ function QuickTile({ title, art, route, ids, onMenu }: { title: string; art: Rea
 }
 
 export function HomeView() {
+  const mixes = useMixes();
   const playlists = useStore((s) => s.playlists);
   const tracks = useStore((s) => s.tracks);
   const artists = useStore((s) => s.artists);
@@ -35,6 +38,11 @@ export function HomeView() {
   const name = useStore((s) => s.settings.profileName);
   // Only changes that can move suggestions (not every listening progress save) re-rank the shelves.
   const tasteRev = useStore((s) => s.taste.rev);
+  useEffect(() => {
+    ensureMixes();
+    const timer = window.setInterval(() => ensureMixes(), 60_000);
+    return () => clearInterval(timer);
+  }, [tasteRev, tracks]);
 
   // By default "Recommended for you" is new songs from the web; library songs only when Settings asks for them.
   const includeLibrary = useStore((s) => s.settings.recommendLibrary);
@@ -148,6 +156,10 @@ export function HomeView() {
 
       {includeLibrary ? <DiscoveryShelf /> : null}
 
+      <Shelf title="Made for you" subtitle="Daily and weekly editions, kept across visits">
+        {mixes.map((mix) => <Card key={mix.id} art={<Art palette={paletteFromSeed(mixSeed(mix))} glyph={mix.kind === "weekly" ? 5 : 2} />} title={mix.name} subtitle={mix.description} onOpen={() => navigate({ name: "mix", id: mix.id })} />)}
+      </Shelf>
+
       {jumpBack.length ? (
       <Shelf title="Jump back in" subtitle="Albums from your recent listening">
         {jumpBack.map((albumId) => {
@@ -202,7 +214,7 @@ export function HomeView() {
             <Card
               key={id}
               round
-              art={<Art palette={a.palette} glyph={4} round label={a.name} />}
+              art={<Art palette={a.palette} glyph={4} round label={a.name} image={a.image} />}
               title={a.name}
               subtitle={`Artist · ${plural(ids.length, "song")}`}
               onOpen={() => navigate({ name: "artist", id })}

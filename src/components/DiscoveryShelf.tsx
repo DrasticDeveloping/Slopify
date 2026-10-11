@@ -1,124 +1,34 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect } from "react";
 import { hashString, paletteFromSeed } from "../data/library";
 import { openTrackMenu } from "../lib/menus";
-import { discoveryQueries, discoverySeeds, fetchRelated, pickDiscoveries, relatedLinks, SHELF_TARGET, type DiscoveredSong, type DiscoveryBatch, type Related } from "../recommend/discover";
-import { hideDiscovery, navigate, playList, rememberSongLinks, saveStream, togglePlay } from "../state/actions";
-import { addDiscoveredSong, canStream, registerStreams, searchDiscovery, streamTrackId, useImport, type Resolution } from "../state/importer";
-import { getState, useStore, type Route } from "../state/store";
+import { type DiscoveredSong, type DiscoveryQuery } from "../recommend/discover";
+import { useDiscovery } from "../recommend/useDiscovery";
+import { addToPlaylist, hideDiscovery, navigate, playList, saveStream, togglePlay } from "../state/actions";
+import { addDiscoveredSong, canStream, registerStreams, streamTrackId, useImport } from "../state/importer";
+import { useStore, type Route } from "../state/store";
 import { Art, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 import { Shelf } from "./Shelf";
 
-/* Kept across visits to Home: relationships for a day, provider searches for ten minutes. */
-const related = new Map<string, { at: number; value: Related }>();
-const searches = new Map<string, { at: number; value: Resolution }>();
-function remember<T>(cache: Map<string, { at: number; value: T }>, key: string, value: T) {
-  cache.delete(key);
-  cache.set(key, { at: Date.now(), value });
-  while (cache.size > 40) cache.delete(cache.keys().next().value!);
-}
-
-const tasteInput = () => {
-  const s = getState();
-  return { tracks: s.tracks, artists: s.artists, playlists: s.playlists, taste: s.taste };
-};
-
 const SUBTITLE = "Songs outside your library, picked from what you play. Play any of them in full, or add it to your library.";
 
-/** Songs outside the library, chosen from your imported favourites. Home's "Recommended for you" by default. */
-export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE }: { title?: string; subtitle?: string }) {
+export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, seedIds, queries, playlistId, limit = 30 }: { title?: string; subtitle?: string; seedIds?: string[]; queries?: DiscoveryQuery[]; playlistId?: string; limit?: number }) {
+  const result = useDiscovery(playlistId ?? title, seedIds, queries, limit);
+  return <DiscoveryCards {...result} title={title} subtitle={subtitle} playlistId={playlistId} />;
+}
+
+export function DiscoveryCards({ songs, loading = false, note = "", refresh, title, subtitle, playlistId, onHide, route = { name: "home" } }: { songs: DiscoveredSong[]; loading?: boolean; note?: string; refresh?: () => void; title: string; subtitle?: string; playlistId?: string; onHide?: (key: string) => void; route?: Route }) {
   const tracks = useStore((s) => s.tracks);
-  const artists = useStore((s) => s.artists);
-  const playlists = useStore((s) => s.playlists);
-  const rev = useStore((s) => s.taste.rev);
-  const available = useImport((s) => s.available);
   const importing = useImport((s) => s.busy === "import");
   const currentId = useStore((s) => s.currentId);
   const isPlaying = useStore((s) => s.isPlaying);
   const buffering = useStore((s) => s.buffering);
-  const [refresh, setRefresh] = useState(0);
-  const [batches, setBatches] = useState<DiscoveryBatch[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [note, setNote] = useState("");
-
-  const seeds = useMemo(() => discoverySeeds(tasteInput()), [rev, tracks, artists, playlists]);
-  const seedKey = JSON.stringify([seeds.songs.map((s) => [s.name, s.title]), seeds.artists.map((s) => s.name)]);
-  // Re-filters as the library and feedback change, without searching again.
-  const songs = useMemo(() => pickDiscoveries(batches, tasteInput()), [batches, rev, tracks]);
-
-  useEffect(() => {
-    if (available === false) {
-      setBatches([]);
-      setNote("Discovery needs the import service. Start the app with npm run dev.");
-      return;
-    }
-    const controller = new AbortController();
-    const deadline = window.setTimeout(() => controller.abort(), 90_000);
-    let live = true;
-    setBatches([]);
-    setLoading(true);
-    setNote("");
-    void (async () => {
-      let graph: Related | null = null;
-      let message = "";
-      if (seeds.songs.length || seeds.artists.length) {
-        const hit = related.get(seedKey);
-        if (hit && Date.now() - hit.at < 86_400_000) graph = hit.value;
-        else {
-          try {
-            graph = await fetchRelated(seeds, controller.signal);
-            remember(related, seedKey, graph);
-            rememberSongLinks(relatedLinks(graph));
-          } catch {
-            message = "ListenBrainz couldn't be reached, so these come from plain searches.";
-          }
-        }
-        if (!live) return;
-      } else message = "Like, save or play songs you've imported and suggestions will follow your taste.";
-
-      const queries = discoveryQueries(graph, seeds, tasteInput(), refresh);
-      if (graph && queries.every((q) => q.kind === "discover-search")) message = "ListenBrainz has no related songs for your favourites yet, so these come from plain searches.";
-      const found: DiscoveryBatch[] = [];
-      let failed = 0;
-      let next = 0;
-      // Three searches at a time; each result shows as soon as it arrives. Reserve searches only run while the shelf is short.
-      const short = () => pickDiscoveries(found, tasteInput()).length < SHELF_TARGET;
-      const worker = async () => {
-        while (next < queries.length && live && short()) {
-          const query = queries[next++];
-          try {
-            const hit = searches.get(query.text);
-            const fresh = hit && Date.now() - hit.at < (hit.value.candidates.length ? 10 : 1) * 60_000;
-            const result = fresh ? hit.value : await searchDiscovery(query.text, AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]));
-            if (!fresh) remember(searches, query.text, result);
-            found.push({ query, candidates: result.candidates });
-            if (live) setBatches([...found]);
-          } catch {
-            failed++;
-          }
-        }
-      };
-      await Promise.all([worker(), worker(), worker()]);
-      if (!live) return;
-      if (failed && failed === queries.length) message = "The music services couldn't be reached. Try again in a moment.";
-      else if (failed && !message) message = "Some searches failed, so there are fewer suggestions than usual.";
-      setNote(message);
-      setLoading(false);
-    })();
-    return () => {
-      live = false;
-      controller.abort();
-      clearTimeout(deadline);
-      setLoading(false);
-    };
-  }, [seedKey, refresh, available]);
-
   // Suggestions become songs the player knows, so they play, queue and show like library songs.
   useEffect(() => registerStreams(songs), [songs]);
   const playable = songs.filter((song) => canStream(song.candidate) && tracks[streamTrackId(song.key)]);
   const ids = playable.map((song) => streamTrackId(song.key));
   const picks = Object.fromEntries(playable.map((song) => [streamTrackId(song.key), song.kind]));
-  const context = { label: title, route: { name: "home" } as Route };
+  const context = { label: title, route };
   const play = (song: DiscoveredSong) => {
     const id = streamTrackId(song.key);
     if (currentId === id) togglePlay();
@@ -135,7 +45,7 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
         action={
           <>
             <button type="button" className="text-btn" disabled={!ids.length} onClick={() => playList(ids, ids[0], { ...context, picks })}>Play all</button>
-            <button type="button" className="text-btn" disabled={loading} onClick={() => { searches.clear(); setRefresh((n) => n + 1); }}>Find more</button>
+            {refresh ? <button type="button" className="text-btn" disabled={loading} onClick={refresh}>Find more</button> : null}
           </>
         }
       >
@@ -155,7 +65,7 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
                 >
                   <Icon name={current && isPlaying ? "pause" : "play"} size={20} />
                 </button>
-                <button type="button" className="icon-btn rec-dismiss" aria-label={`Not interested in ${song.title}`} title="Not interested" onClick={() => hideDiscovery(song.key, song.kind)}>
+                <button type="button" className="icon-btn rec-dismiss" aria-label={`${onHide ? "Hide from this mix:" : "Not interested in"} ${song.title}`} title={onHide ? "Hide from this mix" : "Not interested"} onClick={() => onHide ? onHide(song.key) : hideDiscovery(song.key, song.kind)}>
                   <Icon name="close" size={16} />
                 </button>
               </div>
@@ -168,10 +78,10 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
                 type="button"
                 className="text-btn rec-save"
                 disabled={importing}
-                onClick={() => (known ? saveStream(id) : void addDiscoveredSong(song.candidate, song.kind, { play: false }))}
+                onClick={() => (known ? (playlistId ? addToPlaylist(playlistId, [id]) : saveStream(id)) : void addDiscoveredSong(song.candidate, song.kind, { play: false, ...(playlistId ? { done: (libraryId: string) => addToPlaylist(playlistId, [libraryId]) } : {}) }))}
               >
                 <Icon name="plus" size={14} />
-                {song.candidate.requiresReview ? "Review & add" : "Add to library"}
+                {song.candidate.requiresReview ? "Review & add" : playlistId ? "Add to playlist" : "Add to library"}
               </button>
             </div>
           );

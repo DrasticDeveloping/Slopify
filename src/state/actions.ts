@@ -83,22 +83,38 @@ function addStreamsLater(playlistId: string, ids: string[]) {
 }
 export const dismissStream = (id: string) => streamHooks?.dismiss(id);
 
-/** Audio URLs fetched for streamed songs; the server keeps each for a while, so they are refreshed after five minutes. */
-const streamUrls = new Map<string, { url: string; at: number }>();
+/** Fetched audio is reusable while protected as the current or next song, for at most five minutes. */
+const streamUrls = new Map<string, { url: string; at: number; usable: boolean }>();
 function streamReady(id: string) {
   const ready = streamUrls.get(id);
-  return Boolean(ready && Date.now() - ready.at < 5 * 60_000 && getState().tracks[id]?.mediaUrl === ready.url);
+  return Boolean(ready?.usable && Date.now() - ready.at < 5 * 60_000 && getState().tracks[id]?.mediaUrl === ready.url);
+}
+const fetchingStreams = new Map<string, Promise<string>>();
+function protectStreams() {
+  const s = getState();
+  const ids = [s.currentId, peekNext(s)?.id].filter((id): id is string => Boolean(id));
+  // Once a prefetch loses protection, cache turnover may remove its file before its first play.
+  for (const [id, ready] of streamUrls) if (!ids.includes(id)) ready.usable = false;
+  const tokens = ids.map((id) => streamUrls.get(id)?.url.match(/\/api\/import\/preview\/([a-f0-9]{32})$/)?.[1]).filter((token): token is string => Boolean(token));
+  void fetch("/api/import/protect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokens: [...new Set(tokens)] }) }).catch(() => {});
 }
 function fetchStream(id: string) {
   if (!streamHooks) return Promise.reject(new Error("Streaming is unavailable."));
-  return streamHooks.source(id).then((url) => {
-    streamUrls.set(id, { url, at: Date.now() });
+  const pending = fetchingStreams.get(id);
+  if (pending) return pending;
+  const task = streamHooks.source(id).then((url) => {
+    streamUrls.set(id, { url, at: Date.now(), usable: true });
     setState((s) => (s.tracks[id] ? { tracks: { ...s.tracks, [id]: { ...s.tracks[id], mediaUrl: url } } } : {}));
+    protectStreams();
     return url;
-  });
+  }).finally(() => fetchingStreams.delete(id));
+  fetchingStreams.set(id, task);
+  return task;
 }
 /** Gets the next song's audio ready while this one plays, so a streamed song starts without a wait. */
 function prefetchNext() {
+  radioHooks?.refill();
+  protectStreams();
   const n = peekNext(getState());
   if (n && getState().tracks[n.id]?.stream && !streamReady(n.id)) void fetchStream(n.id).catch(() => undefined);
 }
@@ -112,9 +128,14 @@ export function startRadio(id: string) {
   const s = getState();
   const t = s.tracks[id];
   if (!isPlayable(t, s)) return;
+  if (radioHooks) return radioHooks.start([id], t.title);
   const list = recommendations(s, { mode: "radio", seedId: id, limit: 30 });
   playList([id, ...list.map((r) => r.id)], id, { label: `${t.title} Radio`, picks: picksOf(list) });
 }
+
+let radioHooks: { start(ids: string[], name: string): void; refill(): void; finish(): Promise<void> } | null = null;
+export function connectRadio(hooks: NonNullable<typeof radioHooks>) { radioHooks = hooks; }
+export function startCollectionRadio(ids: string[], name: string) { radioHooks?.start(ids, name); }
 
 /** Undo for a hide: puts back that one entry and takes back its one rejection, keeping anything changed since. */
 function undoHide(field: "hidden" | "hiddenDiscoveries", key: string, kind: ReasonKind | undefined) {
@@ -377,6 +398,9 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
     return;
   }
   previewing = preview;
+  // Consume a prefetched URL once. Replaying asks the server to verify its cached file again.
+  const readyStream = streamUrls.get(id);
+  if (t.stream && readyStream) readyStream.usable = false;
   const range = effectiveRange(id, s);
   engine.load(engineTrack(id), { start: range.start, end: range.end || t.duration || 1e9, autoplay, crossfade });
   startListening(id);
@@ -394,7 +418,7 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
 }
 
 /** Starts playing `ids` from `startId`, remembering where playback came from. */
-export function playList(ids: string[], startId?: string, ctx?: { label: string; route?: Route; picks?: Record<string, ReasonKind> }) {
+export function playList(ids: string[], startId?: string, ctx?: { label: string; route?: Route; picks?: Record<string, ReasonKind>; radioKey?: string }) {
   const s = getState();
   if (listenLocked()) return;
   const playable = ids.filter((id) => isPlayable(s.tracks[id], s));
@@ -405,7 +429,7 @@ export function playList(ids: string[], startId?: string, ctx?: { label: string;
   const first = startId && playable.includes(startId) ? startId : s.shuffle ? playable[Math.floor(Math.random() * playable.length)] : playable[0];
   const order = s.shuffle ? shuffled(playable, first) : playable;
   setState({
-    context: { label: ctx?.label ?? "Library", route: ctx?.route, ids: playable, picks: ctx?.picks },
+    context: { label: ctx?.label ?? "Library", route: ctx?.route, ids: playable, picks: ctx?.picks, radioKey: ctx?.radioKey },
     order,
     index: order.indexOf(first),
   });
@@ -492,6 +516,17 @@ function advance({ crossfade = 0, auto = false, end = "changed" as Listen["end"]
   const s = getState();
   const n = peekNext(s);
   if (!n) {
+    if (auto && s.context?.radioKey && radioHooks && s.isPlaying) {
+      const key = s.context.radioKey;
+      const id = s.currentId;
+      void radioHooks.finish().then(() => {
+        const st = getState();
+        if (st.context?.radioKey !== key || st.currentId !== id || !st.isPlaying) return;
+        if (peekNext(st)) advance({ crossfade, auto, end });
+        else stopAtEnd(st);
+      });
+      return;
+    }
     if (auto && s.settings.autoplay && s.currentId && s.listen.mode !== "guest") {
       // Songs like the one that just ended, skipping what was just played or is still queued.
       const seed = s.tracks[s.currentId];
@@ -1317,6 +1352,7 @@ export function wireEngine() {
   });
 
   // Listening minutes for the history view.
+  window.setInterval(() => { if (getState().currentId) protectStreams(); }, 60_000);
   window.setInterval(() => {
     const st = getState();
     if (!st.isPlaying || !engine.playing) return;

@@ -1,7 +1,7 @@
-import { useMemo, useState, type CSSProperties } from "react";
-import { Art, PlaylistArt } from "../components/Artwork";
+import { useMemo } from "react";
+import { PlaylistArt } from "../components/Artwork";
 import { Icon } from "../components/Icon";
-import { Card, PlayFab, Shelf } from "../components/Shelf";
+import { Card, PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu } from "../lib/menus";
@@ -131,61 +131,6 @@ export function PlaylistsView() {
           <span>Start a fresh collection</span>
         </button>
       </div>
-    </div>
-  );
-}
-
-export function ArtistView({ id }: { id: string }) {
-  const artist = useStore((s) => s.artists[id]);
-  const tracks = useStore((s) => s.tracks);
-  const albums = useStore((s) => s.albums);
-  const [more, setMore] = useState(false);
-  // Library songs only: streamed recommendations are not in it.
-  const popular = useMemo(() => Object.values(tracks).filter((t) => t.artistId === id && !t.stream).sort((a, b) => b.plays - a.plays).map((t) => t.id), [tracks, id]);
-  const discography = useMemo(() => {
-    const owned = new Set(popular.map((t) => tracks[t].albumId));
-    return Object.values(albums).filter((a) => a.artistId === id && owned.has(a.id)).sort((a, b) => b.year - a.year);
-  }, [albums, id, popular, tracks]);
-  if (!artist) return null;
-  const route: Route = { name: "artist", id };
-  const playable = popular.filter((t) => isPlayable(tracks[t]));
-  return (
-    <div className="view">
-      <header className="artist-hero" style={{ "--a": artist.palette.a, "--b": artist.palette.b, "--c": artist.palette.c } as CSSProperties}>
-        <div className="artist-hero-bg" aria-hidden="true">
-          <Art palette={artist.palette} glyph={4} />
-        </div>
-        <div className="artist-hero-copy">
-          <span className="verified">Artist</span>
-          <h1 className="hero-title lg">{artist.name}</h1>
-          <p>{plural(popular.length, "song")} in your library</p>
-        </div>
-      </header>
-      <div className="action-bar">
-        <PlayFab ids={playable} label={artist.name} route={route} size="lg" />
-      </div>
-      <h2 className="section-title">Popular</h2>
-      <TrackList ids={more ? popular.slice(0, 10) : popular.slice(0, 5)} context={{ label: artist.name, route }} showAlbum={false} showPlays sortable={false} />
-      {popular.length > 5 ? (
-        <button type="button" className="text-btn see-more" onClick={() => setMore(!more)}>
-          {more ? "Show less" : "See more"}
-        </button>
-      ) : null}
-      <Shelf title="Discography">
-        {discography.map((a) => {
-          const ids = Object.values(tracks).filter((t) => t.albumId === a.id && isPlayable(t)).map((t) => t.id);
-          return (
-            <Card
-              key={a.id}
-              art={<Art palette={a.palette} glyph={a.glyph} image={a.artworkUrl} />}
-              title={a.title}
-              subtitle={`${a.year} · ${ids.length < 3 ? "Single" : "Album"}`}
-              onOpen={() => navigate({ name: "album", id: a.id })}
-              play={{ ids, label: a.title, route: { name: "album", id: a.id } }}
-            />
-          );
-        })}
-      </Shelf>
     </div>
   );
 }

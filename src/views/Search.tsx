@@ -96,7 +96,7 @@ export function SearchView({ q }: { q: string }) {
           <h2 className="section-title">Top result</h2>
           {top || topSong ? (
             <div className="top-result">
-              {top ? <Art palette={top.palette} glyph={4} round className="top-art" /> : <TrackArt trackId={topSong!.id} className="top-art" />}
+              {top ? <Art palette={top.palette} glyph={4} round className="top-art" image={top.image} /> : <TrackArt trackId={topSong!.id} className="top-art" />}
               <button type="button" className="card-link" onClick={() => navigate(top ? { name: "artist", id: top.id } : { name: "album", id: topSong!.albumId })}>
                 <strong>{top ? top.name : topSong!.title}</strong>
                 <span>
@@ -122,7 +122,7 @@ export function SearchView({ q }: { q: string }) {
       {results.artists.length ? (
         <Shelf title="Artists">
           {results.artists.map((a) => (
-            <Card key={a.id} round art={<Art palette={a.palette} glyph={4} round />} title={a.name} subtitle="Artist" onOpen={() => navigate({ name: "artist", id: a.id })} />
+            <Card key={a.id} round art={<Art palette={a.palette} glyph={4} round image={a.image} />} title={a.name} subtitle="Artist" onOpen={() => navigate({ name: "artist", id: a.id })} />
           ))}
         </Shelf>
       ) : null}
