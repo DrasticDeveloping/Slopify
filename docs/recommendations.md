@@ -63,3 +63,14 @@ Suggested songs play like library songs: the same card with a play button, the q
 - The learned weights adapt to what you keep and skip, which is feedback on suggestions shown, not an unbiased measure of taste.
 
 The app no longer ships placeholder music: the generated demo catalog, its synthesized audio, the starter playlists and the genre mixes were removed, and saved state from older builds drops them on load (web imports are kept).
+## Recommendation collections and artist profiles (October 2026)
+
+Home now includes daily artist-based mixes, Discover Weekly, and On Repeat after qualified listening. Editions live separately from user playlists in `slopify.mix-editions.v1`. They store provider descriptors and library IDs, never audio or transient media URLs. Daily editions expire at local midnight; weekly editions expire on Monday. A Daily Mix takes up to 21 familiar songs and 9 discoveries. Small libraries produce smaller mixes. Opening a mix fills its discoveries once, and later taste changes affect the next edition. Hide from this mix applies locally; Not interested applies everywhere.
+
+Discover Weekly searches three groups of up to five seeds (48 provider searches total) to cover more than the top five favourites. All surfaces share three provider slots, a bounded search cache, and in-flight deduplication. Mixes fetch on opening rather than launching another 48 searches for every Home card. Playlist suggestions show up to five matching songs with Add and Hide. Song, artist, and album radio blend library music with discoveries and request eight-song batches near the queue end.
+
+Find more excludes all earlier displayed song keys for that mounted shelf, before ranking. It rotates relationship queries and fallback search terms. If providers have no unseen matches, the shelf reports exhaustion rather than recycling the same songs.
+
+Artist pages fetch exact identities through the server from TheAudioDB, with MusicBrainz and Wikipedia fallbacks. Collaboration credits may show individual collaborator profiles, clearly labelled. Biographies and releases link to their sources; unavailable fields stay absent. Online releases are metadata links, not invented complete playable albums. Popular tracks resolve through the existing full-song provider playback. No listener counts are fabricated. Apple/iTunes previews are not used.
+
+The playing and next streamed files are protected from preview-cache eviction. Every replay asks the server to verify the cached file; prefetching can be consumed once. Album recommendations and Release Radar remain deferred as recommended in the design review, until verified album grouping and recording-level release dates exist. Album radio currently seeds from the tracks actually present in the album collection.
