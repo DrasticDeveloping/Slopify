@@ -1,7 +1,9 @@
 import { memo, useMemo, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import type { Track } from "../data/types";
 import { formatAdded, formatTime } from "../lib/format";
 import { openTrackMenu } from "../lib/menus";
 import { isPlayable, moveInPlaylist, navigate, playList, toggleLike, togglePlay } from "../state/actions";
+import { PROVIDERS, trackPlatform } from "../state/importer";
 import { getState, setState, useStore, type Route } from "../state/store";
 import { TrackArt } from "./Artwork";
 import { Bars, Icon } from "./Icon";
@@ -66,7 +68,8 @@ export function TrackList({ ids, context, playlistId, showAlbum = true, showAdde
 
   const onDrop = (e: DragEvent, index: number) => {
     setDropAt(null);
-    if (!editable || !playlistId) return;
+    // Files dropped from the desktop carry no index (getData gives "", which Number reads as 0).
+    if (!editable || !playlistId || !e.dataTransfer.types.includes("text/x-resonance-index")) return;
     const from = Number(e.dataTransfer.getData("text/x-resonance-index"));
     if (Number.isNaN(from) || from === index || from + 1 === index || !sorted[from]) return;
     e.preventDefault();
@@ -123,6 +126,20 @@ interface RowProps {
   dropAfter: boolean;
   onDragOverRow: (after: boolean) => void;
   onDropRow: (e: DragEvent, after: boolean) => void;
+}
+
+const PLATFORM_NAMES = Object.fromEntries(PROVIDERS) as Record<(typeof PROVIDERS)[number][0], string>;
+
+/** Where a song that isn't on this device plays from (YouTube, SoundCloud or Spotify), beside its name. */
+export function PlatformBadge({ track }: { track: Track }) {
+  const platform = track.stream || track.storage === "server" ? trackPlatform(track) : null;
+  if (!platform) return null;
+  return (
+    <span className={`badge platform ${platform}`} title={`Plays from ${PLATFORM_NAMES[platform]}; not downloaded`}>
+      <span className={`prov-dot ${platform}`} aria-hidden="true" />
+      {PLATFORM_NAMES[platform]}
+    </span>
+  );
 }
 
 const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, showAdded, showPlays, draggableReorder, dropBefore, dropAfter, onDragOverRow, onDropRow }: RowProps) {
@@ -231,6 +248,7 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
         <span className="title-text">
           <span className="t-name">
             {track.title}
+            <PlatformBadge track={track} />
             {track.kind === "video" ? <span className="badge">VIDEO</span> : null}
             {hasClip ? <span className="badge clip" title="Clip range applied"><Icon name="scissors" size={11} /></span> : null}
           </span>

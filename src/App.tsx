@@ -11,15 +11,23 @@ import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { themes } from "./components/modals/SettingsModal";
 import {
-  closeMenu, closeModal, cycleRepeat, openMenu, goBack, goForward, importFiles, navigate, next, openModal, previous, seek, setVolume,
+  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, previous, seek, setVolume,
   toggleLike, toggleMute, togglePlay, toggleShuffle, wireEngine,
 } from "./state/actions";
-import { syncServerLibrary } from "./state/importer";
+import { prepareMixes } from "./recommend/mixes";
+import { startMusicServer } from "./state/server";
+import { syncLibraryData, watchLibraryData } from "./state/sync";
 import { getState, setState, useStore, type Route } from "./state/store";
-import { AlbumView, MixView, PlaylistView } from "./views/Collection";
+import { AlbumView, PlaylistView } from "./views/Collection";
 import { HistoryView } from "./views/History";
 import { HomeView } from "./views/Home";
-import { ArtistView, LibraryView, PlaylistsView } from "./views/Library";
+import { MixView } from "./views/Mix";
+import { LibraryView, PlaylistsView } from "./views/Library";
+import { ArtistView } from "./views/Artist";
+// Plugs web-discovery radio into the player (see connectRadio).
+import "./recommend/radio";
+import "./state/slipins";
+import { ReleaseView } from "./views/Release";
 import { SearchView } from "./views/Search";
 import { ServerView } from "./views/Server";
 import { StorageView } from "./views/Storage";
@@ -28,6 +36,8 @@ function View({ route }: { route: Route }) {
   switch (route.name) {
     case "home":
       return <HomeView />;
+    case "mix":
+      return <MixView id={route.id} />;
     case "search":
       return <SearchView q={route.q} />;
     case "library":
@@ -40,8 +50,8 @@ function View({ route }: { route: Route }) {
       return <AlbumView id={route.id} />;
     case "artist":
       return <ArtistView id={route.id} />;
-    case "mix":
-      return <MixView genre={route.genre} />;
+    case "release":
+      return <ReleaseView id={route.id} />;
     case "storage":
       return <StorageView />;
     case "server":
@@ -109,6 +119,7 @@ function useShortcuts() {
       if (e.key === "Escape") {
         if (s.menu) closeMenu();
         else if (s.modal) closeModal();
+        else if (s.fullPlayer && document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
         else if (s.fullPlayer) setState({ fullPlayer: false });
         else if (s.selection.length) setState({ selection: [] });
         return;
@@ -244,7 +255,11 @@ export function App() {
 
   useEffect(() => {
     wireEngine();
-    void syncServerLibrary();
+    watchLibraryData();
+    // Today's mixes are made once the library is known, then kept up to date each minute.
+    void startMusicServer(() => syncLibraryData().catch(() => undefined).then(() => prepareMixes()));
+    const mixTimer = window.setInterval(() => void prepareMixes(), 60_000);
+    return () => clearInterval(mixTimer);
   }, []);
 
   const key = routeKey(route);
@@ -293,7 +308,7 @@ export function App() {
                 { label: "Music server", icon: "server", run: () => navigate({ name: "server" }) },
                 { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
                 { separator: true },
-                { label: "Import music", icon: "download", run: () => openModal({ type: "import" }) },
+                { label: "Find music", icon: "search", run: () => findMusic() },
                 { label: "Listen along", icon: "users", run: () => openModal({ type: "listenAlong" }) },
                 { label: "Settings", icon: "settings", run: () => openModal({ type: "settings" }) },
               ],

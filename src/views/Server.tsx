@@ -3,7 +3,9 @@ import { TrackArt } from "../components/Artwork";
 import { Bars, Icon } from "../components/Icon";
 import { formatTime, plural } from "../lib/format";
 import { openTrackMenu } from "../lib/menus";
-import { cancelDownloads, downloadTracks, isOnServer, openModal, playList, setServerStatus, syncPlaylists, togglePlay, uploadMissing } from "../state/actions";
+import { findMusic, isOnServer, openModal, playList, togglePlay } from "../state/actions";
+import { cancelDownloads, connect, downloadTracks } from "../state/server";
+import { syncNow } from "../state/sync";
 import { useStore } from "../state/store";
 import { Empty } from "./Collection";
 
@@ -15,9 +17,8 @@ export function ServerView() {
   const artists = useStore((s) => s.artists);
   const albums = useStore((s) => s.albums);
   const server = useStore((s) => s.server);
-  const url = useStore((s) => s.settings.serverUrl);
+  const url = location.origin;
   const downloadMode = useStore((s) => s.settings.downloadMode);
-  const uploadMode = useStore((s) => s.settings.uploadMode);
   const playlistCount = useStore((s) => s.playlists.filter((p) => !p.system).length);
   const currentId = useStore((s) => s.currentId);
   const isPlaying = useStore((s) => s.isPlaying);
@@ -54,7 +55,7 @@ export function ServerView() {
           </div>
           <span className="spacer" />
           <button type="button" className="btn" onClick={() => openModal({ type: "settings", tab: "server" })}>Connection settings</button>
-          <button type="button" className="btn primary" disabled={server.status === "connecting"} onClick={() => setServerStatus("connected")}>Reconnect</button>
+          <button type="button" className="btn primary" disabled={server.status === "connecting"} onClick={() => void connect({ announce: true })}>Reconnect</button>
         </div>
       </div>
     );
@@ -73,8 +74,8 @@ export function ServerView() {
         <div className="server-id">
           <span className="status-orb connected" aria-hidden="true" />
           <div>
-            <span className="eyebrow">Connected · {downloadMode === "stream_only" ? "Stream only" : "Offline cache"} · {uploadMode === "off" ? "Uploads off" : "Uploads on"}</span>
-            <button type="button" className="server-url" onClick={() => openModal({ type: "settings", tab: "server" })} title="Edit connection">
+            <span className="eyebrow">Connected · {downloadMode === "stream_only" ? "Stream only" : "Device copies"} · Songs saved as links</span>
+            <button type="button" className="server-url" onClick={() => openModal({ type: "settings", tab: "server" })} title="Connection settings">
               <span className="server-url-text">{url.replace(/^https?:\/\//, "")}</span>
               <Icon name="edit" size={16} />
             </button>
@@ -86,12 +87,12 @@ export function ServerView() {
           <div><dt>On device</dt><dd>{onDevice}</dd></div>
         </dl>
         <div className="server-actions">
-          <button type="button" className="btn" onClick={syncPlaylists}><Icon name="sync" size={18} />Sync playlists</button>
-          <button type="button" className="btn" onClick={uploadMissing} disabled={uploadMode !== "local_file"} title={uploadMode !== "local_file" ? "Available in Local files upload mode" : undefined}>
-            <Icon name="upload" size={18} />Upload missing
+          <button type="button" className="btn" onClick={() => void syncNow()}><Icon name="sync" size={18} />Sync library</button>
+          <button type="button" className="btn" onClick={() => findMusic()}>
+            <Icon name="plus" size={18} />Save a song
           </button>
           {active ? (
-            <button type="button" className="btn danger" onClick={cancelDownloads}><Icon name="close" size={18} />Cancel {active}</button>
+            <button type="button" className="btn danger" onClick={() => cancelDownloads()}><Icon name="close" size={18} />Cancel {active}</button>
           ) : (
             <button type="button" className="btn primary" disabled={!canDownload || !remoteIds.length} onClick={() => downloadTracks(remoteIds)}>
               <Icon name="download" size={18} />Download {q || scope !== "all" ? "shown" : "all"}

@@ -1,0 +1,85 @@
+# Builds Slopify for Windows, like T3 Code's nightly releases:
+# - every night, a nightly build of master, skipped when nothing changed since the last one;
+# - on demand (Actions → Release → Run workflow), a nightly or stable build.
+#
+# Releases live in this public source repository. Publishing uses GITHUB_TOKEN.
+# Manual builds default to downloadable artifacts only.
+name: Release
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        type: choice
+        options: [nightly, stable]
+        default: nightly
+      publish:
+        description: Publish a GitHub release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      SLOPIFY_UPDATE_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CHANNEL: ${{ github.event.inputs.channel || 'nightly' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
+
+      - name: Skip if master hasn't changed since the last Nightly
+        id: changes
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: |
+          source=$(git rev-parse HEAD)
+          last=$(gh release list --repo "$SLOPIFY_UPDATE_REPO" --limit 30 --json tagName,isPrerelease \
+            --jq '[.[] | select(.isPrerelease and (.tagName | contains("-nightly.")))][0].tagName // ""')
+          if [[ -n "$last" ]] && gh release view "$last" --repo "$SLOPIFY_UPDATE_REPO" --json body --jq .body | grep -Fxq "Source: $source"; then
+            echo "Nothing new since $last."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.skip != 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        if: steps.changes.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Build
+        if: steps.changes.outputs.skip != 'true'
+        run: |
+          npm run build
+          node scripts/package-windows.mjs --channel $env:CHANNEL
+
+      - name: Keep the build
+        if: steps.changes.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: slopify-windows-${{ env.CHANNEL }}
+          path: |
+            release/*/
+            !release/*/*.blockmap
+          retention-days: 14
+
+      - name: Publish
+        if: steps.changes.outputs.skip != 'true' && (github.event_name == 'schedule' || github.event.inputs.publish == 'true')
+        run: node scripts/publish-release.mjs

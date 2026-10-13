@@ -1,12 +1,19 @@
 import { engine } from "../audio/engine";
-import { hashString, paletteFromSeed, rng } from "../data/library";
+import { hashString, paletteFromSeed } from "../data/library";
 import type { ClipRange, Genre, Playlist, Track } from "../data/types";
 import { todayKey } from "../lib/format";
-import { getState, setState, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast } from "./store";
+import { recommend, type RankOptions } from "../recommend/rank";
+import {
+  countReason, emptyTaste, ListeningCollector, noteLikes, noteSaves, recordListen, setLinks, type Listen, type ReasonKind, type SongLink,
+} from "../recommend/taste";
+import { deviceUrl, dropFromDevice } from "./device";
+import { deleteSong, saveSongChanges } from "./song-api";
+import { defaultSettings, flushPersist, getState, setState, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast } from "./store";
 
 /* ───────────────────────── selectors ───────────────────────── */
 
-export const isOnServer = (t: Track) => t.storage !== "files" || Boolean(t.uploaded);
+/** Saved on the music server (as opposed to added from this computer, or a streamed suggestion). */
+export const isOnServer = (t: Track) => Boolean(t.serverId);
 
 export function isPlayable(t: Track | undefined, s: AppState = getState()) {
   if (!t) return false;
@@ -14,20 +21,17 @@ export function isPlayable(t: Track | undefined, s: AppState = getState()) {
   return true;
 }
 
-/** Songs that appear in the Library: everything stored on this device. */
+/** Songs that appear in the Library: everything saved, on the music server or added from this computer. */
 export function libraryIds(s: AppState) {
-  return s.trackIds.filter((id) => s.tracks[id] && s.tracks[id].storage !== "server");
-}
-
-export function genreOf(t: Track, s: AppState = getState()): Genre {
-  return s.artists[t.artistId]?.genre ?? "indie";
+  return s.trackIds.filter((id) => s.tracks[id] && !s.tracks[id].stream);
 }
 
 export function effectiveRange(id: string, s: AppState = getState()): ClipRange {
   const t = s.tracks[id];
   const duration = t?.duration || 0;
   const r = s.clipDraft?.trackId === id ? s.clipDraft : s.clips[id];
-  if (!r) return { start: 0, end: duration };
+  // A clip that no longer fits (e.g. the length was corrected to something shorter) plays the whole song.
+  if (!r || r.end <= r.start || r.start >= duration) return { start: 0, end: duration };
   return { start: Math.max(0, Math.min(r.start, duration)), end: Math.min(duration, Math.max(r.end, r.start + 1)) };
 }
 
@@ -36,22 +40,224 @@ export function likedIds(s: AppState) {
 }
 
 export function isLiked(id: string, s: AppState = getState()) {
-  return likedIds(s).includes(id);
+  return likedIds(s).includes(savedStreams.get(id) ?? id);
 }
 
-export function mixIds(s: AppState, genre: Genre) {
-  const ids = s.trackIds.filter((id) => s.tracks[id] && s.artists[s.tracks[id].artistId]?.genre === genre && isPlayable(s.tracks[id], s));
-  const r = rng(hashString(genre + todayKey()));
-  return [...ids].sort(() => r() - 0.5).slice(0, 20);
+/** Library songs ranked for you (see src/recommend/rank.ts). */
+export function recommendations(s: AppState, options: RankOptions = {}) {
+  return recommend({ tracks: s.tracks, artists: s.artists, playlists: s.playlists, taste: s.taste, trackIds: s.trackIds, playable: (t) => isPlayable(t, s) }, options);
 }
 
-export const mixNames: Record<Genre, string> = {
-  synthwave: "Neon Mix",
-  lofi: "Chill Mix",
-  house: "Dance Mix",
-  ambient: "Calm Mix",
-  indie: "Indie Mix",
-};
+const picksOf = (list: Array<{ id: string; kind: ReasonKind }>) => Object.fromEntries(list.map((r) => [r.id, r.kind]));
+
+/* ───────────────────────── streamed recommendations ───────────────────────── */
+
+/*
+ * Recommended songs from outside the library play in full, like any other song,
+ * without being added to it. The importer provides the audio (the import API
+ * downloads the whole song once and serves it with seeking) and saving to the
+ * library; these hooks keep this module free of an import cycle.
+ */
+/** Where a streamed song plays from. A video can start on its audio, with `picture` (its video, or null if it has none) to follow. */
+export interface StreamMedia {
+  url: string;
+  picture?: Promise<string | null>;
+}
+interface StreamHooks {
+  /** The full song's audio, or its video. */
+  source(id: string): Promise<StreamMedia>;
+  /** Downloads the song into the library (one at a time, in order), then hands `then` its library id. */
+  save(id: string, then?: (libraryId: string) => void): void;
+  dismiss(id: string): void;
+}
+let streamHooks: StreamHooks | null = null;
+export function connectStreams(hooks: StreamHooks) {
+  streamHooks = hooks;
+}
+/** Streamed songs already saved, and the library copy each became (so the heart stays filled). */
+const savedStreams = new Map<string, string>();
+export function linkSavedStream(streamId: string, libraryId: string) {
+  savedStreams.set(streamId, libraryId);
+}
+export const saveStream = (id: string, then?: (libraryId: string) => void) => streamHooks?.save(id, then);
+const isStream = (id: string) => Boolean(getState().tracks[id]?.stream);
+/** Streamed songs join a playlist (or Liked Songs) once they are in the library, since playlists only keep library songs. */
+function addStreamsLater(playlistId: string, ids: string[]) {
+  for (const id of ids) {
+    const saved = savedStreams.get(id);
+    if (saved) addToPlaylist(playlistId, [saved], { silent: true });
+    else saveStream(id, (libraryId) => addToPlaylist(playlistId, [libraryId], { silent: true }));
+  }
+}
+export const dismissStream = (id: string) => streamHooks?.dismiss(id);
+
+/**
+ * Audio fetched for streamed songs. The server's cache turns over, so fetched
+ * audio is only reused while the server protects it as the current or next song,
+ * and for at most five minutes; it is used once, then fetched (and checked) again.
+ */
+const streamUrls = new Map<string, { url: string; at: number; usable: boolean }>();
+const fetchingStreams = new Map<string, Promise<string>>();
+/** Audio a streamed video plays from until its picture is ready. */
+const standIns = new Set<string>();
+const PROTECT_REFRESH = 60_000;
+let protectedTokens = { key: "", at: 0 };
+
+function streamReady(id: string) {
+  const ready = streamUrls.get(id);
+  return Boolean(ready?.usable && Date.now() - ready.at < 5 * 60_000 && getState().tracks[id]?.mediaUrl === ready.url);
+}
+const previewToken = (url: string | undefined) => url?.match(/\/api\/import\/preview\/([a-f0-9]{32})$/)?.[1];
+
+/** Asks the server to keep the current and next songs' audio; anything else may be evicted, so it is no longer reused. */
+function protectStreams() {
+  const s = getState();
+  const ids = [s.currentId, peekNext(s)?.id].filter((id): id is string => Boolean(id));
+  for (const [id, ready] of streamUrls) if (!ids.includes(id)) ready.usable = false;
+  const tokens = [...new Set(ids.map((id) => previewToken(streamUrls.get(id)?.url)).filter((t): t is string => Boolean(t)))];
+  // The server's protection lasts ten minutes, so an unchanged set only needs renewing now and then.
+  const key = tokens.join(",");
+  if (key === protectedTokens.key && Date.now() - protectedTokens.at < PROTECT_REFRESH) return;
+  protectedTokens = { key, at: Date.now() };
+  void fetch("/api/import/protect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokens }) }).catch(() => {});
+}
+
+/** Fetches a streamed song's audio, sharing a fetch already under way. */
+function fetchStream(id: string) {
+  if (!streamHooks) return Promise.reject(new Error("Streaming is unavailable."));
+  const pending = fetchingStreams.get(id);
+  if (pending) return pending;
+  const task = streamHooks
+    .source(id)
+    .then(({ url, picture }) => {
+      streamUrls.set(id, { url, at: Date.now(), usable: true });
+      setState((s) => (s.tracks[id] ? { tracks: { ...s.tracks, [id]: { ...s.tracks[id], mediaUrl: url } } } : {}));
+      protectStreams();
+      if (picture) {
+        standIns.add(url);
+        void picture.then((videoUrl) => (videoUrl ? showPicture(id, url, videoUrl) : standIns.delete(url)));
+      }
+      return url;
+    })
+    .finally(() => fetchingStreams.delete(id));
+  fetchingStreams.set(id, task);
+  return task;
+}
+/** A streamed video's picture is ready: the song switches from its audio to the video, carrying on from where it is. */
+function showPicture(id: string, audioUrl: string, videoUrl: string) {
+  standIns.delete(audioUrl);
+  // Fetched again since, so this picture belongs to an earlier play.
+  if (getState().tracks[id]?.mediaUrl !== audioUrl) return;
+  const ready = streamUrls.get(id);
+  streamUrls.set(id, { url: videoUrl, at: ready?.at ?? Date.now(), usable: ready?.usable ?? true });
+  setState((s) => (s.tracks[id] ? { tracks: { ...s.tracks, [id]: { ...s.tracks[id], mediaUrl: videoUrl } } } : {}));
+  protectStreams();
+  if (engine.loadedTrackId === id && engine.loadedUrl === audioUrl) engine.swap(engineTrack(id));
+}
+
+/** Gets the next song's audio ready while this one plays, so a streamed song starts without a wait. */
+function prefetchNext() {
+  radioHooks?.refill();
+  protectStreams();
+  const n = peekNext(getState());
+  if (n && getState().tracks[n.id]?.stream && !streamReady(n.id)) void fetchStream(n.id).catch(() => undefined);
+}
+/** The streamed song waiting for its audio, if any. */
+let pendingStream: string | null = null;
+
+/* ───────────────────────── recommendations ───────────────────────── */
+
+/** Plays a song, then songs like it. */
+export function startRadio(id: string) {
+  const s = getState();
+  const t = s.tracks[id];
+  if (!isPlayable(t, s)) return;
+  if (radioHooks) return radioHooks.start([id], t.title);
+  const list = recommendations(s, { mode: "radio", seedId: id, limit: 30 });
+  playList([id, ...list.map((r) => r.id)], id, { label: `${t.title} Radio`, picks: picksOf(list) });
+}
+
+/** Radio with new songs from the web, provided by recommend/radio (which needs this module, so it plugs itself in). */
+interface RadioHooks {
+  /** Plays a radio built from these songs, named after `name`. */
+  start(ids: string[], name: string): void;
+  /** Tops up the playing radio if its queue is running low. */
+  refill(): void;
+  /** Tops up the playing radio now, as its last song ends. */
+  finish(): Promise<void>;
+}
+let radioHooks: RadioHooks | null = null;
+export function connectRadio(hooks: RadioHooks) {
+  radioHooks = hooks;
+}
+/** Album, artist and playlist radio. */
+export function startCollectionRadio(ids: string[], name: string) {
+  radioHooks?.start(ids, name);
+}
+
+/** Undo for a hide: puts back that one entry and takes back its one rejection, keeping anything changed since. */
+function undoHide(field: "hidden" | "hiddenDiscoveries", key: string, kind: ReasonKind | undefined) {
+  const before = getState().taste;
+  return () => setState((s) => {
+    const entries = { ...s.taste[field] };
+    if (before[field][key]) entries[key] = before[field][key];
+    else delete entries[key];
+    const reasons = { ...s.taste.reasons };
+    const counts = kind ? reasons[kind] : undefined;
+    if (kind && counts) reasons[kind] = [counts[0], Math.max(0, counts[1] - 1)];
+    const taste = { ...s.taste, rev: s.taste.rev + 1, reasons };
+    taste[field] = entries;
+    return { taste };
+  });
+}
+
+/** Keeps a song out of recommendations (it still plays everywhere else). `kind` is why it was suggested. */
+export function hideRecommendation(id: string, kind?: ReasonKind) {
+  const undo = undoHide("hidden", id, kind);
+  setState((s) => ({ taste: countReason({ ...s.taste, rev: s.taste.rev + 1, hidden: { ...s.taste.hidden, [id]: Date.now() } }, kind, false) }));
+  toast("Hidden from recommendations", { action: { label: "Undo", run: undo } });
+}
+
+export function unhideRecommendation(id: string) {
+  setState((s) => {
+    const hidden = { ...s.taste.hidden };
+    delete hidden[id];
+    return { taste: { ...s.taste, rev: s.taste.rev + 1, hidden } };
+  });
+  toast("Back in recommendations");
+}
+
+/** Brings back every hidden song and dismissed discovery. */
+export function showHiddenRecommendations() {
+  setState((s) => ({ taste: { ...s.taste, rev: s.taste.rev + 1, hidden: {}, hiddenDiscoveries: {} } }));
+  toast("Hidden suggestions can appear again");
+}
+
+/** Dismisses an outside-library suggestion (`key` from songKey). */
+export function hideDiscovery(key: string, kind: ReasonKind) {
+  const undo = undoHide("hiddenDiscoveries", key, kind);
+  setState((s) => ({ taste: countReason({ ...s.taste, rev: s.taste.rev + 1, hiddenDiscoveries: { ...s.taste.hiddenDiscoveries, [key]: Date.now() } }, kind, false) }));
+  toast("Suggestion dismissed", { action: { label: "Undo", run: undo } });
+}
+
+/** An outside-library suggestion was added: that kind of discovery worked. */
+export function keepDiscovery(kind: ReasonKind) {
+  setState((s) => ({ taste: countReason(s.taste, kind, true) }));
+}
+
+export function rememberSongLinks(links: SongLink[]) {
+  if (links.length) setState((s) => ({ taste: setLinks(s.taste, links) }));
+}
+
+/** Forgets listening, likes and saves as signals, hidden songs and what was learned. Library and playlists stay. */
+export function resetRecommendations() {
+  collector.clear();
+  setState((s) => ({ taste: emptyTaste(s.taste.rev + 1), context: s.context ? { ...s.context, picks: undefined } : null }));
+  const current = getState().currentId;
+  if (current && getState().isPlaying) startListening(current);
+  flushPersist();
+  toast("Recommendations reset", { detail: "Your library and playlists are unchanged." });
+}
 
 /* ───────────────────────── navigation ───────────────────────── */
 
@@ -123,6 +329,13 @@ export function takeMenuOpener() {
   return el;
 }
 export const closeMenu = () => setState({ menu: null });
+
+/** Finding new music happens in Search (songs, artists and pasted links), so this opens it with the search box focused. */
+export function findMusic() {
+  navigate({ name: "search", q: "" });
+  setState((s) => ({ menu: null, searchFocusNonce: s.searchFocusNonce + 1 }));
+}
+
 let modalOpener: HTMLElement | null = null;
 
 /**
@@ -146,6 +359,11 @@ export function closeModal() {
   const s = getState();
   setState({ modal: null, clipDraft: null });
   if (s.clipDraft && s.currentId === s.clipDraft.trackId) syncEngineEnd();
+  // A clip preview still playing when the editor closes becomes ordinary listening from here.
+  if (previewing && s.modal?.type === "clipEditor") {
+    previewing = false;
+    if (s.isPlaying && s.currentId) startListening(s.currentId);
+  }
 }
 
 export function updateSettings(patch: Partial<Settings>) {
@@ -164,19 +382,127 @@ function shuffled(ids: string[], first?: string) {
   return first ? [first, ...rest] : rest;
 }
 
+/** Where a song's file can be read from now (this session's file, this device's copy, or the music server), if anywhere. */
+export function mediaUrlOf(id: string) {
+  const t = getState().tracks[id];
+  return t ? (t.fileUrl ?? deviceUrl(id) ?? t.mediaUrl) : undefined;
+}
+
 function engineTrack(id: string) {
   const s = getState();
   const t = s.tracks[id];
-  const fileUrl = t.fileUrl ?? t.mediaUrl;
-  return { id, seed: t.seed, genre: genreOf(t, s), fileUrl, video: Boolean(fileUrl) && t.kind === "video" };
+  // This session's file, else this device's kept copy, else the music server.
+  const fileUrl = t.fileUrl ?? deviceUrl(id) ?? t.mediaUrl;
+  return { id, fileUrl, video: Boolean(fileUrl) && t.kind === "video" && !standIns.has(fileUrl!) };
 }
 
-function load(id: string, { autoplay = true, crossfade = 0, remember = true } = {}) {
+/* Listening credit: what was actually heard of each playback, for recommendations. */
+const collector = new ListeningCollector();
+/** A clip preview is not a listen; nothing is recorded until normal playback resumes. */
+let previewing = false;
+/** The server song whose playback failed and was tried again; a second failure moves on. */
+let retriedError: string | null = null;
+let lastListenSave = 0;
+
+function saveListening(end: Listen["end"] = "playing") {
+  const listen = collector.listen;
+  if (!listen || listen.heard <= 0) return;
+  setState((s) => ({ taste: recordListen(s.taste, { ...listen, end }) }));
+  lastListenSave = performance.now();
+}
+
+function finishListening(end: Listen["end"]) {
+  saveListening(end);
+  collector.clear();
+}
+
+function startListening(id: string) {
+  const s = getState();
+  if (previewing || s.clipDraft || s.listen.mode === "guest") return;
+  const range = effectiveRange(id, s);
+  const via = s.context?.picks?.[id];
+  collector.start({
+    id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`,
+    trackId: id,
+    at: Date.now(),
+    heard: 0,
+    covered: 0,
+    span: Math.max(1, range.end - range.start),
+    end: "playing",
+    ...(via ? { via } : {}),
+  });
+  lastListenSave = performance.now();
+}
+
+/* Slip-ins (slipins.ts): marked songs played now and then between the songs you play. */
+interface SlipInHooks {
+  /** A slip-in to play before `nextId`, or null. */
+  pick(s: AppState, nextId: string): string | null;
+  /** How a slipped-in song's playback ended. */
+  ended(id: string, end: Listen["end"], listen: Listen | null): void;
+  playing(id: string, slipped: boolean): void;
+  forget(ids: string[]): void;
+}
+let slipHooks: SlipInHooks | null = null;
+export function connectSlipIns(hooks: SlipInHooks) {
+  slipHooks = hooks;
+}
+/** The song playing now was slipped in. */
+let slippedIn: string | null = null;
+
+/** `end` says how the previous song's playback ended. */
+function load(id: string, { autoplay = true, crossfade = 0, remember = true, end = "changed" as Listen["end"], preview = false, slip = false } = {}) {
   const s = getState();
   const t = s.tracks[id];
   if (!t) return;
+  pendingStream = null;
+  if (s.buffering) setState({ buffering: null });
+  engine.captureProgress();
+  // Any new start ends a slipped-in playback, including choosing that same song yourself.
+  if (slippedIn && s.currentId === slippedIn) slipHooks?.ended(slippedIn, end, collector.listen);
+  finishListening(end);
+  if (t.stream && !streamReady(id)) {
+    // The song shows as current (buffering) while its audio is fetched, then plays from the start.
+    engine.unload();
+    pendingStream = id;
+    setState((st) => ({
+      currentId: id,
+      isPlaying: autoplay,
+      buffering: id,
+      history: remember && st.currentId && st.currentId !== id ? [st.currentId, ...st.history].slice(0, 50) : st.history,
+    }));
+    updateMediaSession();
+    fetchStream(id).then(
+      () => {
+        if (pendingStream !== id) return;
+        pendingStream = null;
+        setState({ buffering: null });
+        load(id, { autoplay, remember: false, preview, slip });
+      },
+      (error: { message?: string } | null) => {
+        if (pendingStream !== id) return;
+        pendingStream = null;
+        setState({ buffering: null, isPlaying: false });
+        toast(`Couldn't play “${t.title}”`, { tone: "error", detail: error?.message || "Its source isn't available right now." });
+        advance({ auto: true, end: "error" });
+      },
+    );
+    return;
+  }
+  previewing = preview;
+  if (slip) {
+    slippedIn = id;
+    slipHooks?.playing(id, true);
+  } else if (slippedIn) {
+    slippedIn = null;
+    slipHooks?.playing(id, false);
+  }
+  // Consume a prefetched URL once. Replaying asks the server to verify its cached file again.
+  const readyStream = streamUrls.get(id);
+  if (t.stream && readyStream) readyStream.usable = false;
   const range = effectiveRange(id, s);
   engine.load(engineTrack(id), { start: range.start, end: range.end || t.duration || 1e9, autoplay, crossfade });
+  startListening(id);
   const prev = s.currentId;
   setState((st) => ({
     currentId: id,
@@ -187,10 +513,11 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true } = 
     listens: [{ id, at: Date.now() }, ...st.listens].slice(0, 300),
   }));
   updateMediaSession();
+  prefetchNext();
 }
 
 /** Starts playing `ids` from `startId`, remembering where playback came from. */
-export function playList(ids: string[], startId?: string, ctx?: { label: string; route?: Route }) {
+export function playList(ids: string[], startId?: string, ctx?: { label: string; route?: Route; picks?: Record<string, ReasonKind>; radioKey?: string }) {
   const s = getState();
   if (listenLocked()) return;
   const playable = ids.filter((id) => isPlayable(s.tracks[id], s));
@@ -201,11 +528,26 @@ export function playList(ids: string[], startId?: string, ctx?: { label: string;
   const first = startId && playable.includes(startId) ? startId : s.shuffle ? playable[Math.floor(Math.random() * playable.length)] : playable[0];
   const order = s.shuffle ? shuffled(playable, first) : playable;
   setState({
-    context: { label: ctx?.label ?? "Library", route: ctx?.route, ids: playable },
+    context: { label: ctx?.label ?? "Library", route: ctx?.route, ids: playable, picks: ctx?.picks, radioKey: ctx?.radioKey },
     order,
     index: order.indexOf(first),
   });
   load(first);
+}
+
+/**
+ * Brings the queue up to date when a list still filling in (a release finding its
+ * songs) is the one playing: the new songs join in list order, and the current
+ * song carries on uninterrupted.
+ */
+export function extendContext(route: Route, ids: string[]) {
+  const s = getState();
+  if (!s.context || !s.currentId || JSON.stringify(s.context.route) !== JSON.stringify(route)) return;
+  const playable = ids.filter((id) => isPlayable(s.tracks[id], s));
+  const added = playable.filter((id) => !s.context!.ids.includes(id));
+  if (!added.length || !playable.includes(s.currentId)) return;
+  const order = s.shuffle ? [...s.order, ...added] : playable;
+  setState({ context: { ...s.context, ids: playable }, order, index: order.indexOf(s.currentId) });
 }
 
 export function playTrackNow(id: string) {
@@ -219,6 +561,13 @@ export function playTrackNow(id: string) {
 export function togglePlay() {
   const s = getState();
   if (listenLocked()) return;
+  if (pendingStream && pendingStream === s.currentId) {
+    // Paused before its audio arrived: stop waiting. Play fetches it again (quickly, from the server's copy).
+    pendingStream = null;
+    setState({ isPlaying: false, buffering: null });
+    updateMediaSession();
+    return;
+  }
   if (!s.currentId) {
     const liked = likedIds(s);
     playList(liked.length ? liked : libraryIds(s), undefined, { label: "Liked Songs", route: { name: "playlist", id: "liked" } });
@@ -232,8 +581,18 @@ export function togglePlay() {
     load(s.currentId);
     return;
   }
-  if (s.isPlaying) engine.pause();
-  else engine.play();
+  if (s.isPlaying) {
+    engine.pause();
+    saveListening();
+  } else {
+    // Playing on after a clip preview counts again, from here.
+    if (previewing && !s.clipDraft) {
+      previewing = false;
+      startListening(s.currentId);
+    }
+    engine.play();
+    if (!collector.listen) startListening(s.currentId);
+  }
   setState({ isPlaying: !s.isPlaying });
   updateMediaSession();
 }
@@ -267,32 +626,59 @@ function stopAtEnd(s: AppState) {
   updateMediaSession();
 }
 
-function advance({ crossfade = 0, auto = false } = {}) {
+function advance({ crossfade = 0, auto = false, end = "changed" as Listen["end"] } = {}) {
   const s = getState();
   const n = peekNext(s);
   if (!n) {
+    // A radio's last song: top it up and carry on, or stop if nothing more was found.
+    if (auto && s.context?.radioKey && radioHooks && s.isPlaying) {
+      const key = s.context.radioKey;
+      const id = s.currentId;
+      void radioHooks.finish().then(() => {
+        const st = getState();
+        if (st.context?.radioKey !== key || st.currentId !== id || !st.isPlaying) return;
+        if (peekNext(st)) return advance({ crossfade, auto, end });
+        finishListening(end);
+        stopAtEnd(st);
+      });
+      return;
+    }
     if (auto && s.settings.autoplay && s.currentId && s.listen.mode !== "guest") {
-      const genre = genreOf(s.tracks[s.currentId], s);
-      const pool = mixIds(s, genre).filter((id) => id !== s.currentId);
-      if (pool.length) {
-        toast("Autoplay is on", { detail: `Keeping the ${mixNames[genre]} going.` });
-        playList(pool, pool[0], { label: mixNames[genre], route: { name: "mix", genre } });
+      // Songs like the one that just ended, skipping what was just played or is still queued.
+      const seed = s.tracks[s.currentId];
+      const list = recommendations(s, { mode: "autoplay", seedId: s.currentId, exclude: [...s.upNext, ...s.history.slice(0, 20)], limit: 30 });
+      if (list.length) {
+        const ids = list.map((r) => r.id);
+        toast("Autoplay is on", { detail: `Playing songs like “${seed.title}”.` });
+        setState({ context: { label: `Autoplay · ${seed.title}`, ids, picks: picksOf(list) }, order: ids, index: 0, upNext: [] });
+        load(ids[0], { crossfade, end });
         return;
       }
     }
-    if (auto) stopAtEnd(s);
+    if (auto) {
+      finishListening(end);
+      stopAtEnd(s);
+    }
     else if (s.currentId) toast("End of queue", { detail: "Turn on repeat or add more songs." });
     return;
   }
   // Queued songs are dropped up to (and including) the one we play; unplayable ones are discarded too.
   const fromUpNext = n.upNextSkip > 0 && s.upNext[n.upNextSkip - 1] === n.id;
+  // A slip-in plays before the list's next song, which then follows it: the list's place doesn't move.
+  // Songs you queued yourself are never held up for one.
+  const slip = !fromUpNext && !previewing && !s.clipDraft ? slipHooks?.pick(s, n.id) : null;
+  if (slip) {
+    setState({ upNext: [] });
+    load(slip, { crossfade, end, slip: true });
+    return;
+  }
   setState({ upNext: fromUpNext ? s.upNext.slice(n.upNextSkip) : [], index: n.index });
-  load(n.id, { crossfade });
+  load(n.id, { crossfade, end });
 }
 
 export function next() {
   if (listenLocked()) return;
-  advance();
+  advance({ end: "skipped" });
 }
 
 /** Goes back to the song that actually played before this one (not just the previous index). */
@@ -381,15 +767,32 @@ export function toggleShuffle() {
   const s = getState();
   const on = !s.shuffle;
   if (s.context && s.currentId) {
-    const order = on ? shuffled(s.context.ids, s.currentId) : s.context.ids;
-    const index = Math.max(0, order.indexOf(s.currentId));
+    const ids = s.context.ids;
+    const inCollection = ids.includes(s.currentId);
+    const order = on ? shuffled(ids, inCollection ? s.currentId : undefined) : ids;
+    // A queued song from outside the collection leaves the cursor on the collection song it interrupted
+    // (-1 = before the first song, so Next plays order[0]).
+    const index = inCollection ? order.indexOf(s.currentId) : on ? -1 : order.indexOf(s.order[s.index]);
     setState({ shuffle: on, order, index });
   } else setState({ shuffle: on });
 }
 
+let repeatToast = -1;
+
+/** Off → loop this song → repeat the whole collection → off. Looping the song comes first: it is what a loop button usually means. */
 export function cycleRepeat() {
-  setState((s) => ({ repeat: s.repeat === "off" ? "all" : s.repeat === "all" ? "one" : "off" }));
+  setState((s) => ({ repeat: s.repeat === "off" ? "one" : s.repeat === "one" ? "all" : "off" }));
   applyEngineSettings();
+  const s = getState();
+  const title = s.currentId ? s.tracks[s.currentId]?.title : undefined;
+  const label = s.context?.label;
+  const [message, detail] =
+    s.repeat === "one" ? [title ? `Looping “${title}”` : "Looping this song", `Press again to repeat ${label ?? "the whole queue"}.`]
+    : s.repeat === "all" ? [`Repeating ${label ?? "the queue"}`, "Press again to turn repeat off."]
+    : ["Repeat off", undefined];
+  // Rapid presses update one toast instead of stacking three.
+  if (getState().toasts.some((t) => t.id === repeatToast)) updateToast(repeatToast, { message, detail }, 2600);
+  else repeatToast = toast(message, { detail, duration: 2600 });
 }
 
 export function setVolume(volume: number) {
@@ -424,6 +827,7 @@ function applyEngineSettings() {
   const s = getState();
   engine.lead = s.settings.crossfade && s.repeat !== "one" ? s.settings.crossfadeSeconds : 0;
   engine.setNormalize(s.settings.normalize);
+  engine.setTone({ ...defaultSettings.tone, ...s.settings.tone });
 }
 
 /* ───────────────────────── library mutations ───────────────────────── */
@@ -432,9 +836,20 @@ function updatePlaylist(id: string, fn: (p: Playlist) => Playlist) {
   setState((s) => ({ playlists: s.playlists.map((p) => (p.id === id ? fn(p) : p)) }));
 }
 
+/* Likes and saves made here are taste signals; each counts only while the song stays liked or saved. */
+const noteLiked = (ids: string[]) => setState((s) => ({ taste: noteLikes(s.taste, ids) }));
+const noteSaved = (playlistId: string, ids: string[]) => setState((s) => ({ taste: noteSaves(s.taste, playlistId, ids) }));
+
 export function toggleLike(id: string) {
+  const saved = savedStreams.get(id);
+  if (saved) return toggleLike(saved);
+  if (isStream(id)) {
+    addStreamsLater("liked", [id]);
+    return;
+  }
   const liked = isLiked(id);
   updatePlaylist("liked", (p) => ({ ...p, trackIds: liked ? p.trackIds.filter((t) => t !== id) : [id, ...p.trackIds] }));
+  if (!liked) noteLiked([id]);
   toast(liked ? "Removed from Liked Songs" : "Added to Liked Songs", {
     tone: liked ? "default" : "success",
     action: { label: "Undo", run: () => toggleLike(id) },
@@ -442,23 +857,32 @@ export function toggleLike(id: string) {
 }
 
 export function likeMany(ids: string[]) {
+  // Streamed songs join the library first, then get liked.
+  const streamed = ids.filter((id) => isStream(id) && !savedStreams.has(id));
+  addStreamsLater("liked", streamed);
+  ids = ids.filter((id) => !streamed.includes(id)).map((id) => savedStreams.get(id) ?? id);
+  if (!ids.length) return;
   const set = new Set(likedIds(getState()));
   const fresh = ids.filter((id) => !set.has(id));
   updatePlaylist("liked", (p) => ({ ...p, trackIds: [...fresh, ...p.trackIds] }));
+  noteLiked(fresh);
   toast(`${fresh.length} songs added to Liked Songs`, { tone: "success" });
 }
 
 export function createPlaylist(name: string, ids: string[] = [], description = "") {
   const id = `p${Date.now().toString(36)}`;
+  const streamed = ids.filter(isStream);
   const playlist: Playlist = {
     id,
     name: name.trim() || "My Playlist",
     description,
-    trackIds: [...new Set(ids)],
+    trackIds: [...new Set(ids.filter((t) => !isStream(t)))],
     createdAt: Date.now(),
     palette: paletteFromSeed(hashString(id + name)),
   };
   setState((s) => ({ playlists: [...s.playlists, playlist] }));
+  noteSaved(id, playlist.trackIds);
+  addStreamsLater(id, streamed);
   return id;
 }
 
@@ -489,9 +913,20 @@ export function addToPlaylist(playlistId: string, ids: string[], { silent = fals
   const s = getState();
   const p = s.playlists.find((pl) => pl.id === playlistId);
   if (!p) return;
+  const streamed = ids.filter(isStream);
+  if (streamed.length) {
+    addStreamsLater(playlistId, streamed);
+    ids = ids.filter((id) => !isStream(id));
+    if (!ids.length) {
+      if (!silent) toast(streamed.length === 1 ? "Adding it to your library first" : `Adding ${streamed.length} songs to your library first`, { detail: `Then they join “${p.name}”.` });
+      return;
+    }
+  }
   const existing = new Set(p.trackIds);
   const fresh = ids.filter((id) => !existing.has(id));
   updatePlaylist(playlistId, (pl) => ({ ...pl, trackIds: [...pl.trackIds, ...fresh] }));
+  if (playlistId === "liked") noteLiked(fresh);
+  else noteSaved(playlistId, fresh);
   if (silent) return;
   if (!fresh.length) toast(`Already in “${p.name}”`);
   else toast(fresh.length === 1 ? `Added to “${p.name}”` : `${fresh.length} songs added to “${p.name}”`, { tone: "success" });
@@ -535,36 +970,87 @@ const pendingRevokes = new Map<string, number>();
 /** Imported songs whose server copy is deleted once the undo window closes, keyed by server id. */
 const pendingServerDeletes = new Map<string, number>();
 
+/** Server deletes not yet confirmed, kept across reloads so a failed one is retried instead of the song coming back. */
+const UNCONFIRMED_DELETES_KEY = "slopify.unconfirmedServerDeletes";
+function unconfirmedDeletes(): string[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(UNCONFIRMED_DELETES_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function setUnconfirmedDeletes(ids: string[]) {
+  try {
+    if (ids.length) localStorage.setItem(UNCONFIRMED_DELETES_KEY, JSON.stringify(ids));
+    else localStorage.removeItem(UNCONFIRMED_DELETES_KEY);
+  } catch {
+    // Storage blocked: the delete is still attempted, just not retried.
+  }
+}
+
 function deleteOnServer(serverId: string) {
   clearTimeout(pendingServerDeletes.get(serverId));
   pendingServerDeletes.delete(serverId);
-  void fetch(`/api/library/${encodeURIComponent(serverId)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+  // Recorded first: on page exit the response may never be seen.
+  setUnconfirmedDeletes([...new Set([...unconfirmedDeletes(), serverId])]);
+  void deleteSong(serverId, { keepalive: true })
+    .then(() => setUnconfirmedDeletes(unconfirmedDeletes().filter((id) => id !== serverId)))
+    .catch(() => undefined);
+}
+
+/** Retries server deletes that never got confirmed (run once the import API answers at startup). */
+export function retryServerDeletes() {
+  for (const serverId of unconfirmedDeletes()) deleteOnServer(serverId);
 }
 
 export function isServerDeletePending(serverId: string) {
-  return pendingServerDeletes.has(serverId);
+  return pendingServerDeletes.has(serverId) || unconfirmedDeletes().includes(serverId);
 }
 
 /** A re-import of a song that is waiting to be deleted keeps the server copy. */
 export function cancelServerDelete(serverId: string) {
   clearTimeout(pendingServerDeletes.get(serverId));
   pendingServerDeletes.delete(serverId);
+  const unconfirmed = unconfirmedDeletes();
+  if (unconfirmed.includes(serverId)) setUnconfirmedDeletes(unconfirmed.filter((id) => id !== serverId));
 }
 
 /**
- * Removes songs from this device. Imported files disappear entirely; server
- * downloads revert to stream-only. Undo restores just those songs.
+ * Removes songs from this device. Songs added from this computer disappear
+ * entirely; songs saved on the music server keep streaming from it. Undo
+ * restores them.
  */
 export function deleteFromDevice(ids: string[]) {
   const s = getState();
-  const affected = ids.map((id) => s.tracks[id]).filter((t) => t && t.storage !== "server");
-  if (!affected.length) return;
-  const removed = new Set(affected.filter((t) => t.storage !== "downloads").map((t) => t.id));
-  const demoted = affected.filter((t) => t.storage === "downloads").map((t) => t.id);
+  const affected = ids.map((id) => s.tracks[id]).filter((t) => t && (t.storage === "files" || t.storage === "downloads"));
+  removeSongs(affected.filter((t) => t.storage === "files"), affected.filter((t) => t.storage === "downloads").map((t) => t.id), {
+    one: (t) => `Removed “${t.title}” from this device`,
+    many: (n) => `${n} songs removed from this device`,
+  });
+}
+
+/** Deletes songs from the library: from the music server too, after the undo window. */
+export function deleteFromLibrary(ids: string[]) {
+  const s = getState();
+  removeSongs(ids.map((id) => s.tracks[id]).filter((t) => t && !t.stream), [], {
+    one: (t) => `Deleted “${t.title}”`,
+    many: (n) => `${n} songs deleted`,
+  });
+}
+
+/**
+ * `affected` leave the library (server songs are deleted from the server once
+ * the undo window passes); `demoted` only lose this device's copy and stream again.
+ */
+function removeSongs(affected: Track[], demoted: string[], text: { one: (t: Track) => string; many: (n: number) => string }) {
+  const s = getState();
+  if (!affected.length && !demoted.length) return;
+  const removed = new Set(affected.map((t) => t.id));
   const keep = (id: string) => !removed.has(id);
 
   const record = {
-    tracks: affected.filter((t) => removed.has(t.id)),
+    tracks: affected,
     trackIndex: s.trackIds.map((id, index) => ({ id, index })).filter((x) => removed.has(x.id)),
     playlists: Object.fromEntries(s.playlists.map((p) => [p.id, p.trackIds.map((id, index) => ({ id, index })).filter((x) => removed.has(x.id))])),
     demoted,
@@ -596,29 +1082,29 @@ export function deleteFromDevice(ids: string[]) {
     navigator.mediaSession.playbackState = "none";
   }
 
-  // Free session-only file blobs once the undo window has passed.
+  // Once the undo window has passed: free this session's file blobs, forget device copies, delete server songs.
+  const later = (id: string, run: () => void) => pendingRevokes.set(id, window.setTimeout(() => {
+    run();
+    pendingRevokes.delete(id);
+  }, 15_000));
   for (const t of record.tracks) {
-    if (!t.fileUrl) continue;
-    const url = t.fileUrl;
-    pendingRevokes.set(t.id, window.setTimeout(() => {
-      URL.revokeObjectURL(url);
-      pendingRevokes.delete(t.id);
-    }, 15_000));
-  }
-  // Web imports live in the import API's library; delete those files after the same window.
-  for (const t of record.tracks) {
+    later(t.id, () => {
+      if (t.fileUrl) URL.revokeObjectURL(t.fileUrl);
+      if (t.storage === "downloads") void dropFromDevice(t.id);
+    });
     if (!t.serverId) continue;
     const serverId = t.serverId;
     clearTimeout(pendingServerDeletes.get(serverId));
     pendingServerDeletes.set(serverId, window.setTimeout(() => deleteOnServer(serverId), 15_000));
   }
+  for (const id of demoted) later(id, () => void dropFromDevice(id));
 
   const undo = () => {
-    for (const t of record.tracks) {
-      clearTimeout(pendingRevokes.get(t.id));
-      pendingRevokes.delete(t.id);
-      if (t.serverId) cancelServerDelete(t.serverId);
+    for (const id of [...removed, ...demoted]) {
+      clearTimeout(pendingRevokes.get(id));
+      pendingRevokes.delete(id);
     }
+    for (const t of record.tracks) if (t.serverId) cancelServerDelete(t.serverId);
     setState((st) => {
       const tr = { ...st.tracks };
       for (const t of record.tracks) tr[t.id] = t;
@@ -631,115 +1117,12 @@ export function deleteFromDevice(ids: string[]) {
     });
   };
 
-  toast(affected.length === 1 ? `Removed “${affected[0].title}” from this device` : `${affected.length} songs removed from this device`, {
-    detail: demoted.length ? "Server copies stay available to stream." : undefined,
+  const all = [...affected, ...demoted.map((id) => s.tracks[id])];
+  toast(all.length === 1 ? text.one(all[0]) : text.many(all.length), {
+    detail: demoted.length ? "They stay on the music server to stream." : undefined,
     action: { label: "Undo", run: undo },
     duration: 8000,
   });
-}
-
-/* ───────────────────────── server transfers ───────────────────────── */
-
-let transferToast = 0;
-function refreshTransferToast() {
-  const d = getState().server.downloads;
-  const ids = Object.keys(d);
-  if (!ids.length) {
-    if (transferToast) updateToast(transferToast, { message: "Downloads complete", detail: "Songs are saved on this device.", progress: undefined, tone: "success", sticky: false }, 2600);
-    transferToast = 0;
-    return;
-  }
-  const avg = ids.reduce((sum, id) => sum + d[id], 0) / ids.length;
-  const detail = `${ids.length} remaining · ${Math.round(avg * 100)}%`;
-  if (!transferToast) transferToast = toast("Downloading from server", { detail, progress: avg, sticky: true });
-  else updateToast(transferToast, { detail, progress: avg });
-}
-
-export function downloadTracks(ids: string[]) {
-  const s = getState();
-  if (s.server.status !== "connected") {
-    toast("Server offline", { tone: "error", detail: "Reconnect in Settings → Server." });
-    return;
-  }
-  const targets = ids.filter((id) => s.tracks[id]?.storage === "server" && s.server.downloads[id] === undefined);
-  if (!targets.length) return;
-  setState((st) => ({ server: { ...st.server, downloads: { ...st.server.downloads, ...Object.fromEntries(targets.map((id) => [id, 0])) } } }));
-  refreshTransferToast();
-  targets.forEach((id, i) => {
-    const speed = 0.06 + Math.random() * 0.08;
-    const timer = window.setInterval(() => {
-      const st = getState();
-      const p = st.server.downloads[id];
-      if (p === undefined) return clearInterval(timer);
-      const np = Math.min(1, p + speed * (i < 3 ? 1 : 0.6));
-      if (np >= 1) {
-        clearInterval(timer);
-        const t = st.tracks[id];
-        const downloads = { ...st.server.downloads };
-        delete downloads[id];
-        setState({
-          server: { ...st.server, downloads },
-          tracks: { ...st.tracks, [id]: { ...t, storage: "downloads", size: Math.round(t.duration * 44_000), addedAt: Date.now() } },
-        });
-      } else {
-        setState({ server: { ...st.server, downloads: { ...st.server.downloads, [id]: np } } });
-      }
-      refreshTransferToast();
-    }, 160 + i * 20);
-  });
-}
-
-export function cancelDownloads() {
-  setState((s) => ({ server: { ...s.server, downloads: {} } }));
-  if (transferToast) dismissToast(transferToast);
-  transferToast = 0;
-  toast("Downloads cancelled");
-}
-
-export function uploadMissing() {
-  const s = getState();
-  const missing = s.trackIds.filter((id) => s.tracks[id]?.storage === "files" && !isOnServer(s.tracks[id]));
-  if (!missing.length) {
-    toast("Everything is already on the server", { tone: "success" });
-    return;
-  }
-  const id = toast("Uploading to server", { detail: `0 of ${missing.length}`, progress: 0, sticky: true });
-  let done = 0;
-  const timer = window.setInterval(() => {
-    done++;
-    const st = getState();
-    const tid = missing[done - 1];
-    // Skip songs removed from the device while the upload was running.
-    if (st.tracks[tid]) setState({ tracks: { ...st.tracks, [tid]: { ...st.tracks[tid], uploaded: true } } });
-    updateToast(id, { detail: `${done} of ${missing.length}`, progress: done / missing.length });
-    if (done >= missing.length) {
-      clearInterval(timer);
-      updateToast(id, { message: "Upload complete", detail: `${missing.length} songs added to the server`, tone: "success", progress: undefined, sticky: false }, 2600);
-    }
-  }, 180);
-}
-
-export function syncPlaylists() {
-  const id = toast("Syncing playlists…", { sticky: true, progress: 0.15 });
-  setTimeout(() => updateToast(id, { progress: 0.7 }), 400);
-  setTimeout(() => updateToast(id, { message: "Playlists synced", detail: "Up to date across your devices.", tone: "success", progress: undefined, sticky: false }, 2400), 900);
-}
-
-let connectAttempt = 0;
-export function setServerStatus(status: "connected" | "offline") {
-  const attempt = ++connectAttempt;
-  if (status === "offline") {
-    setState((s) => ({ server: { ...s.server, status: "offline" } }));
-    toast("Disconnected from server");
-    return;
-  }
-  setState((s) => ({ server: { ...s.server, status: "connecting" } }));
-  setTimeout(() => {
-    // A newer connect/disconnect request wins.
-    if (attempt !== connectAttempt) return;
-    setState((s) => ({ server: { ...s.server, status: "connected" } }));
-    toast("Connected to server", { tone: "success", detail: getState().settings.serverUrl });
-  }, 1100);
 }
 
 /* ───────────────────────── imports ───────────────────────── */
@@ -759,7 +1142,11 @@ export function importFiles(files: FileList | File[]) {
   artists[localArtist.id] = artists[localArtist.id] ?? localArtist;
   for (const file of list) {
     const base = file.name.replace(/\.[^.]+$/, "");
-    const [maybeArtist, maybeTitle] = base.includes(" - ") ? base.split(" - ", 2) : [null, base];
+    // "Artist - Title - Remix" keeps everything after the first separator as the title.
+    const dash = base.indexOf(" - ");
+    const [maybeArtist, maybeTitle] = dash > 0 ? [base.slice(0, dash), base.slice(dash + 3)] : [null, base];
+    // Some systems report no MIME type; fall back to the extension.
+    const video = file.type ? file.type.startsWith("video/") : /\.(mp4|webm)$/i.test(file.name);
     let artistId = localArtist.id;
     if (maybeArtist) {
       artistId = `ar_${hashString(maybeArtist)}`;
@@ -767,10 +1154,10 @@ export function importFiles(files: FileList | File[]) {
     }
     const seed = hashString(file.name + file.size);
     const albumId = `al_file_${seed}`;
-    albums[albumId] = { id: albumId, title: "Imported", artistId, year: new Date().getFullYear(), palette: paletteFromSeed(seed), glyph: seed % 6 };
+    albums[albumId] = { id: albumId, title: maybeTitle.trim(), artistId, palette: paletteFromSeed(seed), glyph: seed % 6 };
     const id = `file_${seed}_${Date.now().toString(36)}`;
     const url = URL.createObjectURL(file);
-    tracks[id] = { id, title: maybeTitle.trim(), artistId, albumId, duration: 0, addedAt: Date.now(), kind: file.type.startsWith("video/") ? "video" : "audio", storage: "files", size: file.size, plays: 0, seed, fileUrl: url };
+    tracks[id] = { id, title: maybeTitle.trim(), artistId, albumId, duration: 0, addedAt: Date.now(), kind: video ? "video" : "audio", storage: "files", size: file.size, plays: 0, seed, fileUrl: url };
     ids.push(id);
     const probe = new Audio();
     probe.preload = "metadata";
@@ -800,6 +1187,11 @@ export function setTrackDuration(id: string, duration: number) {
 /* ───────────────────────── clips ───────────────────────── */
 
 export function setClipDraft(trackId: string, range: ClipRange | null) {
+  // Editing a clip is not listening: the current listen ends here.
+  if (range && collector.listen?.trackId === trackId) {
+    engine.captureProgress();
+    finishListening("changed");
+  }
   setState({ clipDraft: range ? { trackId, ...range } : null });
   if (getState().currentId === trackId) syncEngineEnd();
 }
@@ -812,28 +1204,30 @@ export function saveClip(trackId: string, range: ClipRange | null) {
     return { clips };
   });
   if (getState().currentId === trackId) syncEngineEnd();
+  // A server song's clip is part of its record on the music server.
+  const serverId = getState().tracks[trackId]?.serverId;
+  if (serverId) void saveSongChanges(serverId, { clip: range }).catch(() => toast("Clip saved on this device", { detail: "It will sync when the music server is available." }));
 }
 
 export function previewClip(trackId: string) {
   const s = getState();
   if (listenLocked()) return;
+  engine.captureProgress();
+  finishListening("changed");
+  previewing = true;
   if (s.currentId === trackId && engine.loadedTrackId === trackId) {
     syncEngineEnd();
     engine.seek(effectiveRange(trackId).start);
     if (!s.isPlaying) togglePlay();
     return;
   }
-  playTrackNow(trackId);
+  // Played on its own, without moving the queue; it stops at the clip's end.
+  if (isPlayable(s.tracks[trackId], s)) load(trackId, { preview: true });
 }
 
 /* ───────────────────────── listen along ───────────────────────── */
 
-let listenTimers: number[] = [];
-const code = () => {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const part = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-  return `${part()}-${part()}`;
-};
+/* The room itself is src/state/listen.ts; these are the player's side of it. */
 
 export function listenLocked() {
   const s = getState();
@@ -842,38 +1236,42 @@ export function listenLocked() {
   return true;
 }
 
-export function startRoom() {
-  listenTimers.forEach(clearTimeout);
-  setState({ listen: { mode: "host", code: code(), people: [] } });
-  const join = (name: string, delay: number) =>
-    listenTimers.push(window.setTimeout(() => {
-      setState((s) => (s.listen.mode === "host" ? { listen: { ...s.listen, people: [...s.listen.people, name] } } : {}));
-      if (getState().listen.mode === "host") toast(`${name} joined your room`);
-    }, delay));
-  join("Maya", 2600);
-  join("Theo", 6200);
-}
-
-export function joinRoom(roomCode: string) {
-  listenTimers.forEach(clearTimeout);
-  setState({ listen: { mode: "connecting", code: roomCode.toUpperCase(), people: [] } });
-  listenTimers.push(window.setTimeout(() => {
-    if (getState().listen.mode !== "connecting") return;
-    const s = getState();
-    const ids = mixIds(s, "lofi");
-    setState({ listen: { mode: "idle", code: "", people: [] } });
-    playList(ids, ids[0], { label: "Rowan's room" });
-    setState({ listen: { mode: "guest", code: roomCode.toUpperCase(), people: ["Rowan", "Maya"], host: "Rowan" } });
-    toast("Joined Rowan's room", { tone: "success", detail: "Rowan controls playback. Your volume is yours." });
-  }, 1300));
-}
-
-export function leaveRoom() {
-  listenTimers.forEach(clearTimeout);
-  listenTimers = [];
-  const was = getState().listen.mode;
-  setState({ listen: { mode: "idle", code: "", people: [] } });
-  if (was !== "idle") toast(was === "host" ? "Room closed" : "Left the room");
+/**
+ * A guest's player follows the host: plays `id` (or stops, for null) at
+ * `position`, playing or paused. Small drifts are left alone; the room calls
+ * this again whenever the host's playback changes and every few seconds.
+ */
+export function followHost(id: string | null, position: number, playing: boolean, label: string) {
+  const s = getState();
+  if (!id) {
+    if (s.isPlaying) {
+      engine.pause();
+      setState({ isPlaying: false });
+      updateMediaSession();
+    }
+    return;
+  }
+  if (s.currentId !== id) {
+    setState({ context: { label, ids: [id] }, order: [id], index: 0, upNext: [] });
+    load(id, { autoplay: playing, remember: false });
+    return;
+  }
+  // Still fetching this song's audio: it plays when it arrives (or stays paused).
+  if (pendingStream === id) {
+    if (s.isPlaying !== playing) setState({ isPlaying: playing });
+    return;
+  }
+  if (engine.loadedTrackId !== id) {
+    load(id, { autoplay: playing, remember: false });
+    return;
+  }
+  if (Math.abs(engine.position - position) > 2) engine.seek(position);
+  if (playing !== s.isPlaying) {
+    if (playing) engine.play();
+    else engine.pause();
+    setState({ isPlaying: playing });
+    updateMediaSession();
+  }
 }
 
 /* ───────────────────────── media session & engine wiring ───────────────────────── */
@@ -911,34 +1309,72 @@ export function wireEngine() {
   engine.setVolume(s.volume, s.muted);
   engine.setRate(s.speed);
   applyEngineSettings();
-  engine.onEnded = () => {
+  engine.onProgress = (position, clock, rate, audible) => {
     const st = getState();
-    if (st.repeat === "one" && st.currentId) {
-      engine.seek(effectiveRange(st.currentId).start);
-      engine.play();
+    if (st.listen.mode === "guest" || st.clipDraft || previewing) {
+      collector.resetAnchor();
       return;
     }
-    advance({ auto: true });
+    // The clip can change while a song plays.
+    if (collector.listen && st.currentId === collector.listen.trackId) {
+      const range = effectiveRange(st.currentId, st);
+      collector.listen.span = Math.max(1, range.end - range.start);
+    }
+    collector.sample(position, clock, rate, audible);
+    if (clock - lastListenSave >= 10_000) saveListening();
+  };
+  engine.onDiscontinuity = () => collector.resetAnchor();
+  engine.onEnded = () => {
+    const st = getState();
+    if (previewing) {
+      // A clip preview stops at its end instead of moving on through the queue.
+      stopAtEnd(st);
+      return;
+    }
+    if (st.repeat === "one" && st.currentId) {
+      finishListening("finished");
+      engine.seek(effectiveRange(st.currentId).start);
+      engine.play();
+      startListening(st.currentId);
+      return;
+    }
+    advance({ auto: true, end: "finished" });
   };
   engine.onNearEnd = () => {
     const st = getState();
-    if (st.repeat === "one" || !peekNext(st)) return;
-    advance({ crossfade: engine.crossfadeSeconds, auto: true });
+    if (previewing || st.repeat === "one" || !peekNext(st)) return;
+    advance({ crossfade: engine.crossfadeSeconds, auto: true, end: "finished" });
   };
-  engine.onDuration = (id, d) => setTrackDuration(id, d);
+  engine.onDuration = (id, d) => {
+    if (retriedError === id) retriedError = null;
+    setTrackDuration(id, d);
+  };
   engine.onBlocked = (id) => {
     const st = getState();
     if (st.currentId !== id || !st.isPlaying) return;
     // Keep the play button honest: the song is not actually playing.
     engine.pause();
+    saveListening();
     setState({ isPlaying: false });
     updateMediaSession();
     toast("Playback didn't start", { detail: "Press play to try again." });
   };
   engine.onError = (id) => {
-    const t = getState().tracks[id];
+    const st = getState();
+    const t = st.tracks[id];
+    // A song streamed from the music server is fetched from its source first, which
+    // occasionally fails once; try it again before moving on.
+    if (!previewing && t?.storage === "server" && retriedError !== id) {
+      retriedError = id;
+      load(id, { autoplay: st.isPlaying, remember: false, end: "error" });
+      return;
+    }
+    retriedError = null;
     toast(`Couldn't play “${t?.title ?? "file"}”`, { tone: "error", detail: "The file may be unsupported by this browser." });
-    advance({ auto: true });
+    if (previewing) {
+      finishListening("error");
+      stopAtEnd(st);
+    } else advance({ auto: true, end: "error" });
   };
 
   if ("mediaSession" in navigator) {
@@ -960,10 +1396,15 @@ export function wireEngine() {
 
   // Leaving the page ends the undo window, so finish pending deletes now.
   window.addEventListener("pagehide", () => {
+    // Keep what was heard of the current song, and save without waiting for the usual delay.
+    engine.captureProgress();
+    saveListening();
+    flushPersist();
     for (const serverId of [...pendingServerDeletes.keys()]) deleteOnServer(serverId);
   });
 
   // Listening minutes for the history view.
+  window.setInterval(() => { if (getState().currentId) protectStreams(); }, 60_000);
   window.setInterval(() => {
     const st = getState();
     if (!st.isPlaying || !engine.playing) return;

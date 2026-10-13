@@ -140,7 +140,7 @@ function cleanMetadata(value, fallback = "", maximum = 500) {
 function normalizedMetadata(value, fallback = {}) {
   const title = cleanMetadata(value?.title, cleanMetadata(fallback.title, "Untitled"));
   const artist = cleanMetadata(value?.artist, cleanMetadata(fallback.artist, "Unknown Artist"));
-  const album = cleanMetadata(value?.album, cleanMetadata(fallback.album, "Imported"));
+  const album = cleanMetadata(value?.album, cleanMetadata(fallback.album)) || null;
   const sourceURL = typeof value?.sourceURL === "string" ? value.sourceURL.slice(0, 8_192) : fallback.sourceURL || null;
   const artworkURL = typeof value?.artworkURL === "string" ? value.artworkURL.slice(0, 2_048) : fallback.artworkURL || null;
   return { title, artist, album, sourceURL, artworkURL };
@@ -150,14 +150,21 @@ function safeFilename(value) {
   return sanitizeWindowsFilename(value, { pathInput: false });
 }
 
+// Slopify: claims the name by creating an empty placeholder (exclusive create), so two
+// imports running at once can never choose the same file. The finished file replaces it,
+// and importConfirmedSource removes it if the import fails first.
 async function uniqueDestination(directory, preferred) {
   const clean = safeFilename(preferred) || `Track-${Date.now()}.m4a`;
   const extension = path.extname(clean) || ".m4a";
   const base = path.basename(clean, path.extname(clean));
   let candidate = path.join(directory, `${base}${extension}`);
   for (let counter = 2; ; counter += 1) {
-    try { await fs.access(candidate); }
-    catch { return candidate; }
+    try {
+      await (await fs.open(candidate, "wx")).close();
+      return candidate;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
     candidate = path.join(directory, windowsCollisionFilename(`${base}${extension}`, counter));
   }
 }
@@ -168,7 +175,11 @@ async function hashFile(filePath) {
     const stream = createReadStream(filePath);
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
-    stream.on("end", () => resolve(hash.digest("hex")));
+    // Resolve on "close", not "end": on Windows the file can't be moved until its handle is released.
+    stream.on("close", () => {
+      if (stream.readableEnded) resolve(hash.digest("hex"));
+      else reject(new Error("The local file closed before it could be verified."));
+    });
   });
 }
 
@@ -340,12 +351,26 @@ async function tagM4A(input, output, metadata, artwork, signal) {
   await runFFmpeg(m4aTagArguments(input, output, metadata, artwork), signal);
 }
 
+/** Waits before each retry of a move that Windows refused because something briefly held the file. */
+const MOVE_RETRY_DELAYS = [100, 250, 500];
+
 async function moveFile(source, destination) {
-  try { await fs.rename(source, destination); }
-  catch (error) {
-    if (error?.code !== "EXDEV") throw error;
-    await fs.copyFile(source, destination);
-    await fs.rm(source, { force: true });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rename(source, destination);
+      return;
+    } catch (error) {
+      // Another drive: rename can't cross devices, so copy instead.
+      if (error?.code === "EXDEV") {
+        await fs.copyFile(source, destination);
+        await fs.rm(source, { force: true });
+        return;
+      }
+      // Windows virus scanners and indexers briefly lock a freshly written file.
+      const locked = process.platform === "win32" && (error?.code === "EPERM" || error?.code === "EBUSY");
+      if (!locked || attempt >= MOVE_RETRY_DELAYS.length) throw error;
+      await new Promise((resolve) => setTimeout(resolve, MOVE_RETRY_DELAYS[attempt]));
+    }
   }
 }
 
@@ -893,14 +918,14 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
         result = await soundCloudDownload(input.sourceURL, sourcePath, signal, downloadProgress);
       }
     } else {
-      result = await youtubeDownload(input.sourceURL, sourcePath, signal, downloadProgress);
+      result = await youtubeDownload(input.sourceURL, sourcePath, signal, downloadProgress, undefined, input.maxVideoHeight ? { maxHeight: input.maxVideoHeight } : {});
     }
     assertNotAborted(signal);
     const enrichedMetadata = metadataSnapshot.settled ? metadataSnapshot.metadata : null;
     const metadata = normalizedMetadata({ ...input.metadata, ...(enrichedMetadata || {}) }, {
       title: result.preview.title,
       artist: result.preview.author || "Unknown uploader",
-      album: "Imported",
+      album: null,
       artworkURL: result.preview.thumbnailURL,
       sourceURL: result.preview.sourceURL,
     });

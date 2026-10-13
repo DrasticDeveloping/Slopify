@@ -1,17 +1,68 @@
 import { useMemo, useState, type CSSProperties } from "react";
 import { Art, TrackArt } from "../components/Artwork";
-import { seededHistory } from "../data/library";
-import { formatLongDuration, plural } from "../lib/format";
+import { recentDays } from "../data/library";
+import { formatLongDuration, plural, todayKey } from "../lib/format";
 import { navigate, playList } from "../state/actions";
 import { Empty } from "./Collection";
 import { useStore } from "../state/store";
 
 const RANGES = [7, 30, 90] as const;
-const seeded = seededHistory(90);
 
 function niceMax(v: number) {
   const step = v > 120 ? 60 : v > 60 ? 30 : 15;
   return Math.max(step, Math.ceil(v / step) * step);
+}
+
+/** Monday first. */
+const WEEKDAYS = [1, 2, 3, 4, 5, 6, 0];
+const hourLabel = (h: number) => new Date(2000, 0, 1, h).toLocaleTimeString("en", { hour: "numeric" });
+const minutesText = (seconds: number) => (seconds < 60 && seconds > 0 ? "under 1 min" : `${Math.round(seconds / 60)} min`);
+
+/** A small bar chart of listening minutes (by hour of the day, or by weekday). */
+function Breakdown({ title, labels, seconds, labelEvery = 1, describe }: { title: string; labels: string[]; seconds: number[]; labelEvery?: number; describe: (i: number) => string }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const max = niceMax(Math.max(...seconds.map((s) => s / 60)));
+  return (
+    <section className="panel chart-panel" aria-label={title}>
+      <div className="chart-head">
+        <h2>{title}</h2>
+      </div>
+      <div className="chart compact" style={{ "--n": seconds.length } as CSSProperties}>
+        <div className="chart-grid" aria-hidden="true">
+          {[1, 0.5, 0].map((f) => (
+            <div key={f} className="gridline" style={{ "--y": f } as CSSProperties}>
+              <span>{Math.round(max * f)}</span>
+            </div>
+          ))}
+        </div>
+        <div className="bars" onPointerLeave={() => setHover(null)}>
+          {seconds.map((s, i) => (
+            <button
+              key={labels[i]}
+              type="button"
+              className={`bar${hover === i ? " hot" : ""}${hover !== null && hover !== i ? " dim" : ""}`}
+              style={{ "--h": s / 60 / max } as CSSProperties}
+              onPointerEnter={() => setHover(i)}
+              onFocus={() => setHover(i)}
+              onBlur={() => setHover(null)}
+              aria-label={`${describe(i)}: ${minutesText(s)}`}
+            >
+              <i />
+              {hover === i ? (
+                <span className={`bar-tip${i > seconds.length * 0.75 ? " left" : i < seconds.length * 0.25 ? " right" : ""}`} role="tooltip">
+                  <strong>{minutesText(s)}</strong>
+                  <span>{describe(i)}</span>
+                </span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+        <div className="x-axis" aria-hidden="true">
+          {labels.map((l, i) => <span key={l}>{i % labelEvery === 0 ? l : ""}</span>)}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function RecentListens() {
@@ -88,10 +139,13 @@ function StatsView() {
   const [range, setRange] = useState<(typeof RANGES)[number]>(30);
   const [hover, setHover] = useState<number | null>(null);
 
+  // Recomputed per day, so a tab left open past midnight shows the new day once listening updates the log.
+  const today = todayKey();
   const days = useMemo(() => {
-    const merged = seeded.map((d) => ({ ...d, minutes: d.minutes + Math.round((log[d.date] ?? 0) / 60) }));
+    // Only real listening: the minutes the player logged each day.
+    const merged = recentDays(90).map((date) => ({ date, minutes: Math.round((log[date] ?? 0) / 60) }));
     return merged.slice(-range);
-  }, [log, range]);
+  }, [log, range, today]);
 
   const total = days.reduce((n, d) => n + d.minutes, 0);
   const active = days.filter((d) => d.minutes > 0).length;
@@ -99,6 +153,37 @@ function StatsView() {
   let streak = 0;
   for (let i = days.length - 1; i >= 0 && days[i].minutes > 0; i--) streak++;
   const max = niceMax(peak.minutes);
+
+  // When and what: each play's heard time in the chosen range (the history keeps the latest 500 plays).
+  const listens = useStore((s) => s.taste.listens);
+  const since = new Date(`${days[0].date}T00:00:00`).getTime();
+  const detail = useMemo(() => {
+    const hours = Array<number>(24).fill(0);
+    const weekdays = Array<number>(7).fill(0);
+    const songs = new Map<string, { plays: number; seconds: number }>();
+    for (const l of listens) {
+      if (l.at < since || !tracks[l.trackId]) continue;
+      // A play's time runs on from its start, so one crossing the hour (or midnight) is split between them.
+      let left = l.heard;
+      for (let t = l.at; left > 0; ) {
+        const at = new Date(t);
+        const hourEnd = new Date(at.getFullYear(), at.getMonth(), at.getDate(), at.getHours() + 1).getTime();
+        const part = Math.min(left, (hourEnd - t) / 1000);
+        hours[at.getHours()] += part;
+        weekdays[at.getDay()] += part;
+        left -= part;
+        t = hourEnd;
+      }
+      const song = songs.get(l.trackId) ?? { plays: 0, seconds: 0 };
+      song.plays++;
+      song.seconds += l.heard;
+      songs.set(l.trackId, song);
+    }
+    const bySong = [...songs].sort((a, b) => b[1].seconds - a[1].seconds || b[1].plays - a[1].plays).slice(0, 10);
+    return { hours, weekdays: WEEKDAYS.map((d) => weekdays[d]), bySong, capped: listens.length >= 500 && listens[listens.length - 1].at > since };
+  }, [listens, tracks, since]);
+  const busiestHour = detail.hours.indexOf(Math.max(...detail.hours));
+  const maxSong = detail.bySong[0]?.[1].seconds || 1;
 
   const topTracks = useMemo(() => Object.values(tracks).sort((a, b) => b.plays - a.plays).slice(0, 5), [tracks]);
   const topArtists = useMemo(() => {
@@ -108,7 +193,7 @@ function StatsView() {
   }, [tracks]);
   const maxArtistPlays = topArtists[0]?.[1] || 1;
 
-  const fmtDay = (iso: string, opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" }) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en", opts);
+  const fmtDay = (iso: string, opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" }) => new Date(`${iso}T12:00:00`).toLocaleDateString("en", opts);
   const labelEvery = range === 7 ? 1 : range === 30 ? 7 : 15;
 
   return (
@@ -178,6 +263,50 @@ function StatsView() {
           <tbody>{days.map((d) => <tr key={d.date}><td>{d.date}</td><td>{d.minutes}</td></tr>)}</tbody>
         </table>
       </section>
+
+      {detail.bySong.length ? (
+        <>
+          <p className="muted small stats-note">
+            {detail.hours[busiestHour] > 0 ? `Most of your listening happens around ${hourLabel(busiestHour)}.` : ""}
+            {detail.capped ? " Hours, weekdays and songs below count your latest 500 plays." : ""}
+          </p>
+          <div className="two-col">
+            <Breakdown
+              title="By time of day"
+              labels={Array.from({ length: 24 }, (_, h) => hourLabel(h))}
+              seconds={detail.hours}
+              labelEvery={6}
+              describe={(h) => `${hourLabel(h)} – ${hourLabel((h + 1) % 24)}`}
+            />
+            <Breakdown
+              title="By day of the week"
+              labels={WEEKDAYS.map((d) => new Date(2024, 0, d === 0 ? 7 : d).toLocaleDateString("en", { weekday: "short" }))}
+              seconds={detail.weekdays}
+              describe={(i) => new Date(2024, 0, WEEKDAYS[i] === 0 ? 7 : WEEKDAYS[i]).toLocaleDateString("en", { weekday: "long" })}
+            />
+          </div>
+          <section className="panel stats-songs" aria-labelledby="song-time-title">
+            <h2 className="panel-title" id="song-time-title">Songs by listening time</h2>
+            <ol className="rank-list">
+              {detail.bySong.map(([id, song], i) => {
+                const t = tracks[id];
+                return (
+                  <li key={id}>
+                    <span className="rank">{i + 1}</span>
+                    <button type="button" className="rank-hit" onClick={() => playList(detail.bySong.map(([x]) => x), id, { label: "Songs by listening time", route: { name: "history" } })} aria-label={`Play ${t.title}`} />
+                    <TrackArt trackId={id} className="row-art" />
+                    <span className="title-text">
+                      <span className="t-name">{t.title}</span>
+                      <span className="mini-bar"><i style={{ "--w": song.seconds / maxSong } as CSSProperties} /></span>
+                    </span>
+                    <span className="muted small">{plural(song.plays, "play")} · {formatLongDuration(Math.round(song.seconds))}</span>
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        </>
+      ) : null}
 
       <div className="two-col">
         <section className="panel">

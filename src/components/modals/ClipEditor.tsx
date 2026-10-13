@@ -1,20 +1,55 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
+import { videoFrames, wavePeaks } from "../../audio/analysis";
 import { engine } from "../../audio/engine";
 import { rng } from "../../data/library";
 import { formatTime } from "../../lib/format";
-import { closeModal, isPlayable, libraryIds, previewClip, saveClip, seek, setClipDraft, toast, togglePlay } from "../../state/actions";
+import { closeModal, isPlayable, libraryIds, mediaUrlOf, previewClip, saveClip, seek, setClipDraft, toast, togglePlay } from "../../state/actions";
 import { getState, useStore } from "../../state/store";
 import { TrackArt } from "../Artwork";
 import { Icon } from "../Icon";
 import { Shell } from "./Shell";
 
 const BARS = 96;
+const FRAMES = 8;
 const MIN_LEN = 3;
 
+/** The song's real waveform, and frames from a video, read from its file. */
+function useAnalysis(id: string | undefined, video: boolean) {
+  const [result, setResult] = useState<{ id?: string; peaks?: number[]; frames?: string[]; failed?: boolean }>({});
+  useEffect(() => {
+    const url = id ? mediaUrlOf(id) : undefined;
+    if (!id || !url) {
+      setResult({ id, failed: true });
+      return;
+    }
+    let live = true;
+    setResult({ id });
+    wavePeaks(url, BARS).then(
+      (peaks) => live && setResult((r) => (r.id === id ? { ...r, peaks } : r)),
+      () => live && setResult((r) => (r.id === id ? { ...r, failed: true } : r)),
+    );
+    if (video) {
+      videoFrames(url, FRAMES).then(
+        (frames) => live && setResult((r) => (r.id === id ? { ...r, frames } : r)),
+        () => undefined,
+      );
+    }
+    return () => {
+      live = false;
+    };
+  }, [id, video]);
+  return result.id === id ? result : {};
+}
+
+/** Accepts plain seconds ("123"), or m:ss and h:mm:ss as formatTime shows them, with optional decimals. */
 function parseTime(text: string) {
-  const m = text.trim().match(/^(?:(\d+):)?(\d{1,2})(?:\.(\d+))?$/);
+  const m = text.trim().match(/^(?:(\d+):)?(?:(\d+):)?(\d+(?:\.\d+)?)$/);
   if (!m) return null;
-  return Number(m[1] ?? 0) * 60 + Number(m[2]) + (m[3] ? Number(`0.${m[3]}`) : 0);
+  const [hours, minutes] = m[2] === undefined ? [0, Number(m[1] ?? 0)] : [Number(m[1]), Number(m[2])];
+  const seconds = Number(m[3]);
+  // After a colon, seconds (and minutes that follow hours) stay under 60.
+  if ((m[1] !== undefined && seconds >= 60) || (m[2] !== undefined && minutes >= 60)) return null;
+  return hours * 3600 + minutes * 60 + seconds;
 }
 
 function TimeInput({ value, onCommit, label }: { value: number; onCommit: (v: number) => void; label: string }) {
@@ -58,6 +93,11 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
   const head = useRef<HTMLSpanElement>(null);
   const dragging = useRef<"start" | "end" | null>(null);
 
+  // A song opened before its length was known starts as the whole song once the length arrives.
+  useEffect(() => {
+    if (duration) setRange((r) => (r.end === 0 ? { start: 0, end: duration } : r));
+  }, [duration]);
+
   // Keep the live player honouring the draft while the editor is open.
   useEffect(() => {
     if (id) setClipDraft(id, range);
@@ -77,8 +117,11 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
     return () => cancelAnimationFrame(raf);
   }, [id, duration]);
 
+  const analysis = useAnalysis(id, track?.kind === "video");
   const levels = useMemo(() => {
     if (!track) return [];
+    if (analysis.peaks) return analysis.peaks.map((v) => Math.max(0.04, v));
+    // Until the file is read (or if it can't be), an outline of a typical song.
     const r = rng(track.seed);
     return Array.from({ length: BARS }, (_, i) => {
       const t = i / BARS;
@@ -87,7 +130,7 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
       const section = 0.55 + 0.45 * Math.abs(Math.sin(t * Math.PI * (2 + (track.seed % 3))));
       return Math.max(0.08, intro * outro * section * (0.55 + r() * 0.45));
     });
-  }, [track]);
+  }, [track, analysis.peaks]);
 
   if (!track || !id) {
     return (
@@ -199,7 +242,12 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
         <div className="clip-ruler" aria-hidden="true">
           {Array.from({ length: 6 }, (_, i) => <span key={i}>{formatTime((duration * i) / 5)}</span>)}
         </div>
-        <div ref={wave} className="clip-wave" onPointerDown={scrub} style={{ "--s": range.start / duration, "--e": range.end / duration } as CSSProperties}>
+        {analysis.frames?.length ? (
+          <div className="clip-frames" aria-hidden="true">
+            {analysis.frames.map((src, i) => <img key={i} src={src} alt="" />)}
+          </div>
+        ) : null}
+        <div ref={wave} className={`clip-wave${analysis.peaks ? "" : " estimated"}`} onPointerDown={scrub} style={{ "--s": range.start / duration, "--e": range.end / duration } as CSSProperties}>
           <div className="clip-bars" aria-hidden="true">
             {levels.map((v, i) => {
               const t = (i + 0.5) / BARS;
@@ -247,7 +295,10 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
           {previewing ? "Pause" : "Preview"}
         </button>
       </div>
-      <p className="muted small">Drag the handles, use arrow keys (Shift for 5s steps), or type exact times. Click the waveform to scrub while previewing.</p>
+      <p className="muted small" role="status">
+        {analysis.peaks ? "" : analysis.failed ? "This song's file couldn't be read, so the waveform is only an outline. " : "Reading the song's waveform… "}
+        Drag the handles, use arrow keys (Shift for 5s steps), or type exact times. Click the waveform to scrub while previewing.
+      </p>
     </Shell>
   );
 }

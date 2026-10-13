@@ -22,6 +22,7 @@ export function openSpeedMenu(el: HTMLElement) {
 
 export function Transport({ big }: { big?: boolean }) {
   const isPlaying = useStore((s) => s.isPlaying);
+  const buffering = useStore((s) => s.buffering !== null && s.buffering === s.currentId);
   const shuffle = useStore((s) => s.shuffle);
   const repeat = useStore((s) => s.repeat);
   const hasTrack = useStore((s) => Boolean(s.currentId));
@@ -35,7 +36,7 @@ export function Transport({ big }: { big?: boolean }) {
       <button type="button" className="icon-btn" onClick={previous} disabled={!hasTrack} aria-label="Previous" title="Previous (Ctrl ←)">
         <Icon name="prev" size={size} />
       </button>
-      <button type="button" className={`play-main${isPlaying ? " playing" : ""}`} onClick={togglePlay} aria-label={isPlaying ? "Pause" : "Play"} title={isPlaying ? "Pause (Space)" : "Play (Space)"}>
+      <button type="button" className={`play-main${isPlaying ? " playing" : ""}${buffering ? " loading" : ""}`} onClick={togglePlay} aria-label={isPlaying ? "Pause" : "Play"} title={isPlaying ? "Pause (Space)" : "Play (Space)"}>
         <span className="pm-icon pm-play"><Icon name="play" size={big ? 30 : 20} /></span>
         <span className="pm-icon pm-pause"><Icon name="pause" size={big ? 30 : 20} /></span>
       </button>
@@ -47,7 +48,7 @@ export function Transport({ big }: { big?: boolean }) {
         className={`icon-btn${repeat !== "off" ? " on dot" : ""}`}
         onClick={cycleRepeat}
         aria-label={repeat === "off" ? "Repeat off" : repeat === "all" ? "Repeat all" : "Repeat one"}
-        title={`Repeat: ${repeat} (R)`}
+        title={`${repeat === "off" ? "Repeat off" : repeat === "all" ? "Repeating all" : "Looping this song"} (R)`}
       >
         <Icon name="repeat" size={size - 2} />
         {repeat === "one" ? <span className="repeat-one">1</span> : null}

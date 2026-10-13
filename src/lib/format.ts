@@ -50,6 +50,11 @@ export function greeting() {
   return "Good evening";
 }
 
+/** The local calendar day as YYYY-MM-DD, so listening stats use the same days as the history list. */
+export function dayKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 export function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+  return dayKey();
 }

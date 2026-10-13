@@ -1,8 +1,4 @@
-import type { Genre } from "../data/types";
-import { schedulePad, scheduleStep, styleFor, type SongStyle } from "./synth";
 import { releaseVideo, setCurrentVideo } from "./video";
-
-const LOOKAHEAD = 0.15;
 
 interface Voice {
   position(): number;
@@ -22,138 +18,21 @@ function retire(ctx: AudioContext, node: GainNode, seconds: number) {
   setTimeout(() => node.disconnect(), (seconds + 0.6) * 1000);
 }
 
-class SynthVoice implements Voice {
-  private out: GainNode;
-  private notes: GainNode;
-  private style: SongStyle;
-  private stepDur: number;
-  private playing = false;
-  private anchorCtx = 0;
-  private anchorPos = 0;
-  private nextStep = 0;
-  private timer = 0;
-  private rate: number;
-  private ctx: AudioContext;
-  private end: number;
-
-  constructor(ctx: AudioContext, dest: AudioNode, seed: number, genre: Genre, start: number, end: number, rate: number, fadeIn: number) {
-    this.ctx = ctx;
-    this.style = styleFor(seed, genre);
-    this.stepDur = 60 / this.style.bpm / 4;
-    this.rate = rate;
-    this.end = end;
-    this.anchorPos = start;
-    this.out = ctx.createGain();
-    this.out.gain.setValueAtTime(0, ctx.currentTime);
-    this.out.gain.linearRampToValueAtTime(1, ctx.currentTime + Math.max(0.02, fadeIn));
-    this.out.connect(dest);
-    this.notes = ctx.createGain();
-    this.notes.connect(this.out);
-  }
-
-  setEnd(end: number) {
-    this.end = end;
-  }
-
-  position() {
-    if (!this.playing) return this.anchorPos;
-    return this.anchorPos + (this.ctx.currentTime - this.anchorCtx) * this.rate;
-  }
-
-  /** Replaces the note bus so notes already queued in the lookahead are silenced. */
-  private freshNotes() {
-    retire(this.ctx, this.notes, 0.04);
-    this.notes = this.ctx.createGain();
-    this.notes.connect(this.out);
-  }
-
-  private velocityAt(pos: number) {
-    const fadeIn = Math.min(1, 0.35 + pos / 2);
-    const fadeOut = Math.max(0, Math.min(1, (this.end - pos) / 4));
-    return Math.min(fadeIn, fadeOut);
-  }
-
-  private startFrom(pos: number) {
-    this.anchorPos = pos;
-    this.anchorCtx = this.ctx.currentTime + 0.03;
-    this.nextStep = Math.ceil(pos / this.stepDur - 1e-6);
-    // Fill the rest of the current bar so a mid-bar seek is not silent.
-    const barLen = this.stepDur * 16 * (this.style.genre === "ambient" ? 2 : 1);
-    const barStart = Math.floor(pos / barLen) * barLen;
-    const remaining = barStart + barLen - pos;
-    if (pos - barStart > 0.05 && remaining > 0.3) {
-      const bar = Math.floor(pos / (this.stepDur * 16));
-      schedulePad(this.ctx, this.notes, this.style, bar, this.anchorCtx, remaining / this.rate, this.velocityAt(pos));
-    }
-    this.tick();
-  }
-
-  private tick = () => {
-    if (!this.playing) return;
-    const horizon = this.ctx.currentTime + LOOKAHEAD;
-    for (;;) {
-      const stepPos = this.nextStep * this.stepDur;
-      if (stepPos >= this.end) break;
-      const t = this.anchorCtx + (stepPos - this.anchorPos) / this.rate;
-      if (t > horizon) break;
-      if (t >= this.ctx.currentTime - 0.01) {
-        scheduleStep(this.ctx, this.notes, this.style, this.nextStep, t, this.stepDur / this.rate, this.velocityAt(stepPos));
-      }
-      this.nextStep++;
-    }
-  };
-
-  play() {
-    if (this.playing) return;
-    this.playing = true;
-    this.startFrom(this.anchorPos);
-    this.timer = window.setInterval(this.tick, 25);
-  }
-
-  pause() {
-    if (!this.playing) return;
-    this.anchorPos = this.position();
-    this.playing = false;
-    clearInterval(this.timer);
-    this.freshNotes();
-  }
-
-  seek(position: number) {
-    this.freshNotes();
-    if (this.playing) this.startFrom(position);
-    else this.anchorPos = position;
-  }
-
-  setRate(rate: number) {
-    if (this.playing) {
-      this.anchorPos = this.position();
-      this.anchorCtx = this.ctx.currentTime;
-    }
-    this.rate = rate;
-  }
-
-  fadeOut(seconds: number) {
-    // Keep scheduling during a crossfade so the outgoing song keeps playing.
-    retire(this.ctx, this.out, seconds);
-    setTimeout(() => {
-      this.playing = false;
-      clearInterval(this.timer);
-    }, seconds * 1000 + 200);
-  }
-}
-
 class MediaVoice implements Voice {
   private el: HTMLMediaElement;
   private out: GainNode;
   private ctx: AudioContext;
   private retired = false;
+  /** Playback was asked for and not since paused. */
+  private wanted = false;
 
   private onEnded: () => void;
   private onBlocked: () => void;
 
+  /** `hold`: silent and out of sight until `takeOver` (a copy getting ready to replace the playing one). */
   constructor(
     ctx: AudioContext, dest: AudioNode, url: string, video: boolean, start: number, rate: number, fadeIn: number,
-    onDuration: (d: number) => void, onError: () => void, onEnded: () => void, onBlocked: () => void,
+    onDuration: (d: number) => void, onError: () => void, onEnded: () => void, onBlocked: () => void, hold = false,
   ) {
     this.onEnded = onEnded;
     this.onBlocked = onBlocked;
@@ -163,7 +42,7 @@ class MediaVoice implements Voice {
       el.playsInline = true;
       el.className = "player-video";
       this.el = el;
-      setCurrentVideo(el);
+      if (!hold) setCurrentVideo(el);
     } else this.el = new Audio();
     this.el.src = url;
     this.el.preload = "auto";
@@ -182,22 +61,56 @@ class MediaVoice implements Voice {
     };
     this.out = ctx.createGain();
     this.out.gain.setValueAtTime(0, ctx.currentTime);
-    this.out.gain.linearRampToValueAtTime(1, ctx.currentTime + Math.max(0.02, fadeIn));
+    if (!hold) this.out.gain.linearRampToValueAtTime(1, ctx.currentTime + Math.max(0.02, fadeIn));
     ctx.createMediaElementSource(this.el).connect(this.out);
     this.out.connect(dest);
+  }
+
+  /** Calls `ready` once a held voice is playing (silently), or, if it isn't to play, once it could. */
+  prepare(play: boolean, ready: () => void) {
+    const done = () => {
+      if (!this.retired) ready();
+    };
+    if (play) {
+      this.el.addEventListener("playing", done, { once: true });
+      this.play();
+    } else if (this.el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) queueMicrotask(done);
+    else this.el.addEventListener("canplay", done, { once: true });
+  }
+
+  /** A held voice becomes the one heard (and seen). */
+  takeOver(fadeIn: number) {
+    if (this.el instanceof HTMLVideoElement) setCurrentVideo(this.el);
+    const now = this.ctx.currentTime;
+    this.out.gain.cancelScheduledValues(now);
+    this.out.gain.setValueAtTime(0, now);
+    this.out.gain.linearRampToValueAtTime(1, now + Math.max(0.02, fadeIn));
   }
 
   position() {
     return this.el.currentTime;
   }
-  play() {
+  /** `retry` is the one automatic second attempt after an interrupted start; it never retries again. */
+  play(retry = false) {
+    this.wanted = true;
     this.el.play().catch((error: unknown) => {
-      // AbortError means a pause/seek interrupted the start, and unsupported files are reported via onerror.
+      // Unsupported files are reported via onerror.
       const name = error instanceof DOMException ? error.name : "";
-      if (!this.retired && name !== "AbortError" && name !== "NotSupportedError") this.onBlocked();
+      if (this.retired || name === "NotSupportedError") return;
+      if (name !== "AbortError") return this.onBlocked();
+      // AbortError: something interrupted the start before the file was ready (a file
+      // whose length isn't known yet, say). If playing is still wanted, start again
+      // once it can play, rather than sitting silent at 0:00.
+      if (retry) return;
+      const again = () => {
+        if (this.wanted && !this.retired && this.el.paused) this.play(true);
+      };
+      if (this.el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) queueMicrotask(again);
+      else this.el.addEventListener("canplay", again, { once: true });
     });
   }
   pause() {
+    this.wanted = false;
     this.el.pause();
   }
   seek(position: number) {
@@ -208,6 +121,7 @@ class MediaVoice implements Voice {
   }
   fadeOut(seconds: number) {
     this.retired = true;
+    this.wanted = false;
     retire(this.ctx, this.out, seconds);
     if (this.el instanceof HTMLVideoElement) releaseVideo(this.el, seconds * 1000 + 300);
     setTimeout(() => {
@@ -226,10 +140,12 @@ export interface LoadOptions {
   crossfade?: number;
 }
 
+/** Tone controls: gains in dB (−12 to +12) and left/right balance (−1 to 1). */
+export interface Tone { bass: number; mid: number; treble: number; balance: number }
+export const FLAT: Tone = { bass: 0, mid: 0, treble: 0, balance: 0 };
+
 export interface EngineTrack {
   id: string;
-  seed: number;
-  genre: Genre;
   fileUrl?: string;
   /** Play `fileUrl` through a visible <video> element. */
   video?: boolean;
@@ -247,12 +163,17 @@ export class AudioEngine {
   /** Outgoing voices still fading out after a track change. */
   private retiring = new Set<Voice>();
   private comp: DynamicsCompressorNode | null = null;
+  private eq: { pre: GainNode; bass: BiquadFilterNode; mid: BiquadFilterNode; treble: BiquadFilterNode; pan: StereoPannerNode } | null = null;
+  tone: Tone = FLAT;
   private start = 0;
   private end = 0;
   private monitor = 0;
   private firedNear = false;
   private firedEnd = false;
   private trackId: string | null = null;
+  private url: string | null = null;
+  /** A copy of the loaded song getting ready to replace it (see `swap`). */
+  private swapping: MediaVoice | null = null;
   analyser: AnalyserNode | null = null;
   playing = false;
   volume = 0.8;
@@ -266,10 +187,19 @@ export class AudioEngine {
   onError: (trackId: string) => void = () => undefined;
   /** The browser refused to start playback (e.g. autoplay rules), so nothing is audible. */
   onBlocked: (trackId: string) => void = () => undefined;
+  /** Position samples for listening credit: where playback is, when, at what rate, and whether it can be heard. */
+  onProgress: (position: number, clock: number, rate: number, audible: boolean) => void = () => undefined;
+  /** Playback jumped or changed pace, so the next sample must not be compared with the last one. */
+  onDiscontinuity: () => void = () => undefined;
+
+  captureProgress() {
+    this.onProgress(this.position, performance.now(), this.rate, this.playing && this.ctx?.state === "running" && !this.muted && this.volume > 0);
+  }
 
   private mediaEnded(id: string) {
     if (id !== this.trackId || !this.playing || this.firedEnd) return;
     this.firedEnd = true;
+    this.captureProgress();
     this.onEnded();
   }
 
@@ -283,13 +213,28 @@ export class AudioEngine {
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.82;
-      mix.connect(comp).connect(master).connect(analyser).connect(ctx.destination);
+      // Tone controls: headroom, then bass (low shelf), mid (a broad bell) and treble (high shelf), and balance.
+      const pre = ctx.createGain();
+      const bass = ctx.createBiquadFilter();
+      bass.type = "lowshelf";
+      bass.frequency.value = 120;
+      const mid = ctx.createBiquadFilter();
+      mid.type = "peaking";
+      mid.frequency.value = 1000;
+      mid.Q.value = 0.7;
+      const treble = ctx.createBiquadFilter();
+      treble.type = "highshelf";
+      treble.frequency.value = 6000;
+      const pan = ctx.createStereoPanner();
+      this.eq = { pre, bass, mid, treble, pan };
+      mix.connect(pre).connect(bass).connect(mid).connect(treble).connect(comp).connect(pan).connect(master).connect(analyser).connect(ctx.destination);
       this.ctx = ctx;
       this.mix = mix;
       this.master = master;
       this.analyser = analyser;
       this.applyVolume();
       this.applyNormalize();
+      this.applyTone();
     }
     if (this.ctx.state === "suspended") void this.ctx.resume();
     return this.ctx;
@@ -299,6 +244,27 @@ export class AudioEngine {
     if (!this.master || !this.ctx) return;
     const target = this.muted ? 0 : this.volume ** 2;
     this.master.gain.setTargetAtTime(target, this.ctx.currentTime, 0.02);
+  }
+
+  setTone(tone: Tone) {
+    this.tone = tone;
+    this.applyTone();
+  }
+
+  private applyTone() {
+    if (!this.eq || !this.ctx) return;
+    const { pre, bass, mid, treble, pan } = this.eq;
+    const clamp = (v: number, lo: number, hi: number) => (Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : 0);
+    const t = { bass: clamp(this.tone.bass, -12, 12), mid: clamp(this.tone.mid, -12, 12), treble: clamp(this.tone.treble, -12, 12) };
+    const now = this.ctx.currentTime;
+    // Glides rather than jumps, so dragging a control never clicks.
+    bass.gain.setTargetAtTime(t.bass, now, 0.03);
+    mid.gain.setTargetAtTime(t.mid, now, 0.03);
+    treble.gain.setTargetAtTime(t.treble, now, 0.03);
+    // Boosting adds loudness that could clip; turn the input down by part of the biggest boost.
+    const boost = Math.max(0, t.bass, t.mid, t.treble);
+    pre.gain.setTargetAtTime(10 ** (-(boost * 0.6) / 20), now, 0.03);
+    pan.pan.setTargetAtTime(clamp(this.tone.balance, -1, 1), now, 0.03);
   }
 
   normalize = true;
@@ -339,7 +305,64 @@ export class AudioEngine {
     return this.trackId;
   }
 
+  /** The file the loaded song plays from. */
+  get loadedUrl() {
+    return this.url;
+  }
+
+  private dropSwap() {
+    this.swapping?.fadeOut(0);
+    this.swapping = null;
+  }
+
+  /**
+   * Switches the loaded song to another copy of it (a streamed video, once its
+   * picture is ready, in place of its audio) without a break: the new copy gets
+   * going silently from where the song is, then takes over with a short fade.
+   */
+  swap(track: EngineTrack) {
+    const old = this.voice;
+    if (!old || this.trackId !== track.id || !track.fileUrl || track.fileUrl === this.url) return;
+    const ctx = this.ensure();
+    const id = track.id;
+    const url = track.fileUrl;
+    this.dropSwap();
+    const next: MediaVoice = new MediaVoice(
+      ctx, this.mix!, url, Boolean(track.video), old.position(), this.rate, 0,
+      (d) => this.onDuration(id, d),
+      // The old copy is still fine, so a copy that fails before taking over is just dropped.
+      () => (this.voice === next ? this.onError(id) : this.swapping === next && this.dropSwap()),
+      () => {
+        if (this.voice === next) this.mediaEnded(id);
+      },
+      () => {
+        if (this.voice === next) this.onBlocked(id);
+      },
+      true,
+    );
+    this.swapping = next;
+    next.prepare(this.playing, () => {
+      if (this.swapping !== next) return;
+      if (this.voice !== old || this.trackId !== id) return this.dropSwap();
+      this.swapping = null;
+      // Catch up with the old copy (it kept playing while this one started), or follow a seek made meanwhile.
+      if (Math.abs(next.position() - old.position()) > 0.25) next.seek(old.position());
+      // Paused, played or sped up meanwhile: the new copy follows.
+      next.setRate(this.rate);
+      if (this.playing) next.play();
+      else next.pause();
+      this.captureProgress();
+      this.onDiscontinuity();
+      this.retireVoice(0.2);
+      this.voice = next;
+      this.url = url;
+      next.takeOver(0.2);
+    });
+  }
+
   load(track: EngineTrack, options: LoadOptions) {
+    this.onDiscontinuity();
+    this.dropSwap();
     const ctx = this.ensure();
     const crossfade = options.crossfade ?? 0;
     this.retireVoice(crossfade > 0 ? crossfade : 0.12);
@@ -349,22 +372,30 @@ export class AudioEngine {
     this.firedEnd = false;
     this.firedNear = false;
     this.trackId = track.id;
+    this.url = track.fileUrl ?? null;
     const id = track.id;
-    this.voice = track.fileUrl
-      ? new MediaVoice(
-        ctx, this.mix!, track.fileUrl, Boolean(track.video), start, this.rate, crossfade,
-        (d) => this.onDuration(id, d),
-        () => this.onError(id),
-        () => this.mediaEnded(id),
-        () => this.onBlocked(id),
-      )
-      : new SynthVoice(ctx, this.mix!, track.seed, track.genre, start, options.end, this.rate, crossfade);
+    if (!track.fileUrl) {
+      // Every song is a real file or stream; one without audio can only fail.
+      this.voice = null;
+      this.playing = false;
+      queueMicrotask(() => this.onError(id));
+      return;
+    }
+    this.voice = new MediaVoice(
+      ctx, this.mix!, track.fileUrl, Boolean(track.video), start, this.rate, crossfade,
+      (d) => this.onDuration(id, d),
+      () => this.onError(id),
+      () => this.mediaEnded(id),
+      () => this.onBlocked(id),
+    );
     if (options.autoplay) this.play();
     else this.playing = false;
   }
 
   /** Updates the playable range; playback outside the new range snaps to its start. */
   setRange(start: number, end: number) {
+    this.captureProgress();
+    this.onDiscontinuity();
     this.start = start;
     this.setEnd(end);
     // Use the raw voice position; the `position` getter is already clamped to the new end.
@@ -374,7 +405,6 @@ export class AudioEngine {
 
   setEnd(end: number) {
     this.end = end;
-    if (this.voice instanceof SynthVoice) this.voice.setEnd(end);
     if (this.position < end - this.leadPos()) this.firedNear = false;
     if (this.position < end) this.firedEnd = false;
   }
@@ -382,6 +412,7 @@ export class AudioEngine {
   play() {
     if (!this.voice) return;
     this.ensure();
+    this.onDiscontinuity();
     if (this.position >= this.end - 0.05 || this.position < this.start - 0.05) this.seek(this.start);
     this.voice.play();
     this.playing = true;
@@ -390,6 +421,8 @@ export class AudioEngine {
   }
 
   pause() {
+    this.captureProgress();
+    this.onDiscontinuity();
     this.voice?.pause();
     this.killRetiring();
     this.playing = false;
@@ -398,6 +431,8 @@ export class AudioEngine {
 
   seek(position: number) {
     if (!this.voice) return;
+    this.captureProgress();
+    this.onDiscontinuity();
     // Stay inside the clip range.
     const p = Math.max(this.start, Math.min(position, Math.max(this.start, this.end - 0.05)));
     this.killRetiring();
@@ -407,19 +442,25 @@ export class AudioEngine {
   }
 
   unload() {
+    this.dropSwap();
     this.pause();
     this.retireVoice(0.1);
     this.voice = null;
     this.trackId = null;
+    this.url = null;
   }
 
   setVolume(volume: number, muted = this.muted) {
+    this.captureProgress();
+    this.onDiscontinuity();
     this.volume = volume;
     this.muted = muted;
     this.applyVolume();
   }
 
   setRate(rate: number) {
+    this.captureProgress();
+    this.onDiscontinuity();
     this.rate = rate;
     this.voice?.setRate(rate);
   }
@@ -442,6 +483,7 @@ export class AudioEngine {
 
   private check = () => {
     if (!this.voice || !this.playing) return;
+    this.captureProgress();
     const pos = this.voice.position();
     const lead = this.leadPos();
     if (lead > 0 && !this.firedNear && pos >= this.end - lead) {

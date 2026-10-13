@@ -2,4 +2,9 @@ node_modules
 dist
 *.tsbuildinfo
 # Imported songs and the server-side library
-data
+/data
+/release
+/build/desktop
+.wrangler/
+.env*
+.dev.vars*

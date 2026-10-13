@@ -5,6 +5,22 @@ const path = require("node:path");
 const WINDOWS_RESERVED_STEM = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?=\.|$)/i;
 const WINDOWS_INVALID_FILENAME_CHARACTERS = /[<>:"/\\|?*\u0000-\u001f]/g;
 
+// Limits are in UTF-8 bytes: Linux and macOS file systems cap names at 255 bytes,
+// which non-Latin titles reach long before 255 characters (Windows counts
+// characters, so a byte limit is safe there too).
+const bytes = (text) => Buffer.byteLength(text, "utf8");
+/** The longest start of `text` within `maximum` bytes, never splitting a character. */
+function fitBytes(text, maximum) {
+  let out = "";
+  let used = 0;
+  for (const character of text) {
+    used += bytes(character);
+    if (used > maximum) break;
+    out += character;
+  }
+  return out;
+}
+
 function sanitizeWindowsFilename(value, options = {}) {
   const fallback = String(options.fallback || "");
   const maximumLength = Math.max(16, Math.min(240, Number(options.maximumLength) || 240));
@@ -29,10 +45,10 @@ function sanitizeWindowsFilename(value, options = {}) {
   if (!stem) stem = "Track";
   if (WINDOWS_RESERVED_STEM.test(stem)) stem = stem.replace(WINDOWS_RESERVED_STEM, "$&_");
 
-  const availableStemLength = Math.max(1, maximumLength - extension.length);
-  stem = stem.slice(0, availableStemLength).replace(/[. ]+$/g, "") || "Track";
-  if (WINDOWS_RESERVED_STEM.test(stem)) stem = stem.replace(WINDOWS_RESERVED_STEM, "$&_").slice(0, availableStemLength);
-  extension = extension.slice(0, Math.max(0, maximumLength - stem.length));
+  const availableStemLength = Math.max(1, maximumLength - bytes(extension));
+  stem = fitBytes(stem, availableStemLength).replace(/[. ]+$/g, "") || "Track";
+  if (WINDOWS_RESERVED_STEM.test(stem)) stem = fitBytes(stem.replace(WINDOWS_RESERVED_STEM, "$&_"), availableStemLength);
+  extension = fitBytes(extension, Math.max(0, maximumLength - bytes(stem)));
   return `${stem}${extension}`.replace(/[. ]+$/g, "");
 }
 
@@ -42,8 +58,8 @@ function windowsCollisionFilename(value, counter, options = {}) {
   const extension = path.extname(safe);
   const suffix = ` ${Math.max(2, Math.floor(Number(counter) || 2))}`;
   const stem = path.basename(safe, extension);
-  const available = Math.max(1, maximumLength - extension.length - suffix.length);
-  return sanitizeWindowsFilename(`${stem.slice(0, available)}${suffix}${extension}`, {
+  const available = Math.max(1, maximumLength - bytes(extension) - bytes(suffix));
+  return sanitizeWindowsFilename(`${fitBytes(stem, available)}${suffix}${extension}`, {
     ...options,
     maximumLength,
     pathInput: false,

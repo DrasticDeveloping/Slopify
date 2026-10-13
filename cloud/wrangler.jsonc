@@ -1,0 +1,18 @@
+{
+  // Slopify's online service. See docs/cloud.md for setup and deployment.
+  "name": "slopify-cloud",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "d1_databases": [
+    // Create it with `npx wrangler d1 create slopify`, then put its id here.
+    { "binding": "DB", "database_name": "slopify", "database_id": "d0512d09-5cff-4dd4-8ec0-1b157cf27f20", "migrations_dir": "migrations" }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "ListenRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ListenRoom"] }],
+  "vars": {
+    // Your Clerk application's Publishable Key (pk_test_… or pk_live_…). It is public.
+    "CLERK_PUBLISHABLE_KEY": "pk_test_d2VhbHRoeS1saW9uZXNzLTg5NTEuY2xlcmsuYWNjb3VudHMuZGV2JA"
+  }
+}

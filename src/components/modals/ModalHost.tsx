@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { useStore, type Modal } from "../../state/store";
 import { ClipEditorModal } from "./ClipEditor";
-import { ImportModal } from "./ImportModal";
 import { SettingsModal } from "./SettingsModal";
 import { ClosingContext } from "./Shell";
 import { AddSongsModal, ListenAlongModal, PlaylistFormModal } from "./SimpleModals";
@@ -18,8 +17,6 @@ function render(modal: Modal) {
       return <SettingsModal initial={modal.tab} />;
     case "listenAlong":
       return <ListenAlongModal />;
-    case "import":
-      return <ImportModal />;
     case "clipEditor":
       return <ClipEditorModal trackId={modal.trackId} />;
   }
