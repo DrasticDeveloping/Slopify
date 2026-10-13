@@ -6,7 +6,9 @@ import { clearUpNext, isLiked, togglePlay, jumpToOrderIndex, jumpToUpNext, navig
 import { setState, useStore } from "../state/store";
 import { Art, TrackArt } from "./Artwork";
 import { Bars, Icon } from "./Icon";
+import { PlatformBadge } from "./TrackList";
 import { VideoSurface } from "./VideoSurface";
+import { useSlippedIn } from "../state/slipins";
 
 function QueueRow({ id, onPlay, onRemove, current, index }: { id: string; onPlay: () => void; onRemove?: () => void; current?: boolean; index?: number }) {
   const track = useStore((s) => s.tracks[id]);
@@ -21,7 +23,7 @@ function QueueRow({ id, onPlay, onRemove, current, index }: { id: string; onPlay
         {current ? <span className="q-eq"><Bars paused={!isPlaying} /></span> : <span className="q-play"><Icon name="play" size={14} /></span>}
       </div>
       <span className="title-text">
-        <span className={`t-name${current ? " accent" : ""}`}>{track.title}</span>
+        <span className={`t-name${current ? " accent" : ""}`}>{track.title}<PlatformBadge track={track} /></span>
         <span className="t-sub">{artist?.name}</span>
       </span>
       <span className="q-dur">{formatTime(track.duration)}</span>
@@ -101,6 +103,7 @@ export function QueueView() {
 function DetailsView() {
   const { id, track, artist, album, range } = useCurrent();
   const liked = useStore((s) => (id ? isLiked(id, s) : false));
+  const slipped = useSlippedIn();
   const nextId = useStore((s) => (s.currentId ? nextTrackId() : null));
   const nextTrack = useStore((s) => (nextId ? s.tracks[nextId] : null));
   const nextArtist = useStore((s) => (nextTrack ? s.artists[nextTrack.artistId] : null));
@@ -118,7 +121,7 @@ function DetailsView() {
   return (
     <div className="q-scroll np-details" key={track.id}>
       {track.kind === "video" && (track.mediaUrl || track.fileUrl) ? (
-        <button type="button" className="np-art video" onClick={() => setState({ fullPlayer: true })} aria-label="Watch in the full screen player">
+        <button type="button" className="np-art video" onClick={() => setState({ fullPlayer: true })} aria-label="Open full screen player">
           <VideoSurface trackId={track.id} priority={1} />
         </button>
       ) : (
@@ -130,6 +133,7 @@ function DetailsView() {
         <div className="title-text">
           <button type="button" className="link np-title" onClick={() => navigate({ name: "album", id: album.id })}>{track.title}</button>
           <button type="button" className="link np-artist" onClick={() => navigate({ name: "artist", id: artist.id })}>{artist.name}</button>
+          {slipped === track.id ? <span className="small muted slipped-note" title="A song you marked to slip into your listening. Skip it if you're not feeling it; your list carries on next.">Slipped in</span> : null}
         </div>
         <button type="button" className={`icon-btn like-btn${liked ? " on" : ""}`} onClick={() => toggleLike(track.id)} aria-pressed={liked} aria-label={liked ? "Remove from Liked Songs" : "Add to Liked Songs"}>
           <Icon name={liked ? "heartFill" : "heart"} size={22} />
@@ -139,7 +143,7 @@ function DetailsView() {
       <div className="info-card">
         <h3>Details</h3>
         <dl className="kv">
-          <dt>Album</dt><dd><button type="button" className="link" onClick={() => navigate({ name: "album", id: album.id })}>{album.title}</button> · {album.year}</dd>
+          <dt>Album</dt><dd><button type="button" className="link" onClick={() => navigate({ name: "album", id: album.id })}>{album.title}</button>{album.year ? ` · ${album.year}` : ""}</dd>
           <dt>Format</dt><dd>{track.kind === "video" ? "Video" : "Audio"} · {track.storage === "server" ? "Streaming" : track.storage === "downloads" ? "Downloaded" : "Local file"}</dd>
           <dt>Plays</dt><dd>{track.plays.toLocaleString("en")}</dd>
           <dt>Clip</dt>

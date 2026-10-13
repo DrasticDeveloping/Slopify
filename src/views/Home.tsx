@@ -1,12 +1,15 @@
-import { useMemo, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, type MouseEvent, type ReactNode } from "react";
+import { ensureMixes, mixSeed, useMixes } from "../recommend/mixes";
+import { paletteFromSeed } from "../data/library";
 import { Art, PlaylistArt, TrackArt } from "../components/Artwork";
 import { Bars, Icon } from "../components/Icon";
 import { DiscoveryShelf } from "../components/DiscoveryShelf";
+import { ReleaseShelves } from "../components/ReleaseShelves";
 import { Card, PlayFab, Shelf, useContextPlaying } from "../components/Shelf";
 import { greeting, plural } from "../lib/format";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
 import { hasTaste } from "../recommend/rank";
-import { hideRecommendation, isPlayable, libraryIds, navigate, openModal, playList, recommendations, togglePlay } from "../state/actions";
+import { findMusic, hideRecommendation, isPlayable, libraryIds, navigate, playList, recommendations, togglePlay } from "../state/actions";
 import { getState, useStore, type Route } from "../state/store";
 
 function QuickTile({ title, art, route, ids, onMenu }: { title: string; art: ReactNode; route: Route; ids: string[]; onMenu?: (e: MouseEvent) => void }) {
@@ -24,6 +27,7 @@ function QuickTile({ title, art, route, ids, onMenu }: { title: string; art: Rea
 }
 
 export function HomeView() {
+  const mixes = useMixes();
   const playlists = useStore((s) => s.playlists);
   const tracks = useStore((s) => s.tracks);
   const artists = useStore((s) => s.artists);
@@ -35,6 +39,12 @@ export function HomeView() {
   const name = useStore((s) => s.settings.profileName);
   // Only changes that can move suggestions (not every listening progress save) re-rank the shelves.
   const tasteRev = useStore((s) => s.taste.rev);
+  // Library and taste changes can make a new mix; the timer catches midnight and Monday.
+  useEffect(() => {
+    ensureMixes();
+    const timer = window.setInterval(() => ensureMixes(), 60_000);
+    return () => clearInterval(timer);
+  }, [tasteRev, tracks]);
 
   // By default "Recommended for you" is new songs from the web; library songs only when Settings asks for them.
   const includeLibrary = useStore((s) => s.settings.recommendLibrary);
@@ -100,9 +110,9 @@ export function HomeView() {
             <strong>Your library is empty</strong>
             <p className="muted">Import songs or a whole playlist from Spotify, YouTube or SoundCloud, or drop audio files anywhere. Recommendations follow what you bring in.</p>
           </div>
-          <button type="button" className="btn primary" onClick={() => openModal({ type: "import" })}>
-            <Icon name="download" size={18} />
-            Import from Web
+          <button type="button" className="btn primary" onClick={() => findMusic()}>
+            <Icon name="search" size={18} />
+            Find music
           </button>
         </section>
       ) : null}
@@ -147,6 +157,20 @@ export function HomeView() {
       )}
 
       {includeLibrary ? <DiscoveryShelf /> : null}
+
+      {recent.length ? <ReleaseShelves /> : null}
+
+      <Shelf title="Made for you" subtitle="Daily and weekly editions, kept across visits">
+        {mixes.map((mix) => (
+          <Card
+            key={mix.id}
+            art={<Art palette={paletteFromSeed(mixSeed(mix))} glyph={mix.kind === "weekly" ? 5 : 2} />}
+            title={mix.name}
+            subtitle={mix.description}
+            onOpen={() => navigate({ name: "mix", id: mix.id })}
+          />
+        ))}
+      </Shelf>
 
       {jumpBack.length ? (
       <Shelf title="Jump back in" subtitle="Albums from your recent listening">
@@ -202,7 +226,7 @@ export function HomeView() {
             <Card
               key={id}
               round
-              art={<Art palette={a.palette} glyph={4} round label={a.name} />}
+              art={<Art palette={a.palette} glyph={4} round label={a.name} image={a.image} />}
               title={a.name}
               subtitle={`Artist · ${plural(ids.length, "song")}`}
               onOpen={() => navigate({ name: "artist", id })}

@@ -54,11 +54,38 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
 
   const dialog = useRef<HTMLDivElement>(null);
   const video = Boolean(track && track.kind === "video" && (track.mediaUrl || track.fileUrl));
-  const fullscreen = useIsFullscreen();
-  // Video controls fade out while the video plays undisturbed.
-  const idle = useIdle(dialog, video && playing && !queue && !menuOpen);
   const enteredFullscreen = useRef(false);
   const clickTimer = useRef(0);
+  const watchBtn = useRef<HTMLButtonElement>(null);
+  /*
+   * A video plays blurred behind the artwork while you listen; "Watch video" shows
+   * it properly until Return (or the song changes). Keyed by song, so the next
+   * song never opens in watching mode, even for the render before the reset.
+   */
+  const [watchId, setWatchId] = useState<string | null>(null);
+  const watching = video && watchId === id;
+  useEffect(() => setWatchId(null), [id]);
+  const watch = () => {
+    setQueue(false);
+    setWatchId(id);
+    requestAnimationFrame(() => closeBtn.current?.focus());
+  };
+  const returnToMusic = () => {
+    clearTimeout(clickTimer.current);
+    setWatchId(null);
+    if (enteredFullscreen.current && document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    requestAnimationFrame(() => watchBtn.current?.focus());
+  };
+  const fullscreen = useIsFullscreen();
+  // Video controls fade out while the video plays undisturbed.
+  const idle = useIdle(dialog, watching && playing && !queue && !menuOpen);
+
+  // Switching modes can remove the focused transport or artwork button.
+  // Keep keyboard focus in the player after that DOM change.
+  useLayoutEffect(() => {
+    const s = getState();
+    if (!s.menu && !s.modal && dialog.current && !dialog.current.contains(document.activeElement)) closeBtn.current?.focus();
+  }, [watching, id]);
 
   const flipFullscreen = () => {
     enteredFullscreen.current = !document.fullscreenElement;
@@ -73,7 +100,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
 
   // F toggles full screen while watching a video (it otherwise opens and closes this player).
   useEffect(() => {
-    if (!video) return;
+    if (!watching) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
       const s = getState();
       const t = e.target as HTMLElement;
@@ -84,7 +111,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [video]);
+  }, [watching]);
 
   // Hidden controls should not keep focus, or Space would press an invisible button.
   useEffect(() => {
@@ -119,6 +146,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
       e.stopPropagation();
       // The first Escape only leaves full screen (where the browser lets the page see it).
       if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+      else if (watching) returnToMusic();
       else close();
       return;
     }
@@ -180,7 +208,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
   return (
     <div
       ref={dialog}
-      className={`full-player${closing ? " closing" : ""}${queue ? " with-queue" : ""}${video ? " video-mode" : ""}${idle ? " idle" : ""}`}
+      className={`full-player${closing ? " closing" : ""}${queue ? " with-queue" : ""}${watching ? " video-mode" : ""}${idle ? " idle" : ""}`}
       role="dialog"
       aria-modal="true"
       aria-label="Now playing"
@@ -189,9 +217,15 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
       onKeyDown={trap}
     >
       {video ? (
-        <div className="fp-video" onClick={onVideoClick} onDoubleClick={onVideoDoubleClick}>
-          <VideoSurface trackId={track.id} priority={2} label />
-          {playing ? null : <span className="fp-video-paused" aria-hidden="true"><Icon name="play" size={40} /></span>}
+        // One video element for both modes, so switching never restarts or reloads it.
+        <div
+          className={`fp-video${watching ? "" : " ambient"}`}
+          aria-hidden={watching ? undefined : true}
+          onClick={watching ? onVideoClick : undefined}
+          onDoubleClick={watching ? onVideoDoubleClick : undefined}
+        >
+          <VideoSurface trackId={track.id} priority={2} label={watching} />
+          {watching && !playing ? <span className="fp-video-paused" aria-hidden="true"><Icon name="play" size={40} /></span> : null}
         </div>
       ) : (
         <div className="fp-backdrop" aria-hidden="true">
@@ -199,8 +233,15 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
         </div>
       )}
       <header className="fp-head">
-        <button ref={closeBtn} type="button" className="icon-btn round glass" onClick={close} aria-label="Close Now Playing" title="Close (Esc)">
-          <Icon name="chevronDown" size={22} />
+        <button
+          ref={closeBtn}
+          type="button"
+          className="icon-btn round glass"
+          onClick={watching ? returnToMusic : close}
+          aria-label={watching ? "Return to Now Playing" : "Close Now Playing"}
+          title={watching ? "Return to Now Playing (Esc)" : "Close (Esc)"}
+        >
+          <Icon name={watching ? "chevronLeft" : "chevronDown"} size={22} />
         </button>
         <div className="fp-context">
           <span className="eyebrow">Playing from</span>
@@ -211,7 +252,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
         </button>
       </header>
 
-      {video ? (
+      {watching ? (
         <>
           <div className="fp-vcontrols">
             {info}
@@ -241,6 +282,12 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
               <div className="fp-art-slot">
                 <div ref={pulse} className={`fp-art${playing ? " playing" : ""}`} key={track.id}>
                   <TrackArt trackId={track.id} label />
+                  {video ? (
+                    <button ref={watchBtn} type="button" className="fp-watch" aria-label={`Watch video for ${track.title}`} title="Watch video" onClick={watch}>
+                      <Icon name="play" size={30} />
+                      <span>Watch video</span>
+                    </button>
+                  ) : null}
                 </div>
               </div>
               {info}

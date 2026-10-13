@@ -4,9 +4,11 @@ import { Hero } from "../components/Hero";
 import { Icon } from "../components/Icon";
 import { PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
+import { PlaylistSuggestions } from "../components/PlaylistSuggestions";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
-import { downloadTracks, navigate, openModal, toggleShuffle } from "../state/actions";
+import { navigate, openModal, startCollectionRadio, toggleShuffle } from "../state/actions";
+import { downloadTracks } from "../state/server";
 import { useStore, type Route } from "../state/store";
 
 function ShuffleToggle() {
@@ -121,6 +123,7 @@ export function PlaylistView({ id }: { id: string }) {
           )
         }
       />
+      {editable && ids.length ? <PlaylistSuggestions id={id} name={playlist.name} seedIds={ids} /> : null}
     </div>
   );
 }
@@ -142,10 +145,14 @@ export function AlbumView({ id }: { id: string }) {
         title={album.title}
         tint={album.palette.b}
         play={{ ids, label: album.title, route }}
-        meta={<><Art palette={artist.palette} round className="meta-avatar" /><button type="button" className="link strong" onClick={() => navigate({ name: "artist", id: artist.id })}>{artist.name}</button><span>{album.year}</span><span>{plural(ids.length, "song")}, {formatLongDuration(total)}</span></>}
+        meta={<><Art palette={artist.palette} round className="meta-avatar" /><button type="button" className="link strong" onClick={() => navigate({ name: "artist", id: artist.id })}>{artist.name}</button>{album.year ? <span>{album.year}</span> : null}<span>{plural(ids.length, "song")}, {formatLongDuration(total)}</span></>}
       />
       <div className="action-bar">
         <PlayFab ids={ids} label={album.title} route={route} size="lg" />
+        <button type="button" className="btn" onClick={() => startCollectionRadio(ids, album.title)}>
+          <Icon name="radio" size={18} />
+          Album radio
+        </button>
         <ShuffleToggle />
         {serverOnly.length ? (
           <button type="button" className="icon-btn lg" onClick={() => downloadTracks(serverOnly)} aria-label="Download album" title="Download album">
@@ -157,7 +164,7 @@ export function AlbumView({ id }: { id: string }) {
         </button>
       </div>
       <TrackList ids={ids} context={{ label: album.title, route }} showAlbum={false} showAdded={false} sortable={false} />
-      <p className="fine-print">© {album.year} {artist.name}. Generated for the Slopify mockup.</p>
+      {album.released ? <p className="fine-print">Released {new Date(`${album.released}T12:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}</p> : null}
     </div>
   );
 }

@@ -11,7 +11,10 @@ export type Route =
   | { name: "playlists" }
   | { name: "playlist"; id: string }
   | { name: "album"; id: string }
+  /** A release from the music catalog, by catalog id ("dz123"). */
+  | { name: "release"; id: string }
   | { name: "artist"; id: string }
+  | { name: "mix"; id: string }
   | { name: "storage" }
   | { name: "server" }
   | { name: "history" };
@@ -22,8 +25,9 @@ export type Modal =
   | { type: "addSongs"; playlistId: string }
   | { type: "settings"; tab?: SettingsTab }
   | { type: "listenAlong" }
-  | { type: "import" }
   | { type: "clipEditor"; trackId?: string };
+
+export interface RoomMember { userId: string; name: string; avatarUrl: string | null; host: boolean }
 
 export type SettingsTab = "general" | "playback" | "appearance" | "server" | "shortcuts";
 
@@ -64,8 +68,6 @@ export interface Settings {
   theme: Theme;
   crossfade: boolean;
   crossfadeSeconds: number;
-  runInBackground: boolean;
-  discord: boolean;
   reduceMotion: boolean;
   compact: boolean;
   autoplay: boolean;
@@ -73,9 +75,11 @@ export interface Settings {
   recommendLibrary: boolean;
   normalize: boolean;
   profileName: string;
-  serverUrl: string;
-  uploadMode: "local_file" | "link" | "off";
   downloadMode: "verified_file_cache" | "stream_only";
+  /** How often songs you've marked are slipped in between the ones you play (see slipins.ts). */
+  slipIns: "off" | "rare" | "sometimes" | "often";
+  /** Tone controls (dB for bass, mid and treble; −1 left to 1 right for balance). */
+  tone: { bass: number; mid: number; treble: number; balance: number };
 }
 
 export interface PlaybackContext {
@@ -84,6 +88,8 @@ export interface PlaybackContext {
   ids: string[];
   /** Why each song was recommended, when the collection came from the recommender. */
   picks?: Record<string, ReasonKind>;
+  /** Set while a web-discovery radio is playing, so it can top itself up. */
+  radioKey?: string;
 }
 
 export interface AppState {
@@ -123,8 +129,19 @@ export interface AppState {
   settings: Settings;
   clips: Record<string, ClipRange>;
   clipDraft: ({ trackId: string } & ClipRange) | null;
-  server: { status: "connected" | "connecting" | "offline"; downloads: Record<string, number> };
-  listen: { mode: "idle" | "connecting" | "host" | "guest"; code: string; people: string[]; host?: string };
+  /** The music server (this computer's Slopify backend): reachability, songs being saved on this device (progress 0–1), last library sync. */
+  server: {
+    status: "connected" | "connecting" | "offline";
+    downloads: Record<string, number>;
+    syncedAt?: number;
+    /** The last sync with the signed-in Slopify account, and why the last attempt failed, if it did. */
+    cloudSyncedAt?: number;
+    cloudError?: string;
+    /** This computer's library belongs to another Slopify account (its email or name), so account sync is off. */
+    linkedElsewhere?: string;
+  };
+  /** Listen Along (src/state/listen.ts): the room this device is in, and who else is. */
+  listen: { mode: "idle" | "connecting" | "host" | "guest"; code: string; members: RoomMember[]; host?: string };
   listenLog: Record<string, number>;
   /** Timestamped play starts, newest first, for the chronological history view. */
   listens: Array<{ id: string; at: number }>;
@@ -140,17 +157,15 @@ export const defaultSettings: Settings = {
   theme: "dynamic",
   crossfade: false,
   crossfadeSeconds: 6,
-  runInBackground: true,
-  discord: false,
   reduceMotion: false,
   compact: false,
   autoplay: true,
   recommendLibrary: false,
   normalize: true,
   profileName: "Daz",
-  serverUrl: "https://music.slopify.local",
-  uploadMode: "local_file",
   downloadMode: "verified_file_cache",
+  slipIns: "sometimes",
+  tone: { bass: 0, mid: 0, treble: 0, balance: 0 },
 };
 
 interface CatalogPatch {
@@ -162,7 +177,21 @@ interface CatalogPatch {
   albums: Record<string, Album>;
 }
 
-type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listens" | "taste">> & { catalog?: CatalogPatch };
+type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listens" | "taste">> & { catalog?: CatalogPatch; librarySync?: unknown };
+/*
+ * The library sync base (see sync.ts) is saved in the same record as the app
+ * data it describes. Tabs share this storage, so whichever tab saves last
+ * stores its own data with its own base, and a reload never pairs one tab's
+ * data with another tab's base (which made playlists look deleted).
+ */
+let initialSyncBase: unknown;
+let syncSnapshot: (() => unknown) | undefined;
+/** The sync base saved with the data this tab loaded. */
+export const initialLibrarySync = () => initialSyncBase;
+/** Lets sync.ts provide its current base whenever the app data is saved. */
+export function connectLibrarySync(snapshot: () => unknown) {
+  syncSnapshot = snapshot;
+}
 
 function catalogPatch(s: AppState): CatalogPatch {
   const trackIds = s.trackIds.filter((id) => s.tracks[id] && !s.tracks[id].fileUrl && !s.tracks[id].stream);
@@ -192,6 +221,7 @@ const STARTER_PLAYLISTS = new Set(["p1", "p2", "p3", "p4", "p5"]);
 
 function initialState(): AppState {
   const saved = loadPersisted();
+  initialSyncBase = saved.librarySync;
   const artists: Record<string, Artist> = {};
   const albums: Record<string, Album> = {};
   const tracks: Record<string, Track> = {};
@@ -201,17 +231,18 @@ function initialState(): AppState {
     for (const id of patch.trackIds) {
       const t = patch.tracks[id];
       // Only music you brought in is kept: the generated demo songs from older builds had no server copy.
-      if (t?.serverId) tracks[id] = t;
+      // Songs saved from the web before links were stored as files; they now stream from the server until this device keeps a copy.
+      if (t?.serverId) tracks[id] = t.storage === "files" ? { ...t, storage: "server" } : t;
     }
     trackIds = patch.trackIds.filter((id) => tracks[id]);
     for (const t of Object.values(tracks)) {
       // Repair saves from older builds that lost an import's artist or album.
       artists[t.artistId] = patch.artists[t.artistId] ?? { id: t.artistId, name: "Unknown artist", genre: "indie", palette: paletteFromSeed(hashString(t.artistId)), listeners: 0 };
-      albums[t.albumId] = patch.albums[t.albumId] ?? { id: t.albumId, title: t.title, artistId: t.artistId, year: new Date(t.addedAt).getFullYear(), palette: paletteFromSeed(hashString(t.albumId)), glyph: 0 };
+      albums[t.albumId] = patch.albums[t.albumId] ?? { id: t.albumId, title: t.title, artistId: t.artistId, palette: paletteFromSeed(hashString(t.albumId)), glyph: 0 };
     }
   }
   const playlists = (saved.playlists ?? [])
-    .map((p) => ({ ...p, trackIds: p.trackIds.filter((id) => tracks[id]) }))
+    .map((p) => ({ ...(p.id === "liked" ? likedPlaylist(p) : p), trackIds: p.trackIds.filter((id) => tracks[id]) }))
     .filter((p) => p.system || p.trackIds.length || !STARTER_PLAYLISTS.has(p.id));
   if (!playlists.some((p) => p.id === "liked")) playlists.unshift(likedPlaylist());
   return {
@@ -246,11 +277,12 @@ function initialState(): AppState {
     searchFocusNonce: 0,
     header: null,
     // Older saves still point at the pre-rename demo server address.
-    settings: { ...defaultSettings, ...saved.settings, ...(saved.settings?.serverUrl === "https://music.resonance.local" ? { serverUrl: defaultSettings.serverUrl } : {}) },
+    // Only current settings: older builds also saved a server address and upload mode.
+    settings: { ...defaultSettings, ...Object.fromEntries(Object.entries(saved.settings ?? {}).filter(([key]) => key in defaultSettings)) },
     clips: saved.clips ?? {},
     clipDraft: null,
-    server: { status: "connected", downloads: {} },
-    listen: { mode: "idle", code: "", people: [] },
+    server: { status: "connecting", downloads: {} },
+    listen: { mode: "idle", code: "", members: [] },
     listenLog: saved.listenLog ?? {},
     listens: (saved.listens ?? []).filter((l) => tracks[l.id]),
     taste: restoreTaste(saved.taste, new Set(trackIds)),
@@ -295,6 +327,8 @@ export function flushPersist() {
     // Session-only files are gone after a reload, so their feedback is too.
     taste: restoreTaste(s.taste, new Set(s.trackIds.filter((id) => s.tracks[id] && !s.tracks[id].fileUrl))),
     catalog: catalogPatch(s),
+    // Saved with the data it describes, in one write.
+    librarySync: syncSnapshot?.() ?? initialSyncBase,
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -327,6 +361,8 @@ export function resetAppData() {
   persistenceStopped = true;
   clearTimeout(persistTimer);
   localStorage.removeItem(STORAGE_KEY);
+  // Mix editions (recommend/mixes.ts keeps its own key; importing it here would be circular).
+  localStorage.removeItem("slopify.mix-editions.v1");
   location.reload();
 }
 

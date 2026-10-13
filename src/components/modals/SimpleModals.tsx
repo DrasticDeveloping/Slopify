@@ -1,6 +1,8 @@
 import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import { plural } from "../../lib/format";
-import { addToPlaylist, closeModal, createPlaylist, editPlaylist, joinRoom, leaveRoom, libraryIds, navigate, removeFromPlaylist, startRoom, toast } from "../../state/actions";
+import { addToPlaylist, closeModal, createPlaylist, editPlaylist, libraryIds, navigate, removeFromPlaylist, toast } from "../../state/actions";
+import { signIn, useAccount } from "../../state/cloud";
+import { joinRoom, leaveRoom, startRoom } from "../../state/listen";
 import { getState, useStore } from "../../state/store";
 import { Art, TrackArt } from "../Artwork";
 import { Icon } from "../Icon";
@@ -99,9 +101,10 @@ export function AddSongsModal({ playlistId }: { playlistId: string }) {
 
 export function ListenAlongModal() {
   const listen = useStore((s) => s.listen);
-  const name = useStore((s) => s.settings.profileName);
+  const account = useAccount();
   const [code, setCode] = useState("");
   const valid = /^[A-Z0-9]{4}-?[A-Z0-9]{4}$/i.test(code.trim());
+  const me = account.userId;
 
   const copy = async () => {
     try {
@@ -112,8 +115,25 @@ export function ListenAlongModal() {
     }
   };
 
+  if (account.status !== "signedIn") {
+    return (
+      <Shell title="Listen along" subtitle="Listen together in real time, with one person in control." icon="users" size="sm">
+        <p className="muted">
+          {account.status === "disabled"
+            ? "Listen Along needs Slopify's online service, which this copy of Slopify isn't set up with."
+            : "Rooms are linked to your Slopify account, so friends see who you are."}
+        </p>
+        {account.status !== "disabled" ? (
+          <div className="form-actions">
+            <button type="button" className="btn primary" disabled={account.status === "loading"} onClick={signIn}>Sign in</button>
+          </div>
+        ) : null}
+      </Shell>
+    );
+  }
+
   if (listen.mode === "host" || listen.mode === "guest") {
-    const people = listen.mode === "host" ? [name, ...listen.people] : [listen.host!, ...listen.people.filter((p) => p !== listen.host), name];
+    const guests = listen.members.filter((m) => !m.host).length;
     return (
       <Shell title="Listen along" subtitle={listen.mode === "host" ? "You control playback for everyone." : `${listen.host} controls playback. Your volume is yours.`} icon="users" size="sm">
         <div className="room-card">
@@ -123,16 +143,16 @@ export function ListenAlongModal() {
             <button type="button" className="btn sm" onClick={copy}><Icon name="copy" size={16} />Copy</button>
           </div>
         </div>
-        <h3 className="mini-head">In the room · {people.length}</h3>
+        <h3 className="mini-head">In the room · {listen.members.length}</h3>
         <ul className="people">
-          {people.map((p, i) => (
-            <li key={p} style={{ "--i": i } as CSSProperties}>
-              <Art palette={{ a: `hsl(${(p.charCodeAt(0) * 37) % 360} 70% 60%)`, b: `hsl(${(p.charCodeAt(0) * 37 + 60) % 360} 60% 45%)`, c: "hsl(240 40% 20%)" }} round className="person-art" />
-              <span>{p}{p === name ? " (you)" : ""}</span>
-              {(listen.mode === "host" && i === 0) || (listen.mode === "guest" && i === 0) ? <span className="pill">Host</span> : null}
+          {listen.members.map((m, i) => (
+            <li key={m.userId} style={{ "--i": i } as CSSProperties}>
+              <Art palette={{ a: `hsl(${(m.name.charCodeAt(0) * 37) % 360} 70% 60%)`, b: `hsl(${(m.name.charCodeAt(0) * 37 + 60) % 360} 60% 45%)`, c: "hsl(240 40% 20%)" }} round className="person-art" image={m.avatarUrl ?? undefined} />
+              <span>{m.name}{m.userId === me ? " (you)" : ""}</span>
+              {m.host ? <span className="pill">Host</span> : null}
             </li>
           ))}
-          {listen.mode === "host" && listen.people.length < 2 ? <li className="waiting"><span className="live-dot" />Waiting for friends to join…</li> : null}
+          {listen.mode === "host" && !guests ? <li className="waiting"><span className="live-dot" />Share the code. Friends join from Listen along with their Slopify account.</li> : null}
         </ul>
         <div className="form-actions">
           <button type="button" className="btn danger" onClick={() => { leaveRoom(); closeModal(); }}>{listen.mode === "host" ? "End room" : "Leave room"}</button>
@@ -141,9 +161,10 @@ export function ListenAlongModal() {
     );
   }
 
+  const busy = listen.mode === "connecting";
   return (
     <Shell title="Listen along" subtitle="Listen together in real time, with one person in control." icon="users" size="sm">
-      <button type="button" className="option-card" onClick={startRoom}>
+      <button type="button" className="option-card" onClick={() => void startRoom()} disabled={busy}>
         <span className="option-icon"><Icon name="radio" size={22} /></span>
         <span>
           <strong>Start a room</strong>
@@ -156,15 +177,15 @@ export function ListenAlongModal() {
         className="join-row"
         onSubmit={(e) => {
           e.preventDefault();
-          if (valid) joinRoom(code.trim().replace(/^(\w{4})(\w{4})$/, "$1-$2"));
+          if (valid) void joinRoom(code);
         }}
       >
-        <input className="input mono" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX" maxLength={9} aria-label="Room code" spellCheck={false} disabled={listen.mode === "connecting"} />
-        <button type="submit" className="btn primary" disabled={!valid || listen.mode === "connecting"}>
-          {listen.mode === "connecting" ? <><span className="spinner" />Joining</> : "Join"}
+        <input className="input mono" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX" maxLength={9} aria-label="Room code" spellCheck={false} disabled={busy} />
+        <button type="submit" className="btn primary" disabled={!valid || busy}>
+          {busy ? <><span className="spinner" />{listen.code ? "Joining" : "Starting"}</> : "Join"}
         </button>
       </form>
-      <p className="muted small">Tip: any 8-character code works in this mockup.</p>
+      <p className="muted small">Everyone hears songs saved from the web. A song that's only a file on the host's computer can't be shared.</p>
     </Shell>
   );
 }

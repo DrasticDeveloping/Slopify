@@ -1,20 +1,25 @@
 import { useSyncExternalStore } from "react";
 import { engine } from "../audio/engine";
 import { hashString, paletteFromSeed } from "../data/library";
-import type { Album, Artist, Genre, Track } from "../data/types";
-import type { ReasonKind } from "../recommend/taste";
+import { isUploadLink, uploadCredit } from "../lib/credits";
+import type { Album, Artist, ClipRange, Genre, Track } from "../data/types";
+import { meaningfulArtist, type ReasonKind } from "../recommend/taste";
 import {
-  addToPlaylist, cancelServerDelete, closeModal, connectStreams, createPlaylist, hideDiscovery, isServerDeletePending, keepDiscovery, linkSavedStream, navigate, openModal,
-  playList, retryServerDeletes, toast, togglePlay, updateToast,
+  addToPlaylist, cancelServerDelete, connectStreams, createPlaylist, hideDiscovery, isServerDeletePending, keepDiscovery, linkSavedStream, navigate,
+  playList, retryServerDeletes, toast, togglePlay, updateToast, type StreamMedia,
 } from "./actions";
-import { getState, setState, subscribe as subscribeApp } from "./store";
+import { dropFromDevice } from "./device";
+import { downloadTracks } from "./server";
+import { listSongs, pendingSongChanges, updateSong, type ServerSong } from "./song-api";
+import { getState, setState, subscribe as subscribeApp, type AppState } from "./store";
 
 /*
- * "Import from Web", ported from Resonance's local import flow: paste a Spotify,
- * SoundCloud, or YouTube link (resolved automatically) or search all three, pick a
- * source (or playlist songs), preview 30 seconds, then download in the background
- * while a transfer toast tracks progress. The work runs in the import API
- * (server/api.mjs), which reuses Resonance's provider modules.
+ * Saving music from the web, ported from Resonance's local import flow: search
+ * Spotify, SoundCloud and YouTube or paste a link, pick a source (or playlist
+ * songs), then save in the background while a transfer toast tracks progress.
+ * The music server (server/api.mjs, reusing Resonance's provider modules)
+ * records each song as its source link with metadata; this device then keeps
+ * the song's file (server.ts, device.ts).
  */
 
 export type MediaKind = "audio" | "video";
@@ -36,6 +41,7 @@ export interface SourceTrack {
   trackNumber?: number | null;
   durationSeconds?: number | null;
   artworkURL?: string | null;
+  creatorAvatarURL?: string | null;
   sourceURL?: string | null;
   sourcePageURL?: string | null;
 }
@@ -46,6 +52,8 @@ export interface Candidate {
   album?: string | null;
   durationSeconds?: number | null;
   thumbnailURL?: string | null;
+  videoThumbnailURL?: string | null;
+  creatorAvatarURL?: string | null;
   sourceProvider?: string;
   searchProvider?: Provider;
   sourceURL: string;
@@ -79,6 +87,8 @@ export interface Resolution {
   candidates: Candidate[];
   playlist?: { title?: string; unavailableCount?: number; truncated?: boolean };
   unavailableProviders?: string[];
+  /** A search's next page of results, for searchMore; absent when there are no more. */
+  more?: string | null;
 }
 
 export interface ImportFailure {
@@ -90,21 +100,6 @@ export interface ImportFailure {
 export type Stage =
   | "idle" | "resolving_metadata" | "searching_candidates" | "awaiting_selection" | "inspecting_source" | "downloading"
   | "processing" | "saving_local" | "local_complete" | "complete" | "failed" | "cancelled";
-
-/** A song in the import API's library (see `publicTrack` in server/api.mjs). */
-export interface ServerTrack {
-  id: string;
-  title: string;
-  artist: string | null;
-  album: string | null;
-  durationSeconds: number | null;
-  mediaKind: MediaKind;
-  size: number;
-  addedAt: number;
-  sourceURL: string | null;
-  mediaUrl: string;
-  artworkUrl: string | null;
-}
 
 export interface ImportState {
   /** Whether the import API answered; null until checked. */
@@ -119,7 +114,6 @@ export interface ImportState {
   selected: number[];
   error: ImportFailure | null;
   busy: "resolve" | "import" | null;
-  upload: boolean;
   providerFocus: Provider;
   /** "2 of 14 • Song" while a playlist downloads, otherwise the song title. */
   transferName: string;
@@ -138,7 +132,6 @@ const blank = (): Omit<ImportState, "available"> => ({
   selected: [],
   error: null,
   busy: null,
-  upload: false,
   providerFocus: "youtube",
   transferName: "",
   preview: null,
@@ -315,16 +308,23 @@ async function streamCall<T>(path: string, body: unknown, signal: AbortSignal, o
 /* ───────────────────────── discovery (Home → Discover new music) ───────────────────────── */
 
 /** A provider search for discovery. It has its own request, so an open import dialog is left alone. */
-export async function searchDiscovery(query: string, signal: AbortSignal): Promise<Resolution> {
-  const result = await streamCall<Resolution>("/api/import/resolve", { source: query, mediaKind: "audio" }, signal, () => undefined, "searching_candidates");
+export async function searchDiscovery(query: string, signal: AbortSignal, mediaKind: MediaKind = "audio"): Promise<Resolution> {
+  const result = await streamCall<Resolution>("/api/import/resolve", { source: query, mediaKind }, signal, () => undefined, "searching_candidates");
   // Nothing found is an answer, not a failure.
   if (!result.ok && result.error.code === "NO_SEARCH_RESULTS") return { kind: "search_results", mediaKind: "audio", track: {}, candidates: [] };
   if (!result.ok) throw result.error;
   return result.result;
 }
 
+/** The next page of a search's results (Resolution.more). */
+export async function searchMore(more: string, mediaKind: MediaKind, signal: AbortSignal): Promise<Resolution> {
+  const result = await streamCall<Resolution>("/api/import/resolve", { more, mediaKind }, signal, () => undefined, "searching_candidates");
+  if (!result.ok) throw result.error;
+  return result.result;
+}
+
 /** How an added suggestion carries on once it is in the library: played straight away (the default), and/or handed to `done`. */
-interface DiscoveryOptions { play?: boolean; done?: (libraryId: string) => void }
+interface DiscoveryOptions { play?: boolean; done?: (libraryId: string) => void; /** Save it as a video (a YouTube video played as one). */ video?: boolean }
 
 /** The suggestion being reviewed or added, and why it was suggested. */
 let discovery: ({ candidate: Candidate; kind: ReasonKind } & DiscoveryOptions) | null = null;
@@ -335,12 +335,31 @@ function importBusy() {
   return true;
 }
 
-/** Opens the import dialog on just this suggestion, to preview it or check its source first. */
+/** Shows just this suggestion in Search, to listen to it or check its source before saving. */
 export function reviewDiscoveredSong(candidate: Candidate, kind: ReasonKind, options: DiscoveryOptions = {}) {
   if (!isDownloadable(candidate) || importBusy()) return;
   discovery = { candidate, kind, ...options };
   prepareImportDialog();
-  openModal({ type: "import" });
+  navigate({ name: "search", q: state.source });
+}
+
+/** Saves the chosen search results through the same download pipeline as the import dialog. */
+export async function saveSearchResults(source: string, resolution: Resolution, selected: number[]) {
+  if (importBusy()) return;
+  resolveController?.abort();
+  clearAuto();
+  stopPreview({ resume: true });
+  // A suggestion under review keeps its playlist/like follow-ups only if it is what's being saved.
+  if (discovery?.candidate !== resolution.candidates[selected[0]]) discovery = null;
+  set({
+    source,
+    resolution,
+    selected: selected.filter((i) => isDownloadable(resolution.candidates[i])),
+    mediaKind: resolution.mediaKind,
+    busy: null,
+    error: null,
+  });
+  await confirmImport();
 }
 
 /** Downloads a suggestion into the library and plays it. Matches that need a source check go through review instead. */
@@ -361,9 +380,26 @@ export async function addDiscoveredSong(candidate: Candidate, kind: ReasonKind, 
  * saved. Its audio is the whole song, downloaded once by the import API's
  * preview service and served from there with seeking.
  */
-export interface StreamSong { key: string; candidate: Candidate; title: string; artist: string; artwork?: string; kind: ReasonKind }
+export interface StreamSong {
+  key: string; candidate: Candidate; title: string; artist: string; artwork?: string; kind: ReasonKind;
+  /**
+   * true: a video that's also saved as one (found under Videos, or a host's video
+   * in Listen Along). false: audio only. Unset: a YouTube video streams as video
+   * and is saved as audio, like any song.
+   */
+  video?: boolean;
+  /** The release it's from, when known (a catalog album's tracks). */
+  album?: string; released?: string;
+}
 
-const streamSources = new Map<string, { candidate: Candidate; kind: ReasonKind; key: string }>();
+const streamSources = new Map<string, { candidate: Candidate; kind: ReasonKind; key: string; video: boolean; saveVideo: boolean }>();
+
+/**
+ * A result that is a YouTube video (not a YouTube Music track, and not a match
+ * found for a Spotify or SoundCloud song), so it has a picture worth streaming.
+ */
+const isYouTubeVideo = (c: Candidate) =>
+  c.sourceProvider === "youtube" && (!c.searchProvider || c.searchProvider === "youtube") && c.importMetadata?.provider !== "spotify" && c.importMetadata?.provider !== "soundcloud";
 
 export const streamTrackId = (key: string) => `stream_${hashString(key).toString(36)}`;
 
@@ -379,10 +415,13 @@ export function registerStreams(songs: StreamSong[]) {
   for (const song of songs) {
     if (!canStream(song.candidate)) continue;
     const id = streamTrackId(song.key);
-    streamSources.set(id, { candidate: song.candidate, kind: song.kind, key: song.key });
+    const youtube = song.candidate.sourceProvider !== "soundcloud";
+    const video = youtube && (song.video ?? isYouTubeVideo(song.candidate));
+    streamSources.set(id, { candidate: song.candidate, kind: song.kind, key: song.key, video, saveVideo: youtube && song.video === true });
     if (tracks[id]) continue;
     if (tracks === s.tracks) [tracks, artists, albums] = [{ ...tracks }, { ...artists }, { ...albums }];
-    const name = song.artist.trim() || "Unknown artist";
+    const credit = song.candidate.importMetadata?.provider !== "spotify" && isUploadLink(song.candidate.sourceURL) ? uploadCredit(song.artist, song.title) : { artist: song.artist, title: song.title };
+    const name = credit.artist.trim() || "Unknown artist";
     let artist = Object.values(artists).find((a) => a.name.toLowerCase() === name.toLowerCase());
     if (!artist) {
       const h = hashString(name);
@@ -394,26 +433,81 @@ export function registerStreams(songs: StreamSong[]) {
     const meta = song.candidate.importMetadata;
     albums[albumId] = {
       id: albumId,
-      title: meta?.album?.trim() || song.title,
+      title: song.album || meta?.album?.trim() || song.title,
       artistId: artist.id,
-      year: new Date().getFullYear(),
+      ...(song.released ? { year: Number(song.released.slice(0, 4)), released: song.released } : {}),
       palette: paletteFromSeed(seed),
       glyph: seed % 6,
       ...(song.artwork ? { artworkUrl: song.artwork } : {}),
     };
     const duration = meta?.durationSeconds ?? song.candidate.durationSeconds ?? 0;
-    tracks[id] = { id, title: song.title, artistId: artist.id, albumId, duration, addedAt: Date.now(), kind: "audio", storage: "files", size: 0, plays: 0, seed, stream: true };
+    tracks[id] = { id, title: credit.title, artistId: artist.id, albumId, duration, addedAt: Date.now(), kind: video ? "video" : "audio", storage: "files", size: 0, plays: 0, seed, stream: true };
   }
   if (tracks !== s.tracks) setState({ tracks, artists, albums });
 }
 
-async function streamSource(id: string) {
+/** The platform a song was found on (YouTube, Spotify or SoundCloud), from its source link or the search that found it. */
+export function trackPlatform(t: Track): Provider | null {
+  const found = streamSources.get(t.id)?.candidate;
+  if (found?.searchProvider) return found.searchProvider;
+  const url = found?.sourceURL ?? t.sourceUrl ?? t.playableUrl;
+  if (!url) return null;
+  try {
+    const host = new URL(url).hostname.replace(/^(www|m|music)\./, "");
+    if (host === "youtube.com" || host === "youtu.be") return "youtube";
+    if (host === "open.spotify.com" || host === "spotify.com") return "spotify";
+    if (host === "soundcloud.com" || host === "on.soundcloud.com") return "soundcloud";
+  } catch {
+    // Not a link.
+  }
+  return null;
+}
+
+/** Where a streamed song's audio comes from, for sharing it (Listen Along). */
+export const streamLink = (id: string) => streamSources.get(id)?.candidate.sourceURL ?? null;
+
+/** Videos being prepared for streamed songs, so playing one again meanwhile doesn't prepare it twice. */
+const pictures = new Map<string, Promise<string | null>>();
+
+async function streamSource(id: string): Promise<StreamMedia> {
   const source = streamSources.get(id);
   if (!source) throw new Error("This suggestion is no longer available.");
-  const res = await fetch("/api/import/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceURL: source.candidate.sourceURL }) });
-  const body = (await res.json().catch(() => null)) as ApiResult<{ url: string }> | null;
-  if (!body || !body.ok) throw new Error(body && !body.ok ? body.error.message : "Its source isn't available right now.");
-  return body.result.url;
+  const fetchPreview = async (mediaKind: MediaKind) => {
+    const res = await fetch("/api/import/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceURL: source.candidate.sourceURL, mediaKind }) });
+    const body = (await res.json().catch(() => null)) as ApiResult<{ url: string }> | null;
+    if (!body || !body.ok) throw new Error(body && !body.ok ? body.error.message : "Its source isn't available right now.");
+    return body.result.url;
+  };
+  if (!source.video) return { url: await fetchPreview("audio") };
+  /*
+   * A video takes a while to prepare (its picture and sound are fetched separately
+   * and joined), so the song starts on its audio, which comes much sooner, and the
+   * picture joins once it's ready. A video prepared already starts as one.
+   */
+  let picture = pictures.get(id);
+  if (!picture) {
+    picture = fetchPreview("video").then(
+      (url) => url,
+      () => {
+        // A video YouTube won't hand over as one MP4 plays on as audio.
+        source.video = false;
+        setState((s) => (s.tracks[id] ? { tracks: { ...s.tracks, [id]: { ...s.tracks[id], kind: "audio" } } } : {}));
+        return null;
+      },
+    );
+    pictures.set(id, picture);
+    void picture.finally(() => pictures.delete(id));
+  }
+  type First = { url: string } | { error: unknown } | { video: string };
+  const audio: Promise<First> = fetchPreview("audio").then((url) => ({ url }), (error: unknown) => ({ error }));
+  const first = await Promise.race([audio, picture.then((url): First | Promise<First> => (url ? { video: url } : audio))]);
+  if ("video" in first) return { url: first.video };
+  if ("error" in first) {
+    const url = await picture;
+    if (url) return { url };
+    throw first.error;
+  }
+  return { url: first.url, picture };
 }
 
 /** Resolves once no import is running (the importer handles one at a time). */
@@ -428,15 +522,24 @@ function whenImportIdle() {
   });
 }
 
-/** Resolves once the import dialog is closed (a source check is up to the user). */
-function whenDialogClosed() {
+/**
+ * Resolves once the user has finished reviewing `candidate` in Search: they saved
+ * it (and the save finished), or left that search, which abandons the review.
+ */
+function whenReviewFinished(candidate: Candidate) {
   return new Promise<void>((resolve) => {
-    if (getState().modal?.type !== "import") return resolve();
-    const stop = subscribeApp(() => {
-      if (getState().modal?.type === "import") return;
-      stop();
+    const check = () => {
+      const route = getState().route;
+      const reviewing = discovery?.candidate === candidate;
+      if (reviewing && (route.name !== "search" || route.q !== state.source)) discovery = null;
+      if (discovery?.candidate === candidate || state.busy === "import") return;
+      stopApp();
+      stopImport();
       resolve();
-    });
+    };
+    const stopApp = subscribeApp(check);
+    const stopImport = subscribe(check);
+    check();
   });
 }
 
@@ -465,10 +568,10 @@ function saveStreamToLibrary(id: string, then?: (libraryId: string) => void) {
     .then(whenImportIdle)
     .then(async () => {
       if (source.candidate.requiresReview) {
-        reviewDiscoveredSong(source.candidate, source.kind, { play: false, done });
-        await whenDialogClosed();
+        reviewDiscoveredSong(source.candidate, source.kind, { play: false, done, video: source.saveVideo });
+        await whenReviewFinished(source.candidate);
         await whenImportIdle();
-      } else await addDiscoveredSong(source.candidate, source.kind, { play: false, done });
+      } else await addDiscoveredSong(source.candidate, source.kind, { play: false, done, video: source.saveVideo });
     })
     .catch(() => undefined)
     .finally(() => queuedSaves.delete(id));
@@ -498,7 +601,16 @@ export async function checkImportService() {
 
 const GENRES: Genre[] = ["indie", "lofi", "synthwave", "house", "ambient"];
 
-function placeServerTrack(p: ServerTrack, artists: Record<string, Artist>, albums: Record<string, Album>): Track {
+/** When the song came out, as the server looked it up (see backfillReleases in server/api.mjs). */
+function releaseOf(p: ServerSong): { year?: number; released?: string } {
+  const released = p.extra?.["release.date"];
+  return typeof released === "string" && /^\d{4}-\d{2}-\d{2}$/.test(released) ? { year: Number(released.slice(0, 4)), released } : {};
+}
+
+/** A song with no album (the server drops old "Imported" placeholders) is shown as its own single. */
+const serverAlbumTitle = (p: ServerSong) => p.album?.trim() || p.title;
+
+function placeServerTrack(p: ServerSong, artists: Record<string, Artist>, albums: Record<string, Album>): Track {
   const name = p.artist?.trim() || "Unknown artist";
   let artist = Object.values(artists).find((a) => a.name.toLowerCase() === name.toLowerCase());
   if (!artist) {
@@ -510,9 +622,9 @@ function placeServerTrack(p: ServerTrack, artists: Record<string, Artist>, album
   const albumId = `al_srv_${p.id}`;
   albums[albumId] = {
     id: albumId,
-    title: p.album?.trim() || p.title,
+    title: serverAlbumTitle(p),
     artistId: artist.id,
-    year: new Date(p.addedAt || Date.now()).getFullYear(),
+    ...releaseOf(p),
     palette: paletteFromSeed(seed),
     glyph: seed % 6,
     ...(p.artworkUrl ? { artworkUrl: p.artworkUrl } : {}),
@@ -524,49 +636,60 @@ function placeServerTrack(p: ServerTrack, artists: Record<string, Artist>, album
     albumId,
     duration: p.durationSeconds || 0,
     addedAt: p.addedAt || Date.now(),
-    kind: p.mediaKind === "video" ? "video" : "audio",
-    storage: "files",
-    size: p.size || 0,
+    kind: p.savedAs === "video" ? "video" : "audio",
+    // Streams through the server until this device keeps its copy (see server.ts).
+    storage: "server",
+    size: 0,
     plays: 0,
     seed,
-    mediaUrl: p.mediaUrl,
+    mediaUrl: p.fileUrl,
     serverId: p.id,
     sourceUrl: p.sourceURL ?? undefined,
+    ...(p.playableURL ? { playableUrl: p.playableURL } : {}),
   };
 }
 
-/** Adds (or finds) an imported song in the app library and returns its track id. */
-export function addServerTrack(p: ServerTrack, { uploaded = false } = {}) {
+/** Adds (or finds) a saved song in the app library, starts keeping its file on this device, and returns its track id. */
+export function addServerTrack(p: ServerSong) {
   cancelServerDelete(p.id);
   const s = getState();
   const id = `srv_${p.id}`;
-  const existing = s.tracks[id];
-  if (existing) {
-    if (uploaded && !existing.uploaded) setState({ tracks: { ...s.tracks, [id]: { ...existing, uploaded: true } } });
-    return id;
+  if (!s.tracks[id]) {
+    const artists = { ...s.artists };
+    const albums = { ...s.albums };
+    const track = placeServerTrack(p, artists, albums);
+    setState({ artists, albums, tracks: { ...s.tracks, [id]: track }, trackIds: [id, ...s.trackIds], ...clipChange(s.clips, id, p) });
   }
-  const artists = { ...s.artists };
-  const albums = { ...s.albums };
-  const track = { ...placeServerTrack(p, artists, albums), ...(uploaded ? { uploaded: true } : {}) };
-  setState({ artists, albums, tracks: { ...s.tracks, [id]: track }, trackIds: [id, ...s.trackIds] });
+  // The server still has the file it just fetched, so this is quick.
+  downloadTracks([id], { quiet: true });
   return id;
 }
 
+/** A server song's clip is part of its record, so the server's version replaces this device's. */
+function clipChange(clips: Record<string, ClipRange>, id: string, p: ServerSong): { clips?: Record<string, ClipRange> } {
+  if (pendingSongChanges(p.id)?.clip !== undefined) return {};
+  const current = clips[id];
+  if (p.clip ? current?.start === p.clip.start && current?.end === p.clip.end : !current) return {};
+  const next = { ...clips };
+  if (p.clip) next[id] = p.clip;
+  else delete next[id];
+  return { clips: next };
+}
+
 /**
- * Brings the app library in line with the import API's library: adds songs the
- * browser has not seen and drops ones whose files are gone. Saved state keeps
- * plays, playlists, and ordering between reloads.
+ * Brings the app library in line with the music server: adds songs this browser
+ * has not seen, drops ones deleted elsewhere, and refreshes what the server knows
+ * better. Saved state keeps plays, playlists, and ordering between reloads.
+ * Songs the server still holds old stored audio for are fetched onto this device,
+ * after which the server deletes its copy.
  */
 export async function syncServerLibrary() {
-  let list: ServerTrack[];
+  let list: ServerSong[];
   try {
-    const res = await fetch("/api/library", { cache: "no-store" });
-    const body = (await res.json()) as { ok?: boolean; tracks?: ServerTrack[] };
-    if (!res.ok || !body?.ok || !Array.isArray(body.tracks)) throw new Error("library unavailable");
-    list = body.tracks;
+    list = await listSongs();
     set({ available: true });
   } catch {
-    // Without the API (e.g. a static build) saved imports stay listed but cannot play.
+    // Without the server (e.g. a static build) saved songs stay listed; ones kept on this device still play.
     set({ available: false });
     return;
   }
@@ -574,26 +697,43 @@ export async function syncServerLibrary() {
   const s = getState();
   const live = new Set(list.map((t) => `srv_${t.id}`));
   const gone = new Set(Object.values(s.tracks).filter((t) => t.serverId && !live.has(t.id)).map((t) => t.id));
-  const keep = (id: string) => !gone.has(id);
   const artists = { ...s.artists };
   const albums = { ...s.albums };
   const tracks = { ...s.tracks };
+  let clips = s.clips;
   for (const id of gone) delete tracks[id];
   const fresh: string[] = [];
   let refreshed = false;
   for (const p of list) {
     if (isServerDeletePending(p.id)) continue;
     const id = `srv_${p.id}`;
+    const clip = clipChange(clips, id, p);
+    if (clip.clips) {
+      clips = clip.clips;
+      refreshed = true;
+    }
     const known = tracks[id];
     if (known) {
-      // Refresh what the server knows better (duration probe, artwork).
-      if (p.durationSeconds && Math.abs(known.duration - p.durationSeconds) > 0.5) {
-        tracks[id] = { ...known, duration: p.durationSeconds };
+      if (known.title !== p.title || artists[known.artistId]?.name !== (p.artist?.trim() || "Unknown artist") || known.mediaUrl !== p.fileUrl || known.sourceUrl !== (p.sourceURL ?? undefined) || known.playableUrl !== (p.playableURL ?? undefined)) {
+        const updated = placeServerTrack(p, artists, albums);
+        tracks[id] = { ...known, ...updated, storage: known.storage, size: known.size, plays: known.plays };
         refreshed = true;
       }
-      const album = albums[known.albumId];
-      if (album && (p.artworkUrl ?? undefined) !== album.artworkUrl) {
-        albums[known.albumId] = { ...album, artworkUrl: p.artworkUrl ?? undefined };
+      // Refresh what the server knows better (duration probe, artwork, saved as video or audio).
+      const kind = p.savedAs === "video" ? "video" : "audio";
+      if ((p.durationSeconds && Math.abs(known.duration - p.durationSeconds) > 0.5) || known.kind !== kind) {
+        tracks[id] = { ...tracks[id], duration: p.durationSeconds || known.duration, kind };
+        if (known.kind !== kind && known.storage === "downloads") {
+          tracks[id] = { ...tracks[id], storage: "server", size: 0 };
+          void dropFromDevice(id);
+        }
+        refreshed = true;
+      }
+      const album = albums[tracks[id].albumId];
+      const release = releaseOf(p);
+      if (album && ((p.artworkUrl ?? undefined) !== album.artworkUrl || album.title !== serverAlbumTitle(p) || album.released !== release.released || album.year !== release.year)) {
+        const { year: _year, released: _released, ...rest } = album;
+        albums[tracks[id].albumId] = { ...rest, ...release, title: serverAlbumTitle(p), artworkUrl: p.artworkUrl ?? undefined };
         refreshed = true;
       }
       continue;
@@ -601,14 +741,113 @@ export async function syncServerLibrary() {
     tracks[id] = placeServerTrack(p, artists, albums);
     fresh.push(id);
   }
-  if (!gone.size && !fresh.length && !refreshed) return;
-  // The song playing may be one whose file is gone (e.g. started before this check finished).
+  if (gone.size || fresh.length || refreshed) applyServerLibrary(s, { artists, albums, tracks, clips, fresh, gone });
+  void fixUploadCredits(list);
+  void fillArtistPictures();
+  // Old stored audio comes onto this device, so the server can let it go.
+  const handOver = list.filter((p) => p.serverCopy).map((p) => `srv_${p.id}`);
+  if (handOver.length) downloadTracks(handOver, { quiet: true });
+}
+
+/**
+ * Songs saved from uploads before their artist was read from the title ("TV Girl
+ * - Not Allowed" by the uploader "elka sarra") are corrected once. Each song is
+ * marked as checked, so a name you choose later is never changed back.
+ */
+let fixingCredits = false;
+async function fixUploadCredits(list: ServerSong[]) {
+  if (fixingCredits) return;
+  fixingCredits = true;
+  let changed = false;
+  try {
+    for (const p of list) {
+      if (p.extra?.["credit.checked"] || !isUploadLink(p.sourceURL)) continue;
+      const credit = uploadCredit(p.artist || "Unknown artist", p.title || "Untitled");
+      // Only a title that still names an artist ("TV Girl - Not Allowed" by its uploader) is rewritten.
+      // A song already saved under the title's artist ("Artist" / "Song - Part II") stays as it is.
+      const named = /\s[-–—]\s/u.test(p.title || "") && credit.artist.toLowerCase() !== (p.artist || "").toLowerCase();
+      const rename = named && (credit.artist !== p.artist || credit.title !== p.title);
+      try {
+        await updateSong(p.id, { ...(rename ? credit : {}), extra: { "credit.checked": 1 } });
+        changed ||= rename;
+      } catch {
+        // The server is busy or gone: try again on the next sync.
+      }
+    }
+  } finally {
+    fixingCredits = false;
+  }
+  // Shows the corrected names (every song is checked now, so this doesn't repeat).
+  if (changed) void syncServerLibrary();
+}
+
+/* ───────────────────────── artist pictures ───────────────────────── */
+
+const PICTURES_TRIED = "slopify.artist-pictures.v1";
+const PICTURE_RETRY = 7 * 86_400_000;
+let fillingPictures = false;
+
+/**
+ * Pictures for the artists in your library (sidebar, search, Home, artist cards),
+ * from the music catalog. An artist it doesn't know is asked about again after a
+ * week; one with a picture keeps it.
+ */
+export async function fillArtistPictures() {
+  if (fillingPictures) return;
+  fillingPictures = true;
+  try {
+    let tried: Record<string, number> = {};
+    try {
+      tried = JSON.parse(localStorage.getItem(PICTURES_TRIED) || "{}") as Record<string, number>;
+    } catch { /* Start afresh. */ }
+    const s = getState();
+    const used = new Set(Object.values(s.tracks).filter((t) => !t.stream).map((t) => t.artistId));
+    const wanted = Object.values(s.artists).filter((a) =>
+      used.has(a.id) && !a.image && meaningfulArtist(a.name) && !(Date.now() - (tried[a.name.toLowerCase()] ?? 0) < PICTURE_RETRY));
+    for (let i = 0; i < wanted.length; i += 12) {
+      const batch = wanted.slice(i, i + 12);
+      const res = await fetch("/api/catalog/pictures", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artists: batch.map((a) => a.name) }) });
+      const body = (await res.json().catch(() => null)) as { ok?: boolean; result?: { pictures?: Record<string, string | null>; failed?: string[] } } | null;
+      // The catalog is down: leave these for the next sync rather than marking them tried.
+      if (!res.ok || !body?.ok || !body.result?.pictures) return;
+      const pictures = body.result.pictures;
+      const artists = { ...getState().artists };
+      let changed = false;
+      const failed = new Set(body.result.failed ?? []);
+      for (const a of batch) {
+        // A name the catalog couldn't look up (it was down) is asked about again next time.
+        if (!failed.has(a.name)) tried[a.name.toLowerCase()] = Date.now();
+        const image = pictures[a.name];
+        if (image && artists[a.id] && !artists[a.id].image) {
+          artists[a.id] = { ...artists[a.id], image };
+          changed = true;
+        }
+      }
+      if (changed) setState({ artists });
+      try {
+        localStorage.setItem(PICTURES_TRIED, JSON.stringify(tried));
+      } catch { /* Storage full: ask again next time. */ }
+    }
+  } catch {
+    // Offline or the server is unavailable: try at the next sync.
+  } finally {
+    fillingPictures = false;
+  }
+}
+
+function applyServerLibrary(s: AppState, { artists, albums, tracks, clips, fresh, gone }: {
+  artists: Record<string, Artist>; albums: Record<string, Album>; tracks: Record<string, Track>; clips: Record<string, ClipRange>; fresh: string[]; gone: Set<string>;
+}) {
+  const keep = (id: string) => !gone.has(id);
+  for (const id of gone) if (s.tracks[id]?.storage === "downloads") void dropFromDevice(id);
+  // The song playing may be one deleted elsewhere (e.g. started before this check finished).
   const wasCurrent = Boolean(s.currentId && gone.has(s.currentId));
   if (wasCurrent) engine.unload();
   setState({
     artists,
     albums,
     tracks,
+    clips,
     trackIds: [...fresh, ...s.trackIds.filter(keep)],
     playlists: s.playlists.map((p) => (p.trackIds.some((id) => gone.has(id)) ? { ...p, trackIds: p.trackIds.filter(keep) } : p)),
     listens: s.listens.filter((l) => keep(l.id)),
@@ -634,11 +873,6 @@ let importController: AbortController | null = null;
 
 const sourceKey = (kind: MediaKind, source: string) => `${kind}:${source.trim()}`;
 
-export function canUploadToServer() {
-  const s = getState();
-  return s.server.status === "connected" && s.settings.uploadMode !== "off";
-}
-
 function clearAuto() {
   clearTimeout(autoTimer);
   autoTimer = 0;
@@ -662,14 +896,15 @@ export function prepareImportDialog() {
   if (discovery) {
     // Opened from a discovery card: the dialog shows only that suggestion, already selected.
     const { candidate } = discovery;
+    const kind: MediaKind = discovery.video ? "video" : "audio";
     if (state.resolution?.candidates[0] === candidate) return;
     stopPreview({ resume: true });
     resolveController?.abort();
     resolveController = null;
     clearAuto();
     const source = candidate.importMetadata?.sourcePageURL || candidate.sourcePageURL || candidate.sourceURL;
-    const resolution: Resolution = { kind: "search_results", mediaKind: "audio", track: candidate.importMetadata || candidate, candidates: [candidate] };
-    set({ ...blank(), source, resolution, resolvedKey: sourceKey("audio", source), selected: [0], stage: "awaiting_selection", upload: canUploadToServer(), providerFocus: candidate.searchProvider ?? "youtube", available: true });
+    const resolution: Resolution = { kind: "search_results", mediaKind: kind, track: candidate.importMetadata || candidate, candidates: [candidate] };
+    set({ ...blank(), source, mediaKind: kind, resolution, resolvedKey: sourceKey(kind, source), selected: [0], stage: "awaiting_selection", providerFocus: candidate.searchProvider ?? "youtube", available: true });
     return;
   }
   if (state.available !== true) void checkImportService();
@@ -679,17 +914,6 @@ export function prepareImportDialog() {
     resolveController = null;
     clearAuto();
     set(blank());
-  }
-}
-
-function onDialogClosed() {
-  if (state.busy !== "import") discovery = null;
-  stopPreview({ resume: true });
-  clearAuto();
-  if (state.busy === "resolve") {
-    resolveController?.abort();
-    resolveController = null;
-    set({ busy: null, stage: "idle" });
   }
 }
 
@@ -721,10 +945,6 @@ export function setImportKind(kind: MediaKind) {
   if (kind === "video" && isAudioOnlySource(state.source)) return;
   invalidate({ mediaKind: kind });
   scheduleResolve(true);
-}
-
-export function setImportUpload(upload: boolean) {
-  set({ upload });
 }
 
 /** Providers that returned search results, in tab order. */
@@ -772,7 +992,7 @@ export function setAllCandidates(on: boolean) {
 function fail(f: ImportFailure) {
   set({ error: f, stage: f.code === "CANCELLED" ? "cancelled" : "failed" });
   // The dialog may be closed while a download runs in the background.
-  if (getState().modal?.type !== "import" && f.code !== "CANCELLED") toast(f.message, { tone: "error", detail: `Import stopped while ${f.stage.replaceAll("_", " ")}.`, duration: 7000 });
+  if (f.code !== "CANCELLED") toast(f.message, { tone: "error", detail: `Import stopped while ${f.stage.replaceAll("_", " ")}.`, duration: 7000 });
 }
 
 /** Searches all providers for text, or inspects a pasted link. */
@@ -811,8 +1031,7 @@ export async function resolveImport() {
       stage: "awaiting_selection",
       progress: null,
       selected: playlist ? resolution.candidates.map((c, i) => (isDownloadable(c) ? i : -1)).filter((i) => i >= 0) : firstPick >= 0 ? [firstPick] : [],
-      upload: canUploadToServer(),
-      available: true,
+        available: true,
     });
   } catch (error) {
     if (resolveController !== controller) return;
@@ -916,12 +1135,19 @@ function sourceIdentity(c: Candidate, metadata: SourceTrack) {
   return identity;
 }
 
+/** The artist and title to save a result under: an upload's are read from its title ("Artist - Title"). */
+function creditFor(c: Candidate, meta: SourceTrack) {
+  const title = meta.title || c.title || "Untitled";
+  const artist = meta.artist || c.artist || "Unknown artist";
+  const upload = meta.provider !== "spotify" && isUploadLink(meta.sourceURL || c.sourceURL);
+  return upload ? uploadCredit(artist, title) : { artist, title };
+}
+
 function importMetadata(c: Candidate, meta: SourceTrack) {
   return {
     provider: meta.provider || c.searchProvider || null,
     trackID: meta.trackID || null,
-    title: meta.title || c.title || "Untitled",
-    artist: meta.artist || c.artist || "Unknown artist",
+    ...creditFor(c, meta),
     album: meta.album || null,
     durationSeconds: meta.durationSeconds ?? c.durationSeconds ?? null,
     artworkURL: meta.artworkURL || c.thumbnailURL || null,
@@ -930,7 +1156,7 @@ function importMetadata(c: Candidate, meta: SourceTrack) {
   };
 }
 
-type StartResult = { kind: "created" | "duplicate"; track: ServerTrack };
+type StartResult = { kind: "created" | "duplicate"; track: ServerSong };
 
 function startDownload(c: Candidate, meta: SourceTrack, kind: MediaKind, signal: AbortSignal) {
   const metadata = importMetadata(c, meta);
@@ -969,7 +1195,6 @@ export async function confirmImport() {
     return;
   }
   const meta = candidate.importMetadata || resolution.track;
-  const upload = state.upload && canUploadToServer();
   // A discovery suggestion plays as soon as it is in the library.
   const discovered = discovery?.candidate === candidate ? discovery : null;
   discovery = null;
@@ -977,7 +1202,7 @@ export async function confirmImport() {
   try {
     const result = await startDownload(candidate, meta, kind, controller.signal);
     if (!result.ok) throw result.error;
-    const id = addServerTrack(result.result.track, { uploaded: upload });
+    const id = addServerTrack(result.result.track);
     if (discovered) {
       keepDiscovery(discovered.kind);
       if (discovered.play !== false) playList([id], id, { label: "Discovered for you", route: { name: "library" }, picks: { [id]: discovered.kind } });
@@ -990,7 +1215,7 @@ export async function confirmImport() {
     } else {
       finishTransfer(`${kind === "video" ? "Downloaded" : "Imported"} “${title}”`, {
         tone: "success",
-        detail: upload ? "Saved on this device and uploaded to your server." : "Saved on this device.",
+        detail: getState().settings.downloadMode === "verified_file_cache" ? "Saved to your music server and kept on this device." : "Saved to your music server.",
         action: play,
       });
     }
@@ -1018,7 +1243,6 @@ function begin(name: string) {
   transferToastClosed = false;
   lastToastKey = "";
   set({ busy: "import", error: null, stage: "inspecting_source", progress: null, transferName: name });
-  if (getState().modal?.type === "import") closeModal();
   showTransfer();
   return controller;
 }
@@ -1059,7 +1283,6 @@ async function confirmPlaylist(resolution: Resolution) {
     seen.add(key);
     return true;
   });
-  const upload = state.upload && canUploadToServer();
   const playlistTitle = resolution.playlist?.title || resolution.track.title || "Imported Playlist";
   const providerName = resolution.kind === "spotify_playlist" ? "Spotify" : resolution.kind === "soundcloud_playlist" ? "SoundCloud" : "YouTube";
   const first = queue[0].importMetadata?.title || queue[0].title || "Playlist item 1";
@@ -1107,7 +1330,7 @@ async function confirmPlaylist(resolution: Resolution) {
         failures.push(`${meta.title || "Untitled"}${meta.artist ? ` — ${meta.artist}` : ""}`);
         continue;
       }
-      const id = addServerTrack(result.result.track, { uploaded: upload });
+      const id = addServerTrack(result.result.track);
       if (!imported.includes(id)) imported.push(id);
       if (result.result.kind === "duplicate") duplicates++;
       else created++;
@@ -1134,7 +1357,7 @@ async function confirmPlaylist(resolution: Resolution) {
     } else {
       finishTransfer(`Kept ${plural(kept)} from “${playlistTitle}”`, {
         tone: "success",
-        detail: [duplicates ? `${duplicates} already in your library.` : null, upload ? "Uploaded to your server." : null].filter(Boolean).join(" ") || "Saved on this device.",
+        detail: duplicates ? `${duplicates} already in your library.` : "Saved to your music server and kept on this device.",
         action: open,
       });
       set({ stage: "complete" });
@@ -1257,14 +1480,10 @@ export async function togglePreview(index: number) {
 
 /* ───────────────────────── app wiring ───────────────────────── */
 
-let lastModal = getState().modal?.type;
 let lastPlaying = getState().isPlaying;
 let lastVolume = `${getState().volume}|${getState().muted}`;
 subscribeApp(() => {
   const s = getState();
-  const modal = s.modal?.type;
-  if (lastModal === "import" && modal !== "import") onDialogClosed();
-  lastModal = modal;
   // Starting the main player stops a preview (playing or still loading) without resuming anything later.
   if (s.isPlaying && !lastPlaying && previewAudio) {
     if (state.preview?.status === "loading") {

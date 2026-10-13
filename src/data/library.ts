@@ -37,15 +37,16 @@ export function paletteFromSeed(seed: number): Palette {
   };
 }
 
-/** The one playlist every library starts with. Everything else is music you bring in yourself. */
-export function likedPlaylist(): Playlist {
+/** Liked Songs has one app-owned identity; sync carries its contents, not its display labels. */
+export function likedPlaylist(existing?: Playlist): Playlist {
   return {
+    ...existing,
     id: "liked",
     name: "Liked Songs",
     description: "Everything you've hearted, in one place.",
     system: true,
-    trackIds: [],
-    createdAt: Date.now(),
+    trackIds: existing?.trackIds ?? [],
+    createdAt: existing?.createdAt ?? Date.now(),
     palette: { a: "hsl(252 90% 66%)", b: "hsl(280 70% 50%)", c: "hsl(230 60% 30%)" },
   };
 }

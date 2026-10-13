@@ -1,4 +1,5 @@
 import type { Candidate } from "../state/importer";
+import { candidateSources, ownedIndex, sourceId } from "./owned";
 import { earlySkip, isImported, meaningfulArtist, normalize, reasonWeight, songKey, tasteProfile, type ReasonKind, type SongLink, type TasteInput } from "./taste";
 
 /*
@@ -27,6 +28,8 @@ export interface DiscoveryQuery {
   title?: string;
   /** What the query came from, for the reason line. */
   because: string;
+  /** The reason line as is, instead of one built from `because`. */
+  reason?: string;
   affinity: number;
 }
 
@@ -40,6 +43,8 @@ export interface DiscoveredSong {
   artwork?: string;
   reason: string;
   kind: DiscoveryKind;
+  /** The library song this is, when it's one you have (only when owned songs are asked for). */
+  owned?: string;
 }
 
 const DAY = 86_400_000;
@@ -55,17 +60,29 @@ const MAX_QUERIES = 48;
 /** The shelf keeps searching until it has this many suggestions, and shows at most SHELF_SIZE. */
 export const SHELF_TARGET = 24;
 export const SHELF_SIZE = 30;
+/** Added to an artist's name on refreshes ("Find more"), so the same search finds other songs. */
+const ARTIST_SEARCH_WORDS = ["songs", "music", "official audio", "singles"];
+const COLD_START_GENRES = ["indie", "electronic", "pop", "alternative", "soul", "lofi"];
 
 /** Upload decorations that are not part of a song's name ("(Official Video …)", "(Lyrics)"). Live, remix and version qualifiers stay unless they sit inside such a tag. */
 const DECORATION = /\s*[([](?:official\b[^)\]]*|lyrics?|lyric\s*video|visuali[sz]er|audio|hd|hq|4k)[)\]]\s*/giu;
 /** Featured-artist notes are credits, not part of a title. */
 const FEATURING = /\s*[([](?:feat|ft|featuring|with)\b\.?[^)\]]*[)\]]/giu;
-const cleanTitle = (title: string | null | undefined) => normalize((title ?? "").replace(DECORATION, " ").replace(FEATURING, " "));
+export const cleanTitle = (title: string | null | undefined) => normalize((title ?? "").replace(DECORATION, " ").replace(FEATURING, " "));
 /** Artist names compared without channel suffixes, spacing or punctuation: "DuaLipaVEVO" and "Dua Lipa - Topic" are "dualipa". */
-const cleanArtist = (artist: string | null | undefined) =>
+export const cleanArtist = (artist: string | null | undefined) =>
   normalize((artist ?? "").replace(/\s+-\s+topic$/iu, "").replace(/vevo$/iu, "")).replace(/[^\p{L}\p{N}]+/gu, "");
-/** One song however a service decorates it: "Creo - Topic / Flow (Official Audio)" is "creo|flow". Used for ownership, duplicates and dismissals. */
-export const discoveryKey = (artist: string | null | undefined, title: string | null | undefined) => `${cleanArtist(artist)}|${cleanTitle(title)}`;
+/** A collaborator's own artist page includes songs explicitly credited to that collaborator. */
+export const creditedArtist = (credit: string, name: string) => cleanArtist(credit) === cleanArtist(name)
+  || credit.split(/\s*(?:&|,|\bfeat\.?\s|\bft\.?\s|\bwith\b)\s*/iu).some((part) => cleanArtist(part) === cleanArtist(name));
+/** A title without a leading credit of its own artist: "Astronaut - Apollo" by Astronaut is "Apollo". */
+const withoutArtistPrefix = (artist: string | null | undefined, title: string | null | undefined) => {
+  const credited = (title ?? "").match(/^(.+?)\s+[-–—]\s+(.+)$/u);
+  return credited && cleanArtist(credited[1]) === cleanArtist(artist) ? credited[2] : title;
+};
+/** One song however a service decorates it: "Creo - Topic / Creo - Flow (Official Audio)" is "creo|flow". Used for ownership, duplicates and dismissals. */
+export const discoveryKey = (artist: string | null | undefined, title: string | null | undefined) =>
+  `${cleanArtist(artist)}|${cleanTitle(withoutArtistPrefix(artist, title))}`;
 
 /** Dislikes per artist: early skips of their songs and dismissed discoveries, both fading over two weeks. */
 function artistPenalties(input: TasteInput, now: number) {
@@ -151,12 +168,10 @@ export function relatedLinks(related: Related, at = Date.now()): SongLink[] {
 export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]; artists: Seed[] }, input: TasteInput, refresh = 0, now = Date.now()): DiscoveryQuery[] {
   // Streamed suggestions are not in the library, so they never count as owned or known.
   const library = Object.values(input.tracks).filter((t) => !t.stream);
-  const owned = new Set(library.map((t) => discoveryKey(input.artists[t.artistId]?.name, t.title)));
+  const owned = ownedIndex(input);
   const known = new Set(library.map((t) => cleanArtist(input.artists[t.artistId]?.name)));
   const penalties = artistPenalties(input, now);
   const damp = (artist: string) => 1 / (1 + (penalties.get(cleanArtist(artist)) ?? 0));
-  const songWeight = reasonWeight(input.taste, "discover-song");
-  const artistWeight = reasonWeight(input.taste, "discover-artist");
 
   const songs = new Map<string, DiscoveryQuery>();
   const maxSong = Math.max(1e-9, ...seeds.songs.map((s) => s.weight));
@@ -165,9 +180,9 @@ export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]
     if (!seed) continue;
     for (const s of r.songs) {
       const key = discoveryKey(s.artist, s.title);
-      if (owned.has(key) || input.taste.hiddenDiscoveries[key]) continue;
+      if (input.taste.hiddenDiscoveries[key] || owned.find({ artist: s.artist, title: s.title }).length) continue;
       // Unfamiliar artists are the point of discovery; known ones still qualify, a little lower.
-      const affinity = s.affinity * (seed.weight / maxSong) * damp(s.artist) / (known.has(cleanArtist(s.artist)) ? 1.25 : 1) * songWeight;
+      const affinity = s.affinity * (seed.weight / maxSong) * damp(s.artist) / (known.has(cleanArtist(s.artist)) ? 1.25 : 1);
       if ((songs.get(key)?.affinity ?? 0) < affinity) songs.set(key, { text: `${s.artist} ${s.title}`, kind: "discover-song", artist: s.artist, title: s.title, because: `“${seed.title}”`, affinity });
     }
   }
@@ -195,7 +210,7 @@ export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]
     [...list].map((q) => ({ ...q, affinity: q.kind === "discover-artist" ? q.affinity * damp(q.text) * weight : q.affinity }))
       .sort((a, b) => b.affinity - a.affinity || a.text.localeCompare(b.text)).slice(0, 80);
   const songPool = rank(songs.values(), 1);
-  const artistPool = rank(artists.values(), artistWeight).map(({ strongest: _, ...q }) => q as DiscoveryQuery);
+  const artistPool = rank(artists.values(), 1).map(({ strongest: _, ...q }) => q as DiscoveryQuery);
 
   const picked: DiscoveryQuery[] = [];
   const sameArtist = (a: DiscoveryQuery, b: DiscoveryQuery) => !!a.artist && !!b.artist && cleanArtist(a.artist) === cleanArtist(b.artist);
@@ -214,13 +229,19 @@ export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]
   // Short on relationships: other songs by the artists you play (the ones you own are filtered out later).
   for (const seed of seeds.artists) {
     if (picked.length >= MIN_QUERIES) break;
-    const q: DiscoveryQuery = { text: seed.name, kind: "discover-search", artist: seed.name, because: `More from ${seed.name}`, affinity: 0 };
+    // Each refresh words the search differently, so providers return other songs.
+    const text = refresh ? `${seed.name} ${ARTIST_SEARCH_WORDS[refresh % ARTIST_SEARCH_WORDS.length]}` : seed.name;
+    const q: DiscoveryQuery = { text, kind: "discover-search", artist: seed.name, because: `More from ${seed.name}`, affinity: 0 };
     if (!picked.some((x) => x.kind === "discover-search" && sameArtist(x, q))) picked.push(q);
   }
   // Imported songs have no real genre, so a genre search only happens for demo-song taste or a cold start.
   if (picked.length < MIN_QUERIES) {
     const genre = [...tasteProfile(input, now).genres].sort((a, b) => b[1] - a[1])[0]?.[0];
-    if (genre || !seeds.artists.length) picked.push({ text: `${genre ?? "lofi"} music`, kind: "discover-search", because: `Exploring ${genre ?? "lofi"}`, affinity: 0 });
+    if (genre || !seeds.artists.length) {
+      // A cold start with no genre to go on tries a different one each refresh.
+      const subject = genre ?? COLD_START_GENRES[refresh % COLD_START_GENRES.length];
+      picked.push({ text: `${subject} music`, kind: "discover-search", because: `Exploring ${subject}`, affinity: 0 });
+    }
   }
   // Reserves, in the same order of strength, for when the first wave comes back thin.
   if (firstWave) {
@@ -240,13 +261,11 @@ export const discoverable = (c: Candidate) => Boolean(c.sourceURL) && (c.actiona
  * mixes, and anything that does not really match its query (a loose search hit
  * never borrows a relationship's reason), then spaces out artists and services.
  */
-export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, limit = SHELF_SIZE, now = Date.now()): DiscoveredSong[] {
+export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, limit = SHELF_SIZE, now = Date.now(), exclude: Set<string> = new Set(), perArtist = 2, withOwned = false): DiscoveredSong[] {
   const penalties = artistPenalties(input, now);
-  const library = Object.values(input.tracks).filter((t) => !t.stream);
-  const ownedUrls = new Set(library.map((t) => t.sourceUrl).filter(Boolean));
-  const ownedKeys = new Set(library.map((t) => discoveryKey(input.artists[t.artistId]?.name, t.title)));
+  const owned = ownedIndex(input);
   const seen = new Set<string>();
-  const urls = new Set<string>();
+  const sources = new Set<string>();
   const results: Array<DiscoveredSong & { score: number; provider: string }> = [];
   for (const { query, candidates } of batches) {
     candidates.forEach((candidate, index) => {
@@ -256,26 +275,33 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       let artist = meta.artist || candidate.artist || "Unknown artist";
       // Uploads often put the artist in the title ("Dua Lipa - New Rules" on a channel called DuaLipaVEVO).
       const credited = title.match(/^(.+?)\s+[-–—]\s+(.+)$/u);
-      if (credited && [query.artist, artist].some((a) => a && cleanArtist(a) === cleanArtist(credited[1]))) [artist, title] = [credited[1].trim(), credited[2].trim()];
+      if (credited && [query.artist, artist].some((a) => a && creditedArtist(credited[1], a))) [artist, title] = [credited[1].trim(), credited[2].trim()];
       if (!title) return;
       const durations = [meta.durationSeconds, candidate.durationSeconds].filter((d): d is number => typeof d === "number" && Number.isFinite(d));
       if (durations.some((d) => d > 20 * 60) || LONG_FORM.test(title)) return;
       // Every query about an artist (related or "More from") must return that artist; only genre searches range freely.
-      const sameArtist = !!query.artist && cleanArtist(artist) === cleanArtist(query.artist);
+      const sameArtist = !!query.artist && creditedArtist(artist, query.artist);
       if (query.artist && !sameArtist) return;
       if (query.kind === "discover-song" && cleanTitle(title) !== cleanTitle(query.title)) return;
       const key = discoveryKey(artist, title);
-      const sourceUrls = [candidate.sourceURL, candidate.sourcePageURL, candidate.importMetadata?.sourceURL, candidate.importMetadata?.sourcePageURL].filter((v): v is string => !!v);
-      if (input.taste.hiddenDiscoveries[key] || ownedKeys.has(key) || seen.has(key) || sourceUrls.some((u) => ownedUrls.has(u) || urls.has(u))) return;
+      const links = candidateSources(candidate);
+      const ids = links.map(sourceId).filter((id): id is string => Boolean(id));
+      if (exclude.has(key) || input.taste.hiddenDiscoveries[key] || seen.has(key) || ids.some((id) => sources.has(id))) return;
+      // Songs you already have, from any link or upload, under the name we read or the one the service gave.
+      const raw = { artist: meta.artist || candidate.artist, title: meta.title || candidate.title };
+      const copies = [...owned.find({ artist, title, sources: links }), ...owned.find(raw)];
+      if (copies.length && !withOwned) return;
       seen.add(key);
-      sourceUrls.forEach((u) => urls.add(u));
-      const reason = query.kind === "discover-song" ? `Listeners of ${query.because} also play this · ListenBrainz`
+      ids.forEach((id) => sources.add(id));
+      const reason = query.reason ? query.reason
+        : query.kind === "discover-song" ? `Listeners of ${query.because} also play this · ListenBrainz`
         : query.kind === "discover-artist" ? `Fans of ${query.because} also play ${query.artist} · ListenBrainz`
         : query.because;
       const base = query.kind === "discover-song" ? 5 + 3 * query.affinity : query.kind === "discover-artist" ? 3 + 3 * query.affinity : sameArtist ? 2 : 1;
       const score = base * reasonWeight(input.taste, query.kind) + 1 / (index + 1) - 3 * sat(penalties.get(cleanArtist(artist)) ?? 0);
       results.push({
         key, candidate, title, artist, reason, kind: query.kind, score,
+        ...(copies.length ? { owned: copies[0] } : {}),
         artwork: candidate.importMetadata?.artworkURL || candidate.thumbnailURL || undefined,
         provider: candidate.searchProvider ?? candidate.sourceProvider ?? "unknown",
       });
@@ -289,7 +315,7 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       - picked.slice(-2).filter((s) => s.provider === r.provider).length * 0.5;
     results.sort((a, b) => adjusted(b) - adjusted(a) || a.key.localeCompare(b.key));
     const next = results.shift()!;
-    if (picked.filter((s) => cleanArtist(s.artist) === cleanArtist(next.artist)).length < 2) picked.push(next);
+    if (picked.filter((s) => cleanArtist(s.artist) === cleanArtist(next.artist)).length < perArtist) picked.push(next);
   }
   return picked.map(({ score: _score, provider: _provider, ...song }) => song);
 }

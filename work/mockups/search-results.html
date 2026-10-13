@@ -1,0 +1,79 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+html,body{margin:0;background:transparent;font-family:Inter,"Segoe UI",sans-serif}*{box-sizing:border-box}
+#search-concept{--s-bg:#111116;--s-surface:#202027;--s-line:#3a3944;--s-text:#f6f5f8;--s-muted:#b9b7c4;--s-accent:#b79aff;color:var(--s-text);background:var(--s-bg);border:1px solid #30303a;border-radius:18px;padding:22px;overflow:hidden;font-size:14px}
+#search-concept button{font:inherit;color:inherit;cursor:pointer}#search-concept button:focus-visible{outline:2px solid var(--s-accent);outline-offset:4px}
+#search-concept .search{display:flex;align-items:center;gap:12px;background:#28272f;border:1px solid #64616f;border-radius:999px;padding:12px 16px;width:min(100%,490px);margin:0 auto 26px;color:#f6f5f8;box-shadow:0 2px 10px #0003}
+#search-concept .search input{font:inherit;font-size:15px;border:0;outline:0;background:transparent;color:#f6f5f8;min-width:0;width:100%}#search-concept .search input::placeholder{color:#cbc8d5}#search-concept .search small{font-size:11px;color:#c7c4cf;white-space:nowrap;border:1px solid #595661;border-radius:5px;padding:2px 5px}
+#search-concept .search:focus-within{outline:2px solid var(--s-accent);outline-offset:3px}
+#search-concept h1{font-size:25px;letter-spacing:-.7px;margin:0 0 6px}#search-concept .sub{color:var(--s-muted);font-size:13px;margin:0 0 18px;line-height:1.6}
+#search-concept .filters{display:flex;gap:3px;background:#222228;border:1px solid #36353e;padding:4px;border-radius:999px;width:max-content;max-width:100%;flex-wrap:wrap;margin-bottom:23px}
+#search-concept .filter{border:0;background:transparent;border-radius:999px;padding:9px 12px;font-size:12px;font-weight:650;display:flex;gap:6px;align-items:center;white-space:nowrap}
+#search-concept .filter[aria-pressed=true]{background:#46444f;color:#fff}#search-concept .filter small{color:#b5b1c0;font-size:11px}#search-concept .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--s-accent)}#search-concept .dot.yt{background:#ff5353}#search-concept .dot.sp{background:#3ddb86}#search-concept .dot.sc{background:#ff963a}
+#search-concept .group{margin-top:26px}#search-concept .group:first-of-type{margin-top:0}#search-concept h2{font-size:17px;letter-spacing:-.4px;margin:0 0 13px;display:flex;align-items:center;gap:8px}
+#search-concept .yt-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+#search-concept .yt-card{min-width:0;display:flex;flex-direction:column;gap:10px}#search-concept .yt-card.featured{grid-column:span 2;grid-row:span 2;background:#1e1b28;border:1px solid #655381;border-radius:12px;padding:12px}
+#search-concept .thumb{width:100%;aspect-ratio:16/9;position:relative;border:0;border-radius:9px;overflow:hidden;background:linear-gradient(130deg,#682034,#1c2233);padding:0}
+#search-concept .thumb img{display:block;width:100%;height:100%;object-fit:cover}#search-concept .duration{position:absolute;bottom:7px;right:7px;background:#08080dde;color:white;padding:2px 5px;border-radius:4px;font-size:11px;font-weight:600}
+#search-concept .play-mark{position:absolute;inset:0;display:grid;place-content:center;background:#0001;color:white;text-shadow:0 2px 8px #000;font-size:25px}
+#search-concept .featured .play-mark{font-size:38px}
+#search-concept .title{display:block;border:0;padding:0;background:transparent;text-align:left;font-weight:650;line-height:1.45;font-size:13px;width:100%;overflow-wrap:anywhere}#search-concept .title:hover{color:var(--s-accent)}
+#search-concept .featured .title{font-size:23px;letter-spacing:-.6px;font-weight:750;margin:2px 0 4px}
+#search-concept .kicker{font-size:11px;color:#d1b6ff;letter-spacing:1.1px;text-transform:uppercase;font-weight:700;margin-bottom:2px}
+#search-concept .creator{display:flex;align-items:center;gap:8px;color:var(--s-muted);font-size:12px;line-height:1.5}
+#search-concept .avatar{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;flex:none;background:linear-gradient(130deg,#5e4364,#293444);color:#f2dcec;font-size:10px;font-weight:700}
+#search-concept .card-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto}
+#search-concept .save{background:#2c2b33;border:1px solid #45434e;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:650;white-space:nowrap;flex:none}
+#search-concept .save[aria-pressed=true]{color:#cdb8fa;border-color:#786193}
+#search-concept .track-list{display:grid;gap:3px}
+#search-concept .track{display:flex;align-items:center;gap:12px;padding:9px 7px;border-radius:8px;min-width:0}#search-concept .track:hover{background:#24232b}
+#search-concept .album-art{width:46px;height:46px;flex:none;border:0;border-radius:5px;background:linear-gradient(135deg,#878587,#252327);color:#fff;font-size:21px;display:grid;place-content:center;padding:0;overflow:hidden}
+#search-concept .album-art img{width:100%;height:100%;object-fit:cover}
+#search-concept .track-info{flex:1;min-width:0}#search-concept .track-info .title{font-size:14px}#search-concept .track-info p{font-size:12px;color:var(--s-muted);margin:4px 0 0}
+#search-concept .track-time{color:var(--s-muted);font-size:12px}
+#search-concept .track.featured{background:#1e1b28;border:1px solid #655381;padding:16px;margin-bottom:12px}
+#search-concept .track.featured .album-art{width:86px;height:86px}#search-concept .track.featured .title{font-size:23px}
+#search-concept .cloud-list{display:grid;gap:12px}
+#search-concept .cloud{display:flex;gap:14px;align-items:center;background:#1b1b21;padding:12px;border-radius:9px;min-width:0}
+#search-concept .cloud .album-art{width:78px;height:78px;background:linear-gradient(135deg,#bb642e,#482331)}
+#search-concept .cloud .track-info .title{font-size:15px}#search-concept .cloud .creator{margin-bottom:5px}
+#search-concept .cloud .track-info p{margin-top:5px}
+#search-concept .cloud.featured{border:1px solid #655381;background:#1e1b28;padding:16px}#search-concept .cloud.featured .album-art{width:100px;height:100px}
+#search-concept .now{background:#24212d;border:1px solid #514463;border-radius:8px;padding:12px;margin-top:22px;display:flex;align-items:center;gap:10px;font-size:13px}
+#search-concept .now button{background:transparent;border:0;font-size:17px}
+#search-concept .demo{font-size:11px;color:#aaa6b6;margin:18px 0 0;line-height:1.5}
+#search-concept [hidden]{display:none!important}
+@media(max-width:550px){#search-concept{padding:16px}#search-concept .yt-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}#search-concept .yt-card.featured{grid-column:1/-1;grid-row:auto}#search-concept .featured .title{font-size:21px}#search-concept .filters{border-radius:18px}#search-concept .filter{padding:8px 10px}#search-concept .search small{display:none}#search-concept .track{gap:9px;padding-inline:0}#search-concept .track-time{display:none}#search-concept .cloud{flex-wrap:wrap}#search-concept .cloud .album-art{width:62px;height:62px}#search-concept .cloud .save{margin-left:auto}#search-concept .track.featured{flex-wrap:wrap}#search-concept .track.featured .save{margin-left:auto}#search-concept .track.featured .album-art{width:60px;height:60px}#search-concept .track.featured .title{font-size:19px}}
+</style></head><body><main id="search-concept" aria-label="Slopify search results concept">
+<label class="search"><span aria-hidden="true">⌕</span><input value="bad romance" readonly placeholder="What do you want to play?" aria-label="Sample search query"><small>Ctrl K</small></label>
+<h1>Find music online</h1><p class="sub">Search YouTube, Spotify and SoundCloud, or paste a song or playlist link.</p>
+<div class="filters" role="group" aria-label="Search platforms">
+<button type="button" class="filter" data-provider="all" aria-pressed="true"><span class="dot"></span>All platforms <small>8</small></button>
+<button type="button" class="filter" data-provider="youtube" aria-pressed="false"><span class="dot yt"></span>YouTube <small>3</small></button>
+<button type="button" class="filter" data-provider="spotify" aria-pressed="false"><span class="dot sp"></span>Spotify <small>3</small></button>
+<button type="button" class="filter" data-provider="soundcloud" aria-pressed="false"><span class="dot sc"></span>SoundCloud <small>2</small></button>
+</div>
+<section class="group" data-group="youtube"><h2><span class="dot yt"></span>YouTube</h2><div class="yt-grid">
+<article class="yt-card featured"><div class="kicker">Top result</div><button type="button" class="thumb" data-play="Lady Gaga — Bad Romance (Official Music Video)" aria-label="Play Lady Gaga Bad Romance"><img src="https://i.ytimg.com/vi/qrO4YZeyl0I/hqdefault.jpg" alt="Bad Romance music video thumbnail"><span class="play-mark" aria-hidden="true">▶</span><span class="duration">5:09</span></button><button type="button" class="title" data-play="Lady Gaga — Bad Romance (Official Music Video)">Lady Gaga — Bad Romance<br>(Official Music Video)</button><div class="card-foot"><div class="creator"><span class="avatar" aria-hidden="true">LG</span><span>Lady Gaga<br>Official artist</span></div><button type="button" class="save" aria-pressed="false">＋ Save</button></div></article>
+<article class="yt-card"><button type="button" class="thumb" data-play="Lady Gaga — Bad Romance (Official Audio)" aria-label="Play Bad Romance Official Audio"><img src="https://i.ytimg.com/vi/qrO4YZeyl0I/hqdefault.jpg" alt="Bad Romance thumbnail"><span class="play-mark" aria-hidden="true">▶</span><span class="duration">4:54</span></button><button type="button" class="title" data-play="Lady Gaga — Bad Romance (Official Audio)">Bad Romance (Official Audio)</button><div class="creator"><span class="avatar" aria-hidden="true">LG</span>Lady Gaga</div><div class="card-foot"><span></span><button type="button" class="save" aria-pressed="false">＋ Save</button></div></article>
+<article class="yt-card"><button type="button" class="thumb" data-play="Bad Romance — Live performance" aria-label="Play Bad Romance live"><img src="https://i.ytimg.com/vi/qrO4YZeyl0I/hqdefault.jpg" alt="Bad Romance thumbnail"><span class="play-mark" aria-hidden="true">▶</span><span class="duration">5:18</span></button><button type="button" class="title" data-play="Bad Romance — Live performance">Bad Romance — Live performance</button><div class="creator"><span class="avatar" aria-hidden="true">LG</span>Lady Gaga</div><div class="card-foot"><span></span><button type="button" class="save" aria-pressed="false">＋ Save</button></div></article>
+</div></section>
+<section class="group" data-group="spotify"><h2><span class="dot sp"></span>Spotify</h2><div class="track-list">
+<article class="track"><button type="button" class="album-art" data-play="Bad Romance — Lady Gaga" aria-label="Play Bad Romance"><img src="https://i.ytimg.com/vi/qrO4YZeyl0I/hqdefault.jpg" alt="Sample cover"></button><div class="track-info"><div class="kicker" hidden>Top result</div><button type="button" class="title" data-play="Bad Romance — Lady Gaga">Bad Romance</button><p>Lady Gaga · The Fame Monster</p></div><span class="track-time">4:54</span><button type="button" class="save" aria-pressed="false">＋ Save</button></article>
+<article class="track"><button type="button" class="album-art" data-play="Bad Romance — Radio Edit" aria-label="Play Bad Romance Radio Edit">▶</button><div class="track-info"><button type="button" class="title" data-play="Bad Romance — Radio Edit">Bad Romance — Radio Edit</button><p>Lady Gaga · Bad Romance</p></div><span class="track-time">4:22</span><button type="button" class="save" aria-pressed="false">＋ Save</button></article>
+<article class="track"><button type="button" class="album-art" data-play="Bad Romance — Remix" aria-label="Play Bad Romance Remix">▶</button><div class="track-info"><button type="button" class="title" data-play="Bad Romance — Remix">Bad Romance — Remix</button><p>Lady Gaga · The Remixes</p></div><span class="track-time">4:57</span><button type="button" class="save" aria-pressed="false">＋ Save</button></article>
+</div></section>
+<section class="group" data-group="soundcloud"><h2><span class="dot sc"></span>SoundCloud</h2><div class="cloud-list">
+<article class="cloud"><button type="button" class="album-art" data-play="Bad Romance — Lady Gaga on SoundCloud" aria-label="Play Bad Romance on SoundCloud">▶</button><div class="track-info"><div class="kicker" hidden>Top result</div><div class="creator"><span class="avatar" aria-hidden="true">LG</span>Lady Gaga</div><button type="button" class="title" data-play="Bad Romance — Lady Gaga on SoundCloud">Bad Romance</button><p>4:54 · SoundCloud</p></div><button type="button" class="save" aria-pressed="false">＋ Save</button></article>
+<article class="cloud"><button type="button" class="album-art" data-play="Bad Romance — Club edit" aria-label="Play Bad Romance Club edit">▶</button><div class="track-info"><div class="creator"><span class="avatar" aria-hidden="true">RM</span>Remix artist</div><button type="button" class="title" data-play="Bad Romance — Club edit">Bad Romance — Club edit</button><p>3:48 · SoundCloud</p></div><button type="button" class="save" aria-pressed="false">＋ Save</button></article>
+</div></section>
+<div class="now" hidden role="status"><button type="button" aria-label="Pause demo playback" id="pause-demo">Ⅱ</button><span id="playing-name"></span></div>
+<p class="demo">Interactive mockup · sample results and artwork · playback and saving are simulated. Creator initials represent the fallback when a profile photo is unavailable.</p>
+</main><script>
+const root=document.getElementById('search-concept');let playing=false;
+root.querySelectorAll('.filter').forEach(b=>b.addEventListener('click',()=>{const p=b.dataset.provider;root.querySelectorAll('.filter').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));root.querySelectorAll('[data-group]').forEach(s=>s.hidden=p!=='all'&&s.dataset.group!==p);root.querySelectorAll('.track,.cloud').forEach(x=>{const top=p!=='all'&&x===root.querySelector('[data-group="'+p+'"] article');x.classList.toggle('featured',top);const k=x.querySelector('.kicker');if(k)k.hidden=!top;});}));
+root.querySelectorAll('[data-play]').forEach(b=>b.addEventListener('click',()=>{root.querySelector('.now').hidden=false;document.getElementById('playing-name').textContent=b.dataset.play;playing=true;document.getElementById('pause-demo').textContent='Ⅱ';document.getElementById('pause-demo').setAttribute('aria-label','Pause demo playback');}));
+root.querySelectorAll('.save').forEach(b=>b.addEventListener('click',()=>{const saved=b.getAttribute('aria-pressed')!=='true';b.setAttribute('aria-pressed',String(saved));b.textContent=saved?'✓ Saved':'＋ Save';}));
+document.getElementById('pause-demo').addEventListener('click',e=>{playing=!playing;e.currentTarget.textContent=playing?'Ⅱ':'▶';e.currentTarget.setAttribute('aria-label',playing?'Pause demo playback':'Resume demo playback');});
+const opts={thumbnailRadius:9};if(globalThis.Tweak){const t=new Tweak({container:root,onChange:()=>root.querySelectorAll('.thumb').forEach(x=>x.style.borderRadius=opts.thumbnailRadius+'px')});t.addSlider(opts,'thumbnailRadius',{label:'Thumbnail corners',min:0,max:18,unit:'px'});}
+console.log('Mockup ready: '+root.querySelectorAll('article').length+' results; filters, title playback and Save wired.');
+</script></body></html>
