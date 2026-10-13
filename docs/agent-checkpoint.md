@@ -574,3 +574,15 @@ User items: Popular shelf blank (+show owned), library not updating after add, s
 - Snapshot qa-snapshots/slopify-ytfix-r2 (+ .patch), Sol task slopify-ytfix-r2 (ports 5473/5474). Not promoted yet.
 - r2 (Sol): user-facing all PASS (cold PSY audio 5/5 in 1.7-3.9 s, picture 1080p, fresh-link recovery, song-files lifecycle). Two code defects fixed: sweepRunFolders skips own pid; refresh(signal) uses the download's signal. Snapshot slopify-ytfix-r3, Sol task slopify-ytfix-r3 (targeted). slopify-ytfix2-qa-tools kept for Sol's r3 repro reuse (delete afterwards).
 - r3 (Sol): all PASS. Promoted slopify-ytfix-r3 dist (source identical). QA leftovers deleted. User app 5197 (backend 67824) needs a restart for server changes. Nothing committed.
+
+
+## Public repository Nightly / Stable setup (2026-10-13)
+
+- Authorization supersedes earlier build-only notes: commit all work, push the branch, merge PR #2 into master with a merge commit, then make DrasticDeveloping/Slopify public. Do not publish a release during setup.
+- Source and updates share DrasticDeveloping/Slopify. Workflow uses GITHUB_TOKEN with contents write; no PAT or Actions variable needed. Cron builds master at 09:00 UTC and skips an unchanged Source SHA. No previous nightly means the first nightly is built and published. Dispatch publish=false retains an artifact only.
+- Nightly is the next patch plus UTC date/time and a seconds/milliseconds identifier. Stored beta preferences migrate to Nightly. Stable exposes latest.yml and nightly.yml, and the custom provider offers the highest stable/nightly version to Nightly users.
+- Publisher refuses dirty/no-commit builds, existing releases and existing tags; new tags target the clean build source SHA. GH_TOKEN or GITHUB_TOKEN works.
+- Verification: npm.cmd run typecheck, npm.cmd run build, npm.cmd run dist:win:nightly, npm.cmd run dist:win all exit 0. node --test scripts/test-update-channels.cjs passes 6/6. Packaged nightly version 2.0.1-nightly.20261013.2200.31788 produces nightly.yml; Stable 2.0.0 produces identical latest.yml and nightly.yml. Both embedded feeds name owner DrasticDeveloping, repo Slopify. Stable app.asar has version 2.0.0, the custom provider, and no local library/environment files. No Electron launch.
+- Staged audit: 117 changed paths, zero secret-pattern hits or forbidden generated/local data. Existing origin history: 151 blobs, zero hits/forbidden paths. Re-scan complete origin/master history after merge before changing visibility.
+- Checkout C:/Users/daz/.t3/worktrees/slopify/t3-3a3eb1f3; branch t3/fix-loop-video-view-ux. Commits ab2727f (app), 3369810 (infrastructure), df42b57 (release), 4ee4534 (docs). PR https://github.com/DrasticDeveloping/Slopify/pull/2 is linked and mergeable. Merge, visibility change, and unpublished Actions run remain pending at this checkpoint; handoff report will carry their final evidence.
+- Preserve user ports 5197/PID67824 and 5253; no server launched or listener killed. Do not push refs/t3/* or modify/delete the abandoned release-only repo. Parent owns independent review; user explicitly requested no agents from this implementor.
