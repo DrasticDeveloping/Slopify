@@ -1,0 +1,39 @@
+{
+  "appId": "com.drasticdeveloping.slopify",
+  "productName": "Slopify",
+  "directories": { "output": "release", "buildResources": "build/desktop" },
+  "asar": true,
+  "files": [
+    "desktop/**/*",
+    "server/**/*.mjs",
+    "server/providers/**/*.cjs",
+    "dist/**/*",
+    "package.json",
+    "release.config.json",
+    "!node_modules/ffmpeg-static/ffmpeg.exe"
+  ],
+  "extraResources": [
+    { "from": "node_modules/ffmpeg-static/ffmpeg.exe.LICENSE", "to": "licenses/FFmpeg-LICENSE.txt" },
+    { "from": "node_modules/ffmpeg-static/ffmpeg.exe.README", "to": "licenses/FFmpeg-build-and-source.txt" }
+  ],
+  "npmRebuild": false,
+  "win": {
+    "target": [{ "target": "portable", "arch": ["x64"] }, { "target": "nsis", "arch": ["x64"] }],
+    "icon": "build/desktop/icon.ico",
+    "signAndEditExecutable": true
+  },
+  "portable": {
+    "artifactName": "Slopify-${version}-${arch}-Portable.${ext}",
+    "unpackDirName": true
+  },
+  "nsis": {
+    "artifactName": "Slopify-${version}-${arch}-Setup.${ext}",
+    "oneClick": false,
+    "perMachine": false,
+    "allowElevation": false,
+    "allowToChangeInstallationDirectory": true,
+    "deleteAppDataOnUninstall": false,
+    "createDesktopShortcut": true
+  },
+  "publish": null
+}

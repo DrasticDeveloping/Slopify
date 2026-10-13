@@ -642,7 +642,7 @@ function safeThumbnail(value) {
       try {
         const url = new URL(candidate);
         return url.protocol === "https:" &&
-          (url.hostname === "i.ytimg.com" || url.hostname.endsWith(".ytimg.com") || url.hostname.endsWith(".ggpht.com"));
+          (url.hostname === "i.ytimg.com" || url.hostname.endsWith(".ytimg.com") || url.hostname.endsWith(".ggpht.com") || url.hostname === "yt3.googleusercontent.com");
       } catch {
         return false;
       }
@@ -749,6 +749,8 @@ function webCandidate(renderer) {
     album: null,
     durationSeconds: parseDuration(rendererText(renderer.lengthText)),
     thumbnailURL: safeThumbnail(renderer.thumbnail),
+    videoThumbnailURL: safeThumbnail(renderer.thumbnail),
+    creatorAvatarURL: safeThumbnail(renderer.channelThumbnailSupportedRenderers?.channelThumbnailWithLinkRenderer?.thumbnail),
     sourceProvider: "youtube",
     officialArtist: /\btopic$/i.test(artist || "") || badges.some((badge) => {
       const metadataBadge = isRecord(badge) ? badge.metadataBadgeRenderer : null;
@@ -912,8 +914,13 @@ function youtubeConfigurationValue(html, key, maximum = 2_048) {
   }
 }
 
-async function youtubePlaylistContinuation(token, configuration, signal, fetchImpl) {
-  const endpoint = new URL("/youtubei/v1/browse", "https://www.youtube.com");
+function youtubePlaylistContinuation(token, configuration, signal, fetchImpl) {
+  return youtubeContinuation("/youtubei/v1/browse", token, configuration, signal, fetchImpl);
+}
+
+/** The next page of a YouTube list (a playlist through "browse", search results through "search"), or null. */
+async function youtubeContinuation(path, token, configuration, signal, fetchImpl) {
+  const endpoint = new URL(path, "https://www.youtube.com");
   endpoint.searchParams.set("prettyPrint", "false");
   endpoint.searchParams.set("key", configuration.apiKey);
   let response;
@@ -1027,14 +1034,42 @@ function parseYouTubeMusicSearch(html) {
 }
 
 function parseYouTubeWebSearch(html) {
-  const results = [];
-  walk(extractYouTubeInitialData(html), (record) => {
+  return parseYouTubeSearchData(extractYouTubeInitialData(html)).candidates;
+}
+
+/**
+ * Slopify: videos in YouTube search data (the first page's ytInitialData, or a
+ * continuation response), and the token for the page after it.
+ */
+function parseYouTubeSearchData(data) {
+  const candidates = [];
+  let continuation = null;
+  walk(data, (record) => {
     const renderer = record.videoRenderer;
-    if (!isRecord(renderer)) return;
-    const candidate = webCandidate(renderer);
-    if (candidate) results.push(candidate);
+    if (isRecord(renderer)) {
+      const candidate = webCandidate(renderer);
+      if (candidate) candidates.push(candidate);
+    }
+    const token = record.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token;
+    if (!continuation && typeof token === "string" && token.length <= 4_000) continuation = token;
   });
-  return results;
+  return { candidates, continuation };
+}
+
+/** What a later YouTube search page request needs, read from the first page. */
+function youtubeSearchConfiguration(html) {
+  const configuration = {
+    apiKey: youtubeConfigurationValue(html, "INNERTUBE_API_KEY", 256),
+    clientVersion: youtubeConfigurationValue(html, "INNERTUBE_CLIENT_VERSION", 128),
+    visitorData: youtubeConfigurationValue(html, "VISITOR_DATA", 2_048),
+  };
+  return configuration.apiKey && configuration.clientVersion ? configuration : null;
+}
+
+/** The next page of YouTube search results, as parsed data, or null when YouTube didn't answer. */
+async function youtubeSearchPage(token, configuration, signal, fetchImpl = fetch) {
+  const data = await youtubeContinuation("/youtubei/v1/search", token, configuration, signal, fetchImpl);
+  return data ? parseYouTubeSearchData(data) : null;
 }
 
 function normalizeMatchText(value) {
@@ -1227,8 +1262,11 @@ module.exports = {
   parseSpotifyPlaylistOEmbed,
   parseYouTubeMusicSearch,
   parseYouTubePlaylistData,
+  parseYouTubeSearchData,
   parseYouTubeWebSearch,
   resolveYouTubePlaylist,
+  youtubeSearchConfiguration,
+  youtubeSearchPage,
   resolveSpotifyTrack,
   resolveSpotifyPlaylist,
   scoreAudioSource,

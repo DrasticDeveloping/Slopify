@@ -9,6 +9,8 @@ const YOUTUBE_PAGE_HOST = /(^|\.)(youtube\.com|youtube-nocookie\.com)$/i;
 const AUDIO_CONTENT_TYPE = "audio/mp4";
 const VIDEO_CONTENT_TYPE = "video/mp4";
 const AUDIO_CHUNK_SIZE = 10 * 1024 * 1024;
+/** YouTube now and then refuses one range of a stream it served a moment ago; that range is asked for again up to this many times. */
+const CHUNK_RETRIES = 3;
 const MAX_AUDIO_BYTES = 256 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_VISITOR_PAGE_BYTES = 6 * 1024 * 1024;
@@ -113,6 +115,31 @@ async function fetchWithValidatedRedirects(source, options, isAllowed, fetchImpl
 async function responseTextWithLimit(response, limit) {
   return new TextDecoder().decode(await readResponseBytes(response, limit,
     youtubeError("YOUTUBE_RESPONSE_TOO_LARGE", "YouTube returned an oversized playback response.")));
+}
+
+/**
+ * Gives a resolved stream a way to ask YouTube for a fresh link to the same file,
+ * for when its link stops working partway through a download. Not enumerable, so
+ * it never shows up in previews or saved metadata.
+ */
+function withRefresh(stream, refresh) {
+  return Object.defineProperty(stream, "refresh", { value: refresh, enumerable: false });
+}
+
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const cancelled = () => signal.reason || new DOMException("Cancelled", "AbortError");
+    if (signal?.aborted) return reject(cancelled());
+    const stop = () => {
+      clearTimeout(timer);
+      reject(cancelled());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", stop, { once: true });
+  });
 }
 
 async function writeAll(file, bytes) {
@@ -372,9 +399,15 @@ function directMP4Video(format) {
     typeof format?.qualityLabel === "string" && hasAudio && !format.drmFamilies && format.type !== "FORMAT_STREAM_TYPE_OTF";
 }
 
-function chooseMP4VideoFormat(player) {
+/** Formats no taller than `maxHeight` (0: any height). */
+function withinHeight(formats, maxHeight) {
+  if (!maxHeight) return formats;
+  return formats.filter((format) => numericValue(format.height) > 0 && numericValue(format.height) <= maxHeight);
+}
+
+function chooseMP4VideoFormat(player, maxHeight = 0) {
   const formats = Array.isArray(player?.streamingData?.formats) ? player.streamingData.formats : [];
-  return formats.filter((value) => value && typeof value === "object").filter(directMP4Video).sort((left, right) => {
+  return withinHeight(formats.filter((value) => value && typeof value === "object").filter(directMP4Video), maxHeight).sort((left, right) => {
     const height = numericValue(right.height) - numericValue(left.height);
     const frameRate = numericValue(right.fps) - numericValue(left.fps);
     return height || frameRate || numericValue(right.bitrate) - numericValue(left.bitrate);
@@ -389,18 +422,21 @@ function directMP4VideoOnly(format) {
     typeof format?.qualityLabel === "string" && !hasAudio && !format.drmFamilies && format.type !== "FORMAT_STREAM_TYPE_OTF";
 }
 
-function chooseMP4VideoOnlyFormat(player) {
+function chooseMP4VideoOnlyFormat(player, maxHeight = 0) {
   const adaptive = Array.isArray(player?.streamingData?.adaptiveFormats) ? player.streamingData.adaptiveFormats : [];
-  return adaptive.filter((value) => value && typeof value === "object").filter(directMP4VideoOnly).sort((left, right) => {
+  return withinHeight(adaptive.filter((value) => value && typeof value === "object").filter(directMP4VideoOnly), maxHeight).sort((left, right) => {
     const height = numericValue(right.height) - numericValue(left.height);
     const frameRate = numericValue(right.fps) - numericValue(left.fps);
     return height || frameRate || numericValue(right.bitrate) - numericValue(left.bitrate);
   })[0] || null;
 }
 
-function chooseMP4VideoStreams(player) {
-  const combinedFormat = chooseMP4VideoFormat(player);
-  const adaptiveFormat = chooseMP4VideoOnlyFormat(player);
+/** The best video no taller than `maxHeight`, or, if every format is taller, the best of all. */
+function chooseMP4VideoStreams(player, maxHeight = 0) {
+  const fits = maxHeight > 0 && Boolean(chooseMP4VideoFormat(player, maxHeight) || chooseMP4VideoOnlyFormat(player, maxHeight));
+  const cap = fits ? maxHeight : 0;
+  const combinedFormat = chooseMP4VideoFormat(player, cap);
+  const adaptiveFormat = chooseMP4VideoOnlyFormat(player, cap);
   const useAdaptive = Boolean(adaptiveFormat
     && (!combinedFormat || numericValue(adaptiveFormat.height) > numericValue(combinedFormat.height)));
   return {
@@ -582,7 +618,7 @@ async function resolveYouTubeAudio(source, signal, fetchImpl = fetch) {
   if (duration > 24 * 60 * 60) throw youtubeError("YOUTUBE_DURATION_TOO_LONG", "The selected audio is too long to import.");
   const thumbnails = Array.isArray(details?.thumbnail?.thumbnails) ? details.thumbnail.thumbnails : [];
   const thumbnailURL = highestQualityThumbnailURL(thumbnails);
-  return {
+  return withRefresh({
     videoID,
     title: cleanLabel(details?.title, videoID),
     author: details?.author ? cleanLabel(details.author, "Unknown uploader") : null,
@@ -594,15 +630,16 @@ async function resolveYouTubeAudio(source, signal, fetchImpl = fetch) {
     streamingURL: safeStreamingURL(format.url),
     streamingHeaders,
     sourceURL: `https://www.youtube.com/watch?v=${videoID}`,
-  };
+  }, (downloadSignal) => resolveYouTubeAudio(source, downloadSignal ?? signal, fetchImpl));
 }
 
-async function resolveYouTubeVideo(source, signal, fetchImpl = fetch) {
+/** `maxHeight` (say 1080) picks the best video no taller than that, when there is one. */
+async function resolveYouTubeVideo(source, signal, fetchImpl = fetch, { maxHeight = 0 } = {}) {
   const videoID = YOUTUBE_VIDEO_ID.test(source) ? source : youtubeVideoID(source);
   if (!videoID) throw youtubeError("INVALID_YOUTUBE_VIDEO", "Enter a supported YouTube video URL.");
   let selected = null;
   const { player, streamingHeaders } = await fetchYouTubePlayer(videoID, signal, fetchImpl, async (candidatePlayer, headers) => {
-    selected = chooseMP4VideoStreams(candidatePlayer);
+    selected = chooseMP4VideoStreams(candidatePlayer, maxHeight);
     if (!selected.format || (selected.useAdaptive && !selected.audioFormat)) {
       throw youtubeError("YOUTUBE_NO_VERIFIED_MP4", "YouTube did not provide verifiable MP4 video and M4A audio streams for this video.");
     }
@@ -640,7 +677,9 @@ async function resolveYouTubeVideo(source, signal, fetchImpl = fetch) {
   if (duration > 24 * 60 * 60) throw youtubeError("YOUTUBE_DURATION_TOO_LONG", "The selected video is too long to import.");
   const thumbnails = Array.isArray(details?.thumbnail?.thumbnails) ? details.thumbnail.thumbnails : [];
   const thumbnailURL = highestQualityThumbnailURL(thumbnails);
-  return {
+  // A refresh follows the download it's for, which may be stopped on its own (its partner stream failed).
+  const again = (downloadSignal) => resolveYouTubeVideo(source, downloadSignal ?? signal, fetchImpl, { maxHeight });
+  const resolved = {
     videoID,
     title: cleanLabel(details?.title, videoID),
     author: details?.author ? cleanLabel(details.author, "Unknown uploader") : null,
@@ -655,16 +694,16 @@ async function resolveYouTubeVideo(source, signal, fetchImpl = fetch) {
     fps: numericValue(format.fps) || null,
     ...(useAdaptive ? {
       separateStreams: true,
-      videoStream: {
+      videoStream: withRefresh({
         contentLength: videoContentLength,
         streamingURL: safeStreamingURL(format.url, "video"),
         streamingHeaders,
-      },
-      audioStream: {
+      }, async (downloadSignal) => (await again(downloadSignal)).videoStream),
+      audioStream: withRefresh({
         contentLength: audioContentLength,
         streamingURL: safeStreamingURL(audioFormat.url, "audio"),
         streamingHeaders,
-      },
+      }, async (downloadSignal) => (await again(downloadSignal)).audioStream),
     } : {
       separateStreams: false,
       streamingURL: safeStreamingURL(format.url, "video"),
@@ -672,6 +711,7 @@ async function resolveYouTubeVideo(source, signal, fetchImpl = fetch) {
     }),
     sourceURL: `https://www.youtube.com/watch?v=${videoID}`,
   };
+  return useAdaptive ? resolved : withRefresh(resolved, again);
 }
 
 function verifiedContentRangeForKind(value, expectedStart, expectedEnd, expectedTotal, mediaKind) {
@@ -688,25 +728,51 @@ async function downloadResolvedMedia(resolved, destination, signal, onProgress =
   const file = await fs.open(destination, "wx");
   const hash = createHash("sha256");
   let completed = 0;
+  // The link in use; replaced by a fresh one if YouTube keeps refusing it.
+  let link = { streamingURL: resolved.streamingURL, streamingHeaders: resolved.streamingHeaders };
+  let refreshed = false;
   try {
     for (let start = 0; start < resolved.contentLength; start += AUDIO_CHUNK_SIZE) {
       if (signal?.aborted) throw signal.reason || new DOMException("Cancelled", "AbortError");
       const end = Math.min(resolved.contentLength - 1, start + AUDIO_CHUNK_SIZE - 1);
       let response;
-      try {
-        response = await fetchWithValidatedRedirects(safeStreamingURL(resolved.streamingURL, media), {
-          headers: { ...resolved.streamingHeaders, "Accept-Encoding": "identity", Range: `bytes=${start}-${end}` },
-          signal,
-          stage: "downloading",
-        }, (value) => {
-          try { safeStreamingURL(value, media); return true; } catch { return false; }
-        }, fetchImpl, `YouTube returned an unsafe ${media} redirect.`);
-      } catch (error) {
-        if (error?.name === "AbortError") throw error;
-        if (error instanceof LocalImportError) throw error;
-        throw youtubeError("YOUTUBE_DOWNLOAD_UNREACHABLE", `The YouTube ${media} stream could not be reached.`, { stage: "downloading" });
+      for (let attempt = 0; ; attempt++) {
+        let failure = null;
+        try {
+          response = await fetchWithValidatedRedirects(safeStreamingURL(link.streamingURL, media), {
+            headers: { ...link.streamingHeaders, "Accept-Encoding": "identity", Range: `bytes=${start}-${end}` },
+            signal,
+            stage: "downloading",
+          }, (value) => {
+            try { safeStreamingURL(value, media); return true; } catch { return false; }
+          }, fetchImpl, `YouTube returned an unsafe ${media} redirect.`);
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          if (error instanceof LocalImportError) throw error;
+          failure = youtubeError("YOUTUBE_DOWNLOAD_UNREACHABLE", `The YouTube ${media} stream could not be reached.`, { stage: "downloading" });
+        }
+        // A refused or failed range is asked for again after a moment; none of it was written yet.
+        const refused = !failure && response.status !== 200 && response.status !== 206 && response.status !== 429;
+        if (!failure && !refused) break;
+        if (refused) await response.body?.cancel().catch(() => undefined);
+        // Refused again: the link itself may have gone bad, so (once) get a fresh one and carry on from here.
+        if (attempt >= 1 && !refreshed && typeof resolved.refresh === "function") {
+          refreshed = true;
+          const fresh = await resolved.refresh(signal).catch((error) => {
+            if (error?.name === "AbortError") throw error;
+            return null;
+          });
+          if (fresh && fresh.contentLength === resolved.contentLength) {
+            link = { streamingURL: fresh.streamingURL, streamingHeaders: fresh.streamingHeaders };
+            continue;
+          }
+        }
+        if (attempt >= CHUNK_RETRIES) {
+          throw failure || youtubeError("YOUTUBE_DOWNLOAD_FAILED", `The YouTube ${media} stream could not be read.`, { stage: "downloading" });
+        }
+        await delay(500 * (attempt + 1), signal);
       }
-      try { safeStreamingURL(response.url || resolved.streamingURL, media); }
+      try { safeStreamingURL(response.url || link.streamingURL, media); }
       catch (error) { await response.body?.cancel().catch(() => undefined); throw error; }
       if (response.status === 429) {
         await response.body?.cancel().catch(() => undefined);
@@ -793,26 +859,47 @@ async function inspectYouTubeVideo(source, signal, fetchImpl = fetch) {
   return preview;
 }
 
-async function downloadYouTubeVideo(source, destination, signal, onProgress, fetchImpl = fetch) {
-  const resolved = await resolveYouTubeVideo(source, signal, fetchImpl);
+async function downloadYouTubeVideo(source, destination, signal, onProgress, fetchImpl = fetch, options = {}) {
+  const resolved = await resolveYouTubeVideo(source, signal, fetchImpl, options);
   const preview = (({ streamingURL, streamingHeaders, videoStream, audioStream, ...value }) => value)(resolved);
   if (resolved.separateStreams) {
     const videoDestination = `${destination}.video.mp4`;
     const audioDestination = `${destination}.audio.m4a`;
-    const videoDownload = await downloadResolvedVideo(
-      resolved.videoStream,
-      videoDestination,
-      signal,
-      (completed) => onProgress?.(completed, resolved.contentLength),
-      fetchImpl,
-    );
-    const audioDownload = await downloadResolvedAudio(
-      resolved.audioStream,
-      audioDestination,
-      signal,
-      (completed) => onProgress?.(resolved.videoStream.contentLength + completed, resolved.contentLength),
-      fetchImpl,
-    );
+    // Picture and sound download side by side. If either fails, the other stops, and the first failure is reported.
+    const both = new AbortController();
+    const stop = () => both.abort(signal.reason);
+    if (signal?.aborted) stop();
+    else signal?.addEventListener("abort", stop, { once: true });
+    const done = { video: 0, audio: 0 };
+    const report = () => onProgress?.(done.video + done.audio, resolved.contentLength);
+    let firstError = null;
+    const failFast = (task) => task.catch((error) => {
+      firstError ??= error;
+      both.abort(error);
+      throw error;
+    });
+    let results;
+    try {
+      // Waits for both to finish, so a failure never leaves the other still writing.
+      results = await Promise.allSettled([
+        failFast(downloadResolvedVideo(resolved.videoStream, videoDestination, both.signal, (completed) => {
+          done.video = completed;
+          report();
+        }, fetchImpl)),
+        failFast(downloadResolvedAudio(resolved.audioStream, audioDestination, both.signal, (completed) => {
+          done.audio = completed;
+          report();
+        }, fetchImpl)),
+      ]);
+    } finally {
+      signal?.removeEventListener("abort", stop);
+    }
+    if (firstError) {
+      // One that did finish is of no use alone.
+      await Promise.all([videoDestination, audioDestination].map((file) => fs.rm(file, { force: true }).catch(() => undefined)));
+      throw signal?.aborted ? signal.reason || firstError : firstError;
+    }
+    const [videoDownload, audioDownload] = results.map((result) => result.value);
     return {
       preview,
       mediaSourceURL: null,

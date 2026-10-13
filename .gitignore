@@ -3,3 +3,8 @@ dist
 *.tsbuildinfo
 # Imported songs and the server-side library
 /data
+/release
+/build/desktop
+.wrangler/
+.env*
+.dev.vars*
