@@ -74,10 +74,16 @@ function startUpdates(getWindow, log) {
   // Loaded only in packaged builds that have a feed.
   const { autoUpdater } = require("electron-updater");
   autoUpdater.logger = { info: (m) => log(`[updates] ${m}\n`), warn: (m) => log(`[updates] ${m}\n`), error: (m) => log(`[updates] ${m}\n`), debug() {} };
-  autoUpdater.autoDownload = !portable;
+  // Downloads start only for a check made on the channel chosen now (see update-available).
+  autoUpdater.autoDownload = false;
   // Turned on only once a download for the chosen channel is waiting (see update-downloaded).
   autoUpdater.autoInstallOnAppQuit = false;
   let checking = null;
+  /** Bumped by every channel change, so a check made before it can't speak for the new channel. */
+  let generation = 0;
+  /** The generation the check under way was made for. */
+  let checkingFor = 0;
+  const stale = () => checkingFor !== generation;
   /** The channel the current download was found on. */
   let downloadingFor = null;
 
@@ -86,17 +92,24 @@ function startUpdates(getWindow, log) {
     // "latest" reads latest.yml from the newest stable release.
     autoUpdater.channel = channel === "nightly" ? "nightly" : "latest";
     autoUpdater.allowPrerelease = channel === "nightly";
-    autoUpdater.allowDowngrade = false;
+    // A nightly on Stable goes back to the newest stable release, even an older version,
+    // for as long as it's still a nightly (a failed check or a restart doesn't lose this).
+    autoUpdater.allowDowngrade = channel === "stable" && /-/.test(app.getVersion());
   };
   if (testFeed) autoUpdater.setFeedURL({ provider: "generic", url: testFeed });
   else autoUpdater.setFeedURL({ provider: "custom", ...feed, updateProvider: require("./nightly-provider.cjs").NightlyGitHubProvider });
   useChannel(state.channel);
 
   autoUpdater.on("checking-for-update", () => send({ status: "checking", error: null }));
-  autoUpdater.on("update-not-available", () => send({ status: "none", available: null, checkedAt: Date.now() }));
+  autoUpdater.on("update-not-available", () => {
+    if (!stale()) send({ status: "none", available: null, checkedAt: Date.now() });
+  });
   autoUpdater.on("update-available", (info) => {
+    // Found for the channel chosen before a switch: ignored, and checked again for the new one.
+    if (stale()) return;
     downloadingFor = state.channel;
     send({ status: portable ? "available" : "downloading", available: info.version, progress: 0, checkedAt: Date.now() });
+    if (!portable) autoUpdater.downloadUpdate().catch(() => undefined); // Failures arrive as "error".
   });
   autoUpdater.on("download-progress", (p) => send({ status: "downloading", progress: Math.round(p.percent) }));
   autoUpdater.on("update-downloaded", (info) => {
@@ -108,15 +121,18 @@ function startUpdates(getWindow, log) {
   });
   autoUpdater.on("error", (error) => {
     log(`[updates] ${error?.stack || error}\n`);
-    // A download already waiting to install is still good.
-    if (state.status !== "ready") send({ status: "error", error: friendlyError(error) });
+    // A download already waiting to install is still good, and a check for the old channel doesn't matter.
+    if (state.status !== "ready" && !(checking && stale())) send({ status: "error", error: friendlyError(error) });
   });
 
   function check(reason) {
     if (state.status === "ready" || state.status === "downloading") return state;
-    checking ??= autoUpdater.checkForUpdates()
-      .catch(() => undefined) // Reported through the "error" event.
-      .finally(() => { checking = null; });
+    if (!checking) {
+      checkingFor = generation;
+      checking = autoUpdater.checkForUpdates()
+        .catch(() => undefined) // Reported through the "error" event.
+        .finally(() => { checking = null; });
+    }
     log(`[updates] checking (${reason}, ${state.channel})\n`);
     return checking.then(() => state);
   }
@@ -127,17 +143,14 @@ function startUpdates(getWindow, log) {
     // Switching mid-download would race the old channel's download (the UI disables this too).
     if (state.status === "downloading") throw new Error("Wait for the download to finish before changing channel.");
     fs.writeFileSync(settingsFile(), JSON.stringify({ channel }));
+    generation++;
     useChannel(channel);
-    // Leaving nightly goes back to the newest stable release, even if it's an older version.
-    autoUpdater.allowDowngrade = channel === "stable";
     // An update downloaded for the old channel no longer installs on quit.
     autoUpdater.autoInstallOnAppQuit = false;
     send({ channel, status: "idle", available: null, error: null });
-    try {
-      await check("channel");
-    } finally {
-      autoUpdater.allowDowngrade = false;
-    }
+    // A check still under way is for the old channel: let it finish unheard, then check this one.
+    if (checking) await checking;
+    await check("channel");
     return state;
   }
 

@@ -65,5 +65,6 @@ test("Stored beta migrates to Nightly; switching to Stable allows downgrade", as
   assert.equal(handlers.get("updates:get")().channel, "nightly");
   await handlers.get("updates:set-channel")(null, "stable");
   assert.equal(saved.channel, "stable");
-  assert.equal(updater.allowDowngrade, false);
+  // Still a nightly, so a later check (after a failed one, or a restart) can still go back to Stable.
+  assert.equal(updater.allowDowngrade, true);
 });
