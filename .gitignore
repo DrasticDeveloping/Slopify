@@ -8,3 +8,6 @@ dist
 .wrangler/
 .env*
 .dev.vars*
+
+# Working notes for agents: local paths and process details, kept on this computer only
+/docs/agent-checkpoint.md

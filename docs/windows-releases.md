@@ -53,7 +53,7 @@ Builds without an id work normally; Settings explains that this copy can't show 
 
 Installed copies check public GitHub Releases on **[DrasticDeveloping/Slopify](https://github.com/DrasticDeveloping/Slopify/releases)**, the same repository that holds the source. `release.config.json` names it as `updateRepo`; packaged `resources/app-update.yml` records `owner: DrasticDeveloping` and `repo: Slopify`. Until the first release is published, Settings reports that no releases are available. Older builds without an update source need to be replaced once.
 
-Actions publishes with the built-in `GITHUB_TOKEN` and `permissions: contents: write`. No personal access token, Actions secret, or repository variable is needed. The workflow sets the package's update repository to `github.repository`.
+Actions publishes with the built-in `GITHUB_TOKEN`. Only the workflow's separate publish job gets `contents: write`; the build itself runs with read-only access. No personal access token or Actions secret is needed. The workflow sets the package's update repository to `github.repository`.
 
 ### Publish the first Stable and Nightly
 
@@ -89,12 +89,18 @@ Build an older and a newer version with any `updateRepo` set (for example `SLOPI
 
 `.github/workflows/release.yml` builds Slopify on GitHub's Windows machines:
 
-- **Every night at 09:00 UTC** it builds a nightly of `master` and publishes it. It skips the build when `master` hasn't changed since the last nightly, using the `Source:` commit in each release's notes.
+- **Every night at 09:00 UTC**, once nightlies are switched on, it builds a nightly of `master` and publishes it. It skips the build when `master` hasn't changed since the last nightly, using the `Source:` commit in each release's notes.
 - **On demand**, from Actions → Release → Run workflow, it builds a nightly or stable release from any branch.
 
 The workflow needs the work committed and pushed. Manual runs default to publishing disabled and retain a downloadable `slopify-windows-nightly` or `slopify-windows-stable` artifact for 14 days. GitHub-hosted Actions runners are free for this public repository.
 
-The schedule can publish the first Nightly without a previous release: an empty release list does not skip the build. Subsequent unchanged nights skip packaging. Releases are tagged at the exact clean source commit recorded in `build.json`, rather than whichever commit happens to be the default branch tip when publishing. Local publishing rejects dirty builds; commit and push the source, then rebuild before publishing.
+Nightlies are off until you switch them on, so nothing is published on a schedule before you're ready. To switch them on, set the repository variable (**Settings → Secrets and variables → Actions → Variables**, or the command below); to pause them, set it to anything else or delete it:
+
+```powershell
+gh variable set SLOPIFY_PUBLISH_NIGHTLIES --repo DrasticDeveloping/Slopify --body true
+```
+
+Once on, the schedule can publish the first Nightly without a previous release: an empty release list does not skip the build. Subsequent unchanged nights skip packaging. Releases are tagged at the exact clean source commit recorded in `build.json`, rather than whichever commit happens to be the default branch tip when publishing. Local publishing rejects dirty builds; commit and push the source, then rebuild before publishing.
 
 ## Build again after changes
 

@@ -1,9 +1,12 @@
 # Builds Slopify for Windows, like T3 Code's nightly releases:
-# - every night, a nightly build of master, skipped when nothing changed since the last one;
+# - every night, a nightly build of master, skipped when nothing changed since the last one.
+#   Scheduled builds only run once nightlies are switched on: set the repository
+#   variable SLOPIFY_PUBLISH_NIGHTLIES to "true" (see docs/windows-releases.md);
 # - on demand (Actions → Release → Run workflow), a nightly or stable build.
 #
-# Releases live in this public source repository. Publishing uses GITHUB_TOKEN.
-# Manual builds default to downloadable artifacts only.
+# Releases live in this public source repository. Publishing uses GITHUB_TOKEN, and
+# only the publish job can write to the repository. Manual builds default to
+# downloadable artifacts only.
 name: Release
 
 on:
@@ -22,7 +25,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
@@ -30,14 +33,17 @@ concurrency:
 
 jobs:
   windows:
+    if: github.event_name != 'schedule' || vars.SLOPIFY_PUBLISH_NIGHTLIES == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
     env:
       SLOPIFY_UPDATE_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CHANNEL: ${{ github.event.inputs.channel || 'nightly' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
 
@@ -54,7 +60,21 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v4
+      - name: Decide whether to publish
+        id: plan
+        shell: bash
+        env:
+          SKIP: ${{ steps.changes.outputs.skip }}
+          SCHEDULED: ${{ github.event_name == 'schedule' }}
+          REQUESTED: ${{ github.event.inputs.publish == 'true' }}
+        run: |
+          if [[ "$SKIP" != "true" && ( "$SCHEDULED" == "true" || "$REQUESTED" == "true" ) ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v7
         if: steps.changes.outputs.skip != 'true'
         with:
           node-version: 22
@@ -72,7 +92,7 @@ jobs:
 
       - name: Keep the build
         if: steps.changes.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: slopify-windows-${{ env.CHANNEL }}
           path: |
@@ -80,6 +100,36 @@ jobs:
             !release/*/*.blockmap
           retention-days: 14
 
+      # Everything the publish job needs: the build record and every file it lists.
+      - name: Hand the build to the publish job
+        if: steps.plan.outputs.publish == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: slopify-publish
+          path: |
+            release/last-build.json
+            release/*/
+          retention-days: 1
+
+  publish:
+    needs: windows
+    if: needs.windows.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # Only the publishing script is used from the checkout; nothing is built here.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: slopify-publish
+          path: release
+
       - name: Publish
-        if: steps.changes.outputs.skip != 'true' && (github.event_name == 'schedule' || github.event.inputs.publish == 'true')
         run: node scripts/publish-release.mjs
