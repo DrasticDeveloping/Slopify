@@ -7,7 +7,9 @@
   "author": "DrasticDeveloping",
   "main": "desktop/main.cjs",
   "scripts": {
+    "predev": "node scripts/ensure-deps.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/ensure-deps.mjs",
     "build": "tsc -b && vite build && node scripts/build-pwa.mjs",
     "preview": "vite preview",
     "start": "node server/main.mjs",
