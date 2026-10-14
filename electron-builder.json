@@ -6,6 +6,7 @@
   "files": [
     "desktop/**/*",
     "server/**/*.mjs",
+    "server/data-dir.cjs",
     "server/providers/**/*.cjs",
     "dist/**/*",
     "package.json",

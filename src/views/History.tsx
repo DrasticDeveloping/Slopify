@@ -1,3 +1,4 @@
+import { creditLine } from "../lib/credits";
 import { useMemo, useState, type CSSProperties } from "react";
 import { Art, TrackArt } from "../components/Artwork";
 import { recentDays } from "../data/library";
@@ -101,7 +102,7 @@ function RecentListens() {
                   <TrackArt trackId={t.id} className="row-art" />
                   <span className="title-text">
                     <span className={`t-name${currentId === t.id ? " accent" : ""}`}>{t.title}</span>
-                    <span className="t-sub">{artists[t.artistId]?.name}</span>
+                    <span className="t-sub">{creditLine(t, artists)}</span>
                   </span>
                 </li>
               );
@@ -319,7 +320,7 @@ function StatsView() {
                 <TrackArt trackId={t.id} className="row-art" />
                 <span className="title-text">
                   <span className="t-name">{t.title}</span>
-                  <span className="t-sub">{artists[t.artistId]?.name}</span>
+                  <span className="t-sub">{creditLine(t, artists)}</span>
                 </span>
                 <span className="muted small">{plural(t.plays, "play")}</span>
               </li>

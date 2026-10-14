@@ -1,16 +1,20 @@
 import type { Playlist } from "../data/types";
 import { likedPlaylist } from "../data/library";
 import type { Listen } from "../recommend/taste";
-import { toast, updateToast } from "./actions";
+import { adoptMixes, currentMixes, onMixes, type Mix } from "../recommend/mixes";
+import { applyEngineSettings, setSpeed, toast, toggleShuffle, updateToast } from "./actions";
 import { connectLibrarySync, defaultSettings, flushPersist, getState, initialLibrarySync, setState, subscribe, type AppState, type Settings } from "./store";
+import { adoptPlaybackSpot, onPlaybackSpot, playbackSpot, type PlaybackSpot } from "./resume";
+import { adoptSlipIns, allSlipIns, onSlipIns, type SlipIn } from "./slipins";
 import { syncServerLibrary } from "./importer";
 import { flushSongChanges } from "./song-api";
 import { CloudError, cloudCall, getAccount, onSignedIn } from "./cloud";
 import { syncCloudSongs } from "./cloud-sync";
 
 /*
- * Library data on the music server: playlists, likes, listening history and
- * settings, kept in step between every browser that uses this server.
+ * Library data on the music server: playlists, likes, listening history,
+ * settings, slip-ins, today's mixes, shuffle/repeat/speed and the song you were
+ * playing, kept in step between every browser that uses this server.
  *
  * The server holds one versioned document. Each browser remembers the version
  * it last agreed on (the base) and merges three ways: anything changed only
@@ -48,6 +52,13 @@ interface LibraryData {
   plays: Record<string, { id: string; at: number }>;
   listenLog: Record<string, number>;
   settings: Record<string, unknown>;
+  // Added later: a copy saved by an older version lacks these, which counts as unchanged.
+  slipIns?: Record<string, SlipIn>;
+  mixes?: Record<string, Mix>;
+  /** Shuffle, repeat and speed. Volume stays with each device (speakers and headphones differ). */
+  playback?: Record<string, unknown>;
+  /** Where you left off. */
+  spot?: PlaybackSpot | null;
 }
 interface Base { rev: number; data: LibraryData | null }
 
@@ -59,6 +70,10 @@ const canonical = (p: Playlist) => (p.id === "liked" ? likedPlaylist(p) : p);
 const canonicalAll = (list: Record<string, Playlist>) => Object.fromEntries(Object.entries(list).map(([id, p]) => [id, canonical(p)]));
 /** The listener's settings (not this device's), limited to settings this version of the app has. */
 const listenerSettings = (settings: Record<string, unknown>) => pick(settings, (key) => key in defaultSettings && !DEVICE_SETTINGS.has(key as keyof Settings));
+/** Shuffle, repeat and speed as a new device starts: the baseline, so its defaults never override yours. */
+const PLAYBACK_DEFAULTS: Record<string, unknown> = { shuffle: false, repeat: "off", speed: 1 };
+/** Mixes keyed in one order everywhere, so devices listing them differently still agree. */
+const byId = <T>(map: Record<string, T>) => Object.fromEntries(Object.entries(map).sort(([a], [b]) => a.localeCompare(b)));
 
 /* ───────────────────────── this browser's data ───────────────────────── */
 
@@ -87,6 +102,11 @@ function localData(s: AppState, base: LibraryData | null): LibraryData {
     plays: Object.fromEntries(s.listens.filter((l) => synced(l.id)).map((l) => [`${l.id}@${l.at}`, l])),
     listenLog: s.listenLog,
     settings: listenerSettings(s.settings as unknown as Record<string, unknown>),
+    slipIns: withUnknown(allSlipIns(), base?.slipIns),
+    mixes: byId(Object.fromEntries(currentMixes().map((m) => [m.id, m]))),
+    // A Listen Along guest plays at the host's speed, which isn't their own setting: theirs stays as agreed.
+    playback: { shuffle: s.shuffle, repeat: s.repeat, speed: s.listen.mode === "guest" ? (base?.playback ?? PLAYBACK_DEFAULTS).speed : s.speed },
+    spot: playbackSpot(),
   };
 }
 
@@ -111,6 +131,46 @@ const addCounters = (b: Counter | undefined, m: Counter, t: Counter): Counter =>
   if (Array.isArray(m) && Array.isArray(t)) return m.map((n, i) => n + (t[i] ?? 0) - (Array.isArray(b) ? b[i] ?? 0 : 0));
   return m;
 };
+
+/**
+ * A slip-in changed on both sides: the latest play decides, and each count is
+ * the higher one. (Adding them up would count a change twice when it reaches a
+ * device by both the music server and the account.)
+ */
+const mergeSlipIn = (_b: SlipIn | undefined, m: SlipIn, t: SlipIn): SlipIn => {
+  const [latest, other] = (m.lastAt ?? 0) >= (t.lastAt ?? 0) ? [m, t] : [t, m];
+  return {
+    ...latest,
+    addedAt: Math.min(m.addedAt, t.addedAt),
+    slipped: Math.max(m.slipped, t.slipped),
+    finished: Math.max(m.finished, t.finished),
+    skipped: Math.max(m.skipped, t.skipped),
+    offered: Boolean(m.offered || t.offered),
+    ...(other.lastAt && !latest.lastAt ? { lastAt: other.lastAt } : {}),
+  };
+};
+
+/**
+ * Mix editions: the newer edition wins, then a finished one, then (so every
+ * device settles on the same one) the same pick whichever side is which. Songs
+ * hidden from a mix stay hidden. Expired editions go.
+ */
+function mergeMixes(base: Record<string, Mix> = {}, mine: Record<string, Mix> = {}, theirs: Record<string, Mix> = {}) {
+  const now = Date.now();
+  const out: Record<string, Mix> = {};
+  for (const id of new Set([...Object.keys(mine), ...Object.keys(theirs)])) {
+    const [b, m, t] = [base[id], mine[id], theirs[id]];
+    let chosen = same(m, b) ? t : same(t, b) ? m : undefined;
+    if (!chosen) {
+      const [x, y] = [m, t].filter((e): e is Mix => Boolean(e)).sort((p, q) => q.expires - p.expires || Number(q.complete) - Number(p.complete) || (JSON.stringify(p) < JSON.stringify(q) ? -1 : 1));
+      chosen = y && y.edition === x.edition ? { ...x, hidden: [...new Set([...x.hidden, ...y.hidden])] } : x;
+    }
+    if (chosen && chosen.expires > now) out[id] = chosen;
+  }
+  return byId(out);
+}
+
+const newestSpot = (...spots: Array<PlaybackSpot | null | undefined>) => spots.filter((x): x is PlaybackSpot => Boolean(x)).sort((a, b) => b.at - a.at)[0] ?? null;
 
 function merge(base: LibraryData | null, mine: LibraryData, theirs: LibraryData): LibraryData {
   const playlists = mergeMap(base ? canonicalAll(base.playlists) : undefined, canonicalAll(mine.playlists), canonicalAll(theirs.playlists), (_b, m, t) => {
@@ -137,6 +197,10 @@ function merge(base: LibraryData | null, mine: LibraryData, theirs: LibraryData)
     listenLog: mergeMap(base?.listenLog, mine.listenLog, theirs.listenLog, addCounters) as Record<string, number>,
     // Initial defaults are the baseline, rather than deliberate preference edits.
     settings: mergeMap(base?.settings ?? listenerSettings(defaultSettings as unknown as Record<string, unknown>), mine.settings, theirs.settings),
+    slipIns: mergeMap(base?.slipIns, mine.slipIns, theirs.slipIns ?? base?.slipIns, mergeSlipIn),
+    mixes: mergeMixes(base?.mixes, mine.mixes, theirs.mixes ?? base?.mixes),
+    playback: mergeMap(base?.playback ?? PLAYBACK_DEFAULTS, mine.playback, theirs.playback ?? base?.playback ?? PLAYBACK_DEFAULTS),
+    spot: newestSpot(mine.spot, theirs.spot),
   };
 }
 
@@ -183,6 +247,27 @@ function apply(data: LibraryData) {
       settings: { ...s.settings, ...(listenerSettings(data.settings) as Partial<Settings>) },
     };
   });
+  if (data.slipIns) adoptSlipIns({ ...pick(allSlipIns(), (id) => !synced(id)), ...data.slipIns });
+  if (data.mixes) {
+    // Kept in this device's order (Daily Mixes first), with new ones after.
+    const order = currentMixes().map((m) => m.id);
+    const rank = (id: string) => (order.includes(id) ? order.indexOf(id) : order.length);
+    adoptMixes(Object.values(data.mixes).sort((a, b) => rank(a.id) - rank(b.id) || a.id.localeCompare(b.id)));
+  }
+  applyPlayback(data.playback);
+  adoptPlaybackSpot(data.spot);
+}
+
+/** Shuffle, repeat and speed as chosen on another device, applied the way the buttons apply them. */
+function applyPlayback(playback: LibraryData["playback"]) {
+  if (!playback) return;
+  const s = getState();
+  if (typeof playback.shuffle === "boolean" && playback.shuffle !== s.shuffle) toggleShuffle();
+  if ((playback.repeat === "off" || playback.repeat === "one" || playback.repeat === "all") && playback.repeat !== s.repeat) {
+    setState({ repeat: playback.repeat });
+    applyEngineSettings();
+  }
+  if (typeof playback.speed === "number" && playback.speed > 0 && playback.speed !== s.speed && s.listen.mode !== "guest") setSpeed(playback.speed);
 }
 
 /* ───────────────────────── talking to the server ───────────────────────── */
@@ -412,8 +497,12 @@ export function watchLibraryData() {
     const prev = last;
     last = s;
     if (s.playlists !== prev.playlists || s.settings !== prev.settings || s.taste.likes !== prev.taste.likes || s.taste.saves !== prev.taste.saves
-      || s.taste.hidden !== prev.taste.hidden || s.taste.hiddenDiscoveries !== prev.taste.hiddenDiscoveries) schedule(QUICK);
+      || s.taste.hidden !== prev.taste.hidden || s.taste.hiddenDiscoveries !== prev.taste.hiddenDiscoveries
+      || s.shuffle !== prev.shuffle || s.repeat !== prev.repeat || s.speed !== prev.speed) schedule(QUICK);
     else if (s.listens !== prev.listens || s.listenLog !== prev.listenLog || s.taste.listens !== prev.taste.listens) schedule(SLOW);
   });
+  onSlipIns(() => schedule(QUICK));
+  onMixes(() => schedule(QUICK));
+  onPlaybackSpot(() => schedule(SLOW));
   window.setInterval(() => void syncLibraryData().catch(() => undefined), POLL);
 }

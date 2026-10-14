@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { engine } from "../audio/engine";
 import { hashString, paletteFromSeed } from "../data/library";
-import { isUploadLink, uploadCredit } from "../lib/credits";
+import { isUploadLink, splitArtists, uploadCredit, uploadTitle } from "../lib/credits";
 import type { Album, Artist, ClipRange, Genre, Track } from "../data/types";
 import { meaningfulArtist, type ReasonKind } from "../recommend/taste";
 import {
@@ -421,13 +421,7 @@ export function registerStreams(songs: StreamSong[]) {
     if (tracks[id]) continue;
     if (tracks === s.tracks) [tracks, artists, albums] = [{ ...tracks }, { ...artists }, { ...albums }];
     const credit = song.candidate.importMetadata?.provider !== "spotify" && isUploadLink(song.candidate.sourceURL) ? uploadCredit(song.artist, song.title) : { artist: song.artist, title: song.title };
-    const name = credit.artist.trim() || "Unknown artist";
-    let artist = Object.values(artists).find((a) => a.name.toLowerCase() === name.toLowerCase());
-    if (!artist) {
-      const h = hashString(name);
-      artist = { id: `ar_${h}`, name, genre: GENRES[h % GENRES.length], palette: paletteFromSeed(h), listeners: 0 };
-      artists[artist.id] = artist;
-    }
+    const { artist, featuring } = creditedArtists(credit.artist, artists);
     const seed = hashString(song.key);
     const albumId = `al_stream_${seed}`;
     const meta = song.candidate.importMetadata;
@@ -441,7 +435,7 @@ export function registerStreams(songs: StreamSong[]) {
       ...(song.artwork ? { artworkUrl: song.artwork } : {}),
     };
     const duration = meta?.durationSeconds ?? song.candidate.durationSeconds ?? 0;
-    tracks[id] = { id, title: credit.title, artistId: artist.id, albumId, duration, addedAt: Date.now(), kind: video ? "video" : "audio", storage: "files", size: 0, plays: 0, seed, stream: true };
+    tracks[id] = { id, title: credit.title, artistId: artist.id, ...featuring, albumId, duration, addedAt: Date.now(), kind: video ? "video" : "audio", storage: "files", size: 0, plays: 0, seed, stream: true };
   }
   if (tracks !== s.tracks) setState({ tracks, artists, albums });
 }
@@ -608,16 +602,33 @@ function releaseOf(p: ServerSong): { year?: number; released?: string } {
 }
 
 /** A song with no album (the server drops old "Imported" placeholders) is shown as its own single. */
-const serverAlbumTitle = (p: ServerSong) => p.album?.trim() || p.title;
+const serverAlbumTitle = (p: ServerSong) => p.album?.trim() || songTitle(p);
+/** Uploads keep their video titles on the server; shown as the song's name here. */
+const songTitle = (p: ServerSong) => (isUploadLink(p.sourceURL) ? uploadTitle(p.artist ?? "", p.title) : p.title);
+/** A track's artists as one credit, to compare with the server's. */
+const creditOf = (t: Track, artists: Record<string, Artist>) => [t.artistId, ...(t.featuring ?? [])].map((id) => artists[id]?.name).join(", ");
 
-function placeServerTrack(p: ServerSong, artists: Record<string, Artist>, albums: Record<string, Album>): Track {
-  const name = p.artist?.trim() || "Unknown artist";
+/** The artist of this name, added to `artists` if it's new. */
+function artistNamed(name: string, artists: Record<string, Artist>) {
   let artist = Object.values(artists).find((a) => a.name.toLowerCase() === name.toLowerCase());
   if (!artist) {
     const h = hashString(name);
     artist = { id: `ar_${h}`, name, genre: GENRES[h % GENRES.length], palette: paletteFromSeed(h), listeners: 0 };
     artists[artist.id] = artist;
   }
+  return artist;
+}
+
+/** Each credited artist gets their own page; the first is the song's main artist. */
+function creditedArtists(credit: string, artists: Record<string, Artist>) {
+  const [main, ...others] = splitArtists(credit.trim() || "Unknown artist").map((name) => artistNamed(name, artists));
+  // Always set, so a refreshed song that lost its other artists doesn't keep the old ones.
+  return { artist: main, featuring: { featuring: others.length ? others.map((a) => a.id) : undefined } };
+}
+
+function placeServerTrack(p: ServerSong, artists: Record<string, Artist>, albums: Record<string, Album>): Track {
+  const { artist, featuring } = creditedArtists(p.artist ?? "", artists);
+  const title = songTitle(p);
   const seed = hashString(p.id);
   const albumId = `al_srv_${p.id}`;
   albums[albumId] = {
@@ -631,8 +642,9 @@ function placeServerTrack(p: ServerSong, artists: Record<string, Artist>, albums
   };
   return {
     id: `srv_${p.id}`,
-    title: p.title,
+    title,
     artistId: artist.id,
+    ...featuring,
     albumId,
     duration: p.durationSeconds || 0,
     addedAt: p.addedAt || Date.now(),
@@ -714,7 +726,7 @@ export async function syncServerLibrary() {
     }
     const known = tracks[id];
     if (known) {
-      if (known.title !== p.title || artists[known.artistId]?.name !== (p.artist?.trim() || "Unknown artist") || known.mediaUrl !== p.fileUrl || known.sourceUrl !== (p.sourceURL ?? undefined) || known.playableUrl !== (p.playableURL ?? undefined)) {
+      if (known.title !== songTitle(p) || creditOf(known, artists).toLowerCase() !== splitArtists(p.artist?.trim() || "Unknown artist").join(", ").toLowerCase() || known.mediaUrl !== p.fileUrl || known.sourceUrl !== (p.sourceURL ?? undefined) || known.playableUrl !== (p.playableURL ?? undefined)) {
         const updated = placeServerTrack(p, artists, albums);
         tracks[id] = { ...known, ...updated, storage: known.storage, size: known.size, plays: known.plays };
         refreshed = true;

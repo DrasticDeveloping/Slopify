@@ -581,9 +581,9 @@ select.input option, .select select option { background: var(--panel-solid); }
 
 /* ───────────────────────── Track list ───────────────────────── */
 
-.tracklist { --cols: 44px minmax(0, 5fr) minmax(0, 3fr) minmax(110px, 2fr) 40px 58px 40px; position: relative; }
+.tracklist { --cols: 44px minmax(0, 6fr) minmax(0, 2fr) minmax(110px, 2fr) 40px 58px 40px; position: relative; }
 .tracklist.no-album { --cols: 44px minmax(0, 6fr) minmax(110px, 2fr) 40px 58px 40px; }
-.tracklist.no-added { --cols: 44px minmax(0, 5fr) minmax(0, 3fr) 40px 58px 40px; }
+.tracklist.no-added { --cols: 44px minmax(0, 6fr) minmax(0, 2fr) 40px 58px 40px; }
 .tracklist.no-album.no-added { --cols: 44px minmax(0, 1fr) 40px 58px 40px; }
 .tl-head, .tl-row { display: grid; grid-template-columns: var(--cols); align-items: center; gap: 12px; padding: 0 12px; }
 .tl-head { height: 36px; border-bottom: 1px solid var(--line); margin-bottom: 8px; color: var(--text-3); font-size: 12.5px; font-weight: 600; position: sticky; top: 64px; z-index: 5; background: color-mix(in oklab, var(--panel-solid) 88%, transparent); backdrop-filter: blur(16px); margin-inline: -12px; padding-inline: 24px; }
@@ -627,6 +627,7 @@ button.th:not(:disabled):hover { color: var(--text); }
 .t-name .eq { display: inline-flex; vertical-align: middle; margin-right: 8px; }
 .t-sub { display: flex; align-items: center; gap: 5px; font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .t-sub .icon.ok { color: var(--accent-ink); }
+.t-artists { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tl-row.current .t-name { color: var(--accent-ink); }
 .td.dur { text-align: right; font-variant-numeric: tabular-nums; }
 .td.like .icon-btn, .td.more .icon-btn { width: 32px; height: 32px; opacity: 0; }
@@ -637,7 +638,7 @@ button.th:not(:disabled):hover { color: var(--text); }
 .drag-ghost { position: fixed; top: -100px; left: -100px; padding: 8px 14px; border-radius: 99px; background: var(--accent); color: var(--on-accent); font-weight: 700; font-size: 13px; }
 
 @container main (max-width: 820px) {
-  .tracklist { --cols: 40px minmax(0, 5fr) minmax(0, 3fr) 40px 54px 40px; }
+  .tracklist { --cols: 40px minmax(0, 6fr) minmax(0, 2fr) 40px 54px 40px; }
   .tracklist .th.added, .tracklist .td.added { display: none; }
   .tracklist.no-album { --cols: 40px minmax(0, 1fr) 40px 54px 40px; }
 }
@@ -655,7 +656,8 @@ button.th:not(:disabled):hover { color: var(--text); }
 .shelf-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
 .shelf-head h2 { font-size: 21px; font-weight: 780; letter-spacing: -0.02em; }
 .shelf-head p { color: var(--text-2); font-size: 13px; }
-.shelf-actions { display: flex; align-items: center; gap: 6px; }
+.shelf-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.shelf-actions .text-btn { white-space: nowrap; }
 .shelf-actions .icon-btn.round { width: 32px; height: 32px; background: var(--raised); }
 .shelf-actions .icon-btn.round:disabled { opacity: 0.25; }
 .shelf-row {
@@ -1525,6 +1527,8 @@ button.th:not(:disabled):hover { color: var(--text); }
 .fp-video.ambient .video-host video { object-fit: cover; }
 .fp-video.ambient .video-surface > .art { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
 .fp-video .video-surface { display: grid; place-items: center; }
+/* An all-but-transparent layer keeps the video covered once the controls fade out, so browsers don't move it to a hardware overlay (where it can freeze). */
+.fp-video:not(.ambient)::after { content: ""; position: absolute; inset: 0; z-index: 3; background: rgb(0 0 0 / 0.004); pointer-events: none; }
 /* Cover art stands in until the video has loaded. */
 .fp-video .video-surface > .art { width: min(84vw, calc(56vh * 16 / 9)); height: auto; aspect-ratio: 16 / 9; border-radius: 14px; }
 .video-mode .fp-head { background: linear-gradient(180deg, rgb(0 0 0 / 0.7), transparent); padding-bottom: 40px; }

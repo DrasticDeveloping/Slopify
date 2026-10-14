@@ -5,6 +5,7 @@ import { openTrackMenu } from "../lib/menus";
 import { isPlayable, moveInPlaylist, navigate, playList, toggleLike, togglePlay } from "../state/actions";
 import { PROVIDERS, trackPlatform } from "../state/importer";
 import { getState, setState, useStore, type Route } from "../state/store";
+import { ArtistLinks } from "./ArtistLinks";
 import { TrackArt } from "./Artwork";
 import { Bars, Icon } from "./Icon";
 
@@ -144,7 +145,6 @@ export function PlatformBadge({ track }: { track: Track }) {
 
 const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, showAdded, showPlays, draggableReorder, dropBefore, dropAfter, onDragOverRow, onDropRow }: RowProps) {
   const track = useStore((s) => s.tracks[id]);
-  const artist = useStore((s) => (track ? s.artists[track.artistId] : undefined));
   const album = useStore((s) => (track ? s.albums[track.albumId] : undefined));
   const current = useStore((s) => s.currentId === id);
   const playing = useStore((s) => s.currentId === id && s.isPlaying);
@@ -255,16 +255,15 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
           <span className="t-sub">
             {track.storage === "downloads" ? <Icon name="downloaded" size={13} className="ok" title="Downloaded" /> : null}
             {track.storage === "server" ? (downloading !== undefined ? <span className="ring" style={{ "--p": downloading } as CSSProperties} title="Downloading" /> : <Icon name="globe" size={13} title="Streams from server" />) : null}
-            <button type="button" className="link" tabIndex={-1} onClick={(e) => { e.stopPropagation(); navigate({ name: "artist", id: track.artistId }); }}>
-              {artist?.name}
-            </button>
+            <span className="t-artists"><ArtistLinks track={track} inRow /></span>
           </span>
         </span>
       </span>
       {showAlbum ? (
         <span className="td album">
           <button type="button" className="link" tabIndex={-1} onClick={(e) => { e.stopPropagation(); navigate({ name: "album", id: track.albumId }); }}>
-            {album?.title}
+            {/* A single's "album" is the song itself: naming it twice says nothing. */}
+            {album && album.title.toLowerCase() !== track.title.toLowerCase() ? album.title : <span className="muted">Single</span>}
           </button>
         </span>
       ) : null}

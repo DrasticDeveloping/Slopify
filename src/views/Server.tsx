@@ -1,3 +1,4 @@
+import { creditLine } from "../lib/credits";
 import { useMemo, useState, type CSSProperties } from "react";
 import { TrackArt } from "../components/Artwork";
 import { Bars, Icon } from "../components/Icon";
@@ -34,7 +35,7 @@ export function ServerView() {
     return catalog.filter((t) => {
       if (scope === "remote" && t.storage !== "server") return false;
       if (scope === "device" && t.storage === "server") return false;
-      return !needle || `${t.title} ${artists[t.artistId]?.name} ${albums[t.albumId]?.title}`.toLowerCase().includes(needle);
+      return !needle || `${t.title} ${creditLine(t, artists)} ${albums[t.albumId]?.title}`.toLowerCase().includes(needle);
     });
   }, [catalog, scope, q, artists, albums]);
 
@@ -147,7 +148,7 @@ export function ServerView() {
                 <TrackArt trackId={t.id} className="row-art" />
                 <span className="title-text">
                   <span className="t-name">{current ? <Bars paused={!isPlaying} /> : null}{t.title}</span>
-                  <span className="t-sub">{artists[t.artistId]?.name}</span>
+                  <span className="t-sub">{creditLine(t, artists)}</span>
                 </span>
                 <span className="album-col muted">{albums[t.albumId]?.title}</span>
                 <span className="dur muted">{formatTime(t.duration)}</span>

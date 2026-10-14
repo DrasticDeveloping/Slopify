@@ -1,22 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import { engine } from "./audio/engine";
 import { ContextMenu } from "./components/ContextMenu";
 import { FullPlayer } from "./components/FullPlayer";
 import { Icon } from "./components/Icon";
 import { ModalHost } from "./components/modals/ModalHost";
 import { PlayerBar } from "./components/PlayerBar";
-import { RightPanel } from "./components/RightPanel";
+import { RightPanel, usePanel } from "./components/RightPanel";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { themes } from "./components/modals/SettingsModal";
 import {
-  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, previous, seek, setVolume,
+  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume,
   toggleLike, toggleMute, togglePlay, toggleShuffle, wireEngine,
 } from "./state/actions";
 import { prepareMixes } from "./recommend/mixes";
 import { startMusicServer } from "./state/server";
 import { syncLibraryData, watchLibraryData } from "./state/sync";
+import { restorePlaybackSpot, watchPlaybackSpot } from "./state/resume";
 import { getState, setState, useStore, type Route } from "./state/store";
 import { AlbumView, PlaylistView } from "./views/Collection";
 import { HistoryView } from "./views/History";
@@ -102,6 +102,27 @@ const typing = (el: EventTarget | null) => {
 
 function useShortcuts() {
   useEffect(() => {
+    /*
+     * The control that last took focus from a click (not the keyboard). A clicked button keeps
+     * focus, and Space would press it again; for it, Space plays/pauses instead. The browser's
+     * :focus-visible can't tell: it turns on for the focused button as soon as any key is pressed.
+     */
+    let clickedAt = 0;
+    let clicked: EventTarget | null = null;
+    const onPointerDown = (e: PointerEvent) => {
+      clickedAt = performance.now();
+      // Clicking the control that already has focus doesn't move focus, so note it here.
+      const el = e.target instanceof Element ? e.target.closest("button, a, [role=slider], [role=row]") : null;
+      if (el && el === document.activeElement) clicked = el;
+    };
+    // Tab moves focus by keyboard, however soon after a click.
+    const onTab = (e: KeyboardEvent) => {
+      if (e.key === "Tab") clickedAt = 0;
+    };
+    const onFocusIn = (e: FocusEvent) => {
+      // Focus moved by a click, or by the app straight after one (a dialog closing, say).
+      clicked = performance.now() - clickedAt < 600 ? e.target : null;
+    };
     const onKey = (e: KeyboardEvent) => {
       const s = getState();
       const mod = e.ctrlKey || e.metaKey;
@@ -139,7 +160,8 @@ function useShortcuts() {
       const onControl = target.closest?.("button, a, [role=slider], [role=row]");
       switch (e.key) {
         case " ":
-          if (onControl && target.getAttribute("role") !== "row") return;
+          // Space presses a control only when you reached it from the keyboard (see `clicked`).
+          if (onControl && target.getAttribute("role") !== "row" && target !== clicked) return;
           e.preventDefault();
           togglePlay();
           break;
@@ -150,7 +172,7 @@ function useShortcuts() {
           if (mod) {
             if (e.key === "ArrowRight") next();
             else previous();
-          } else if (s.currentId) seek(engine.position + (e.key === "ArrowRight" ? 5 : -5));
+          } else if (s.currentId) seek(positionOf(s.currentId) + (e.key === "ArrowRight" ? 5 : -5));
           break;
         }
         case "ArrowUp":
@@ -179,8 +201,16 @@ function useShortcuts() {
         }
       }
     };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onTab, true);
+    window.addEventListener("focusin", onFocusIn);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onTab, true);
+      window.removeEventListener("focusin", onFocusIn);
+      window.removeEventListener("keydown", onKey);
+    };
   }, []);
 }
 
@@ -244,7 +274,7 @@ function useInertBackground() {
 
 export function App() {
   const route = useStore((s) => s.route);
-  const panel = useStore((s) => s.panel);
+  const panel = usePanel();
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const scroller = useRef<HTMLDivElement>(null);
   const [scrolled, setScrolled] = useState(false);
@@ -256,8 +286,12 @@ export function App() {
   useEffect(() => {
     wireEngine();
     watchLibraryData();
-    // Today's mixes are made once the library is known, then kept up to date each minute.
-    void startMusicServer(() => syncLibraryData().catch(() => undefined).then(() => prepareMixes()));
+    watchPlaybackSpot();
+    // Once the library is known: the song you were playing is put back, and today's mixes are made (then kept up to date each minute).
+    void startMusicServer(() => syncLibraryData().catch(() => undefined).then(() => {
+      restorePlaybackSpot();
+      return prepareMixes();
+    }));
     const mixTimer = window.setInterval(() => void prepareMixes(), 60_000);
     return () => clearInterval(mixTimer);
   }, []);

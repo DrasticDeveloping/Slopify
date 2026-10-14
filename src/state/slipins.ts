@@ -10,7 +10,8 @@ import { getState, type AppState } from "./store";
  * often as you like. The playlist (or album, or shuffle) carries on from where
  * it was afterwards; nothing in it is skipped or moved.
  *
- * Kept on this device (localStorage), per library song.
+ * Kept per library song, here (localStorage) and, for music-server songs, with
+ * your library and account (sync.ts), so they follow you to your other devices.
  */
 
 export interface SlipIn {
@@ -65,6 +66,12 @@ const subscribe = (l: () => void) => {
 };
 
 export const useSlipIns = () => useSyncExternalStore(subscribe, () => songs);
+/** For sync.ts: every slip-in, a way to hear of changes, and taking the synced ones in. */
+export const allSlipIns = () => songs;
+export const onSlipIns = subscribe;
+export function adoptSlipIns(next: Record<string, SlipIn>) {
+  if (JSON.stringify(next) !== JSON.stringify(songs)) publish(next);
+}
 export const isSlipIn = (id: string) => Boolean(songs[id]);
 
 /** The song playing now, if it was slipped in. */

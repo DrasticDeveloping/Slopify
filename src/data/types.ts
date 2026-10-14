@@ -43,7 +43,10 @@ export interface Album {
 export interface Track {
   id: string;
   title: string;
+  /** The main artist; others credited on the song are in `featuring`. */
   artistId: string;
+  /** Further credited artists ("Lady Gaga, Bruno Mars": Bruno Mars), in credit order. */
+  featuring?: string[];
   albumId: string;
   duration: number;
   addedAt: number;

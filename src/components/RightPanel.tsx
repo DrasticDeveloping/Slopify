@@ -4,6 +4,7 @@ import { useCurrent } from "../lib/hooks";
 import { openTrackMenu } from "../lib/menus";
 import { clearUpNext, isLiked, togglePlay, jumpToOrderIndex, jumpToUpNext, navigate, nextTrackId, openModal, playTrackNow, removeFromUpNext, toggleLike } from "../state/actions";
 import { setState, useStore } from "../state/store";
+import { ArtistLinks } from "./ArtistLinks";
 import { Art, TrackArt } from "./Artwork";
 import { Bars, Icon } from "./Icon";
 import { PlatformBadge } from "./TrackList";
@@ -132,7 +133,7 @@ function DetailsView() {
       <div className="np-title-row">
         <div className="title-text">
           <button type="button" className="link np-title" onClick={() => navigate({ name: "album", id: album.id })}>{track.title}</button>
-          <button type="button" className="link np-artist" onClick={() => navigate({ name: "artist", id: artist.id })}>{artist.name}</button>
+          <span className="np-artist"><ArtistLinks track={track} /></span>
           {slipped === track.id ? <span className="small muted slipped-note" title="A song you marked to slip into your listening. Skip it if you're not feeling it; your list carries on next.">Slipped in</span> : null}
         </div>
         <button type="button" className={`icon-btn like-btn${liked ? " on" : ""}`} onClick={() => toggleLike(track.id)} aria-pressed={liked} aria-label={liked ? "Remove from Liked Songs" : "Add to Liked Songs"}>
@@ -185,8 +186,11 @@ function DetailsView() {
   );
 }
 
+/** The side panel that's open: Now playing waits for a song, rather than taking up the screen with nothing in it. */
+export const usePanel = () => useStore((s) => (s.panel === "details" && !s.currentId ? null : s.panel));
+
 export function RightPanel() {
-  const panel = useStore((s) => s.panel);
+  const panel = usePanel();
   const label = useStore((s) => s.context?.label);
   if (!panel) return null;
   return (

@@ -1,3 +1,4 @@
+import { creditLine } from "../lib/credits";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Art, PlaylistArt } from "../components/Artwork";
 import { Hero } from "../components/Hero";
@@ -59,7 +60,7 @@ function useFiltered(ids: string[], q: string) {
     if (!needle) return ids;
     return ids.filter((id) => {
       const t = tracks[id];
-      return t && `${t.title} ${artists[t.artistId]?.name} ${albums[t.albumId]?.title}`.toLowerCase().includes(needle);
+      return t && `${t.title} ${creditLine(t, artists)} ${albums[t.albumId]?.title}`.toLowerCase().includes(needle);
     });
   }, [ids, q, tracks, artists, albums]);
 }

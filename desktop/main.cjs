@@ -6,12 +6,17 @@ const { startBackground } = require("./background.cjs");
 
 app.setName("Slopify");
 app.setAppUserModelId("com.drasticdeveloping.slopify");
-// Running from a checkout (`npm run desktop`, T3's Launch) uses that checkout's
-// data/ library and its own profile and port, so it can run beside an installed copy.
+// Once the video controls fade out, nothing covers the video and Chromium hands it to a
+// Windows hardware overlay, where the picture can freeze while the sound carries on.
+app.commandLine.appendSwitch("disable-direct-composition-video-overlays");
+// Running from a checkout (`npm run desktop`, T3's Launch) uses the library and profile
+// all checkouts share (or this checkout's own, isolated: see server/data-dir.cjs) and
+// its own port, so it can run beside an installed copy.
 const fromCheckout = !app.isPackaged;
+const checkout = fromCheckout ? require("../server/data-dir.cjs") : null;
 const profileDir = process.env.SLOPIFY_DESKTOP_DATA_DIR
   ? path.resolve(process.env.SLOPIFY_DESKTOP_DATA_DIR)
-  : path.join(app.getPath("appData"), fromCheckout ? "Slopify Dev" : "Slopify");
+  : checkout ? checkout.checkoutProfileDir(app.getAppPath()) : path.join(app.getPath("appData"), "Slopify");
 fs.mkdirSync(profileDir, { recursive: true });
 app.setPath("userData", profileDir);
 const port = Number(process.env.SLOPIFY_DESKTOP_PORT || (fromCheckout ? 5197 : 5198));
@@ -81,7 +86,7 @@ async function startBackend() {
     stdio: "pipe", serviceName: "Slopify music server",
     env: {
       ...process.env, HOST: "127.0.0.1", PORT: String(port),
-      SLOPIFY_DATA_DIR: process.env.SLOPIFY_DATA_DIR || (fromCheckout ? path.join(app.getAppPath(), "data") : path.join(userData, "library")),
+      SLOPIFY_DATA_DIR: process.env.SLOPIFY_DATA_DIR || (checkout ? checkout.checkoutDataDir(app.getAppPath()) : path.join(userData, "library")),
       FFMPEG_BIN: app.isPackaged ? path.join(process.resourcesPath, "bin/ffmpeg.exe") : require("ffmpeg-static")
     }
   });

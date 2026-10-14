@@ -3,13 +3,13 @@ import { DurableObject } from "cloudflare:workers";
 /*
  * One Listen Along room: a host whose playback everyone in the room follows.
  * Everyone keeps a WebSocket open to the room. The host sends what's playing
- * (the song's link and details, the position and whether it's paused); the room
+ * (the song's link and details, the position, speed and whether it's paused); the room
  * stamps it with the time and passes it to every guest, who plays that song from
  * its link on their own device and seeks to match. Uses WebSocket hibernation,
  * so an idle room costs nothing between messages.
  *
  * Messages (JSON), client → room:
- *   { type: "state", song, position, playing }   host only
+ *   { type: "state", song, position, playing, rate }   host only
  *   { type: "ping", at }                          anyone; answered with pong (clock sync)
  *   { type: "end" }                               host only: closes the room
  * room → client:
@@ -31,7 +31,7 @@ export interface PlaybackSong {
   artworkUrl: string | null;
   songId: string | null;
 }
-export interface Playback { song: PlaybackSong | null; position: number; playing: boolean; at: number }
+export interface Playback { song: PlaybackSong | null; position: number; playing: boolean; rate: number; at: number }
 interface Room { code: string; hostId: string; hostName: string; createdAt: number }
 
 const MAX_MEMBERS = 20;
@@ -72,7 +72,7 @@ export class ListenRoom extends DurableObject {
   /** Called by the Worker once, when the room is made. */
   async create(room: Room) {
     await this.ctx.storage.put("room", room);
-    await this.ctx.storage.put("playback", { song: null, position: 0, playing: false, at: Date.now() } satisfies Playback);
+    await this.ctx.storage.put("playback", { song: null, position: 0, playing: false, rate: 1, at: Date.now() } satisfies Playback);
     await this.ctx.storage.setAlarm(Date.now() + EMPTY_TTL_MS);
   }
 
@@ -132,7 +132,8 @@ export class ListenRoom extends DurableObject {
     if (message.type === "end") return this.end("The host ended the room.");
     if (message.type === "state") {
       const position = typeof message.position === "number" && message.position >= 0 && message.position < 86_400 ? message.position : 0;
-      const playback: Playback = { song: checkSong(message.song), position, playing: Boolean(message.playing), at: Date.now() };
+      const rate = typeof message.rate === "number" && message.rate >= 0.25 && message.rate <= 4 ? message.rate : 1;
+      const playback: Playback = { song: checkSong(message.song), position, playing: Boolean(message.playing), rate, at: Date.now() };
       await this.ctx.storage.put("playback", playback);
       this.broadcast({ type: "state", state: playback, now: Date.now() }, ws);
     }

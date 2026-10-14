@@ -402,6 +402,8 @@ const collector = new ListeningCollector();
 let previewing = false;
 /** The server song whose playback failed and was tried again; a second failure moves on. */
 let retriedError: string | null = null;
+/** Songs that failed one after another, with nothing played in between; coming back round to one stops playback. */
+const failedInRow = new Set<string>();
 let lastListenSave = 0;
 
 function saveListening(end: Listen["end"] = "playing") {
@@ -455,6 +457,7 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
   const s = getState();
   const t = s.tracks[id];
   if (!t) return;
+  if (end !== "error") failedInRow.clear();
   pendingStream = null;
   if (s.buffering) setState({ buffering: null });
   engine.captureProgress();
@@ -502,6 +505,8 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
   if (t.stream && readyStream) readyStream.usable = false;
   const range = effectiveRange(id, s);
   engine.load(engineTrack(id), { start: range.start, end: range.end || t.duration || 1e9, autoplay, crossfade });
+  if (cued?.id === id) engine.seek(cued.position);
+  cued = null;
   startListening(id);
   const prev = s.currentId;
   setState((st) => ({
@@ -534,6 +539,29 @@ export function playList(ids: string[], startId?: string, ctx?: { label: string;
   });
   load(first);
 }
+
+/** A song shown paused where it was left (on this device or another), started from there when played. */
+let cued: { id: string; position: number } | null = null;
+
+/**
+ * Puts a song where it was left, paused, with the list it was playing from, so
+ * Play carries on from there. Nothing is loaded (or counted as a play) until then.
+ */
+export function cueSong(id: string, position: number, ctx?: { label: string; route?: Route; ids: string[] }) {
+  const s = getState();
+  if (s.isPlaying || listenLocked() || !isPlayable(s.tracks[id], s)) return false;
+  if (s.currentId && s.currentId !== id) finishListening("changed");
+  const listed = (ctx?.ids ?? []).filter((x) => isPlayable(s.tracks[x], s));
+  const ids = listed.includes(id) ? listed : [id];
+  const order = s.shuffle ? shuffled(ids, id) : ids;
+  cued = { id, position: Math.max(0, position) };
+  setState({ currentId: id, isPlaying: false, context: { label: ctx?.label ?? "Library", route: ctx?.route, ids }, order, index: order.indexOf(id) });
+  updateMediaSession();
+  return true;
+}
+
+/** Where a song is: the playing position, or where a cued song will start. */
+export const positionOf = (id: string) => (cued?.id === id ? cued.position : engine.loadedTrackId === id ? engine.position : 0);
 
 /**
  * Brings the queue up to date when a list still filling in (a release finding its
@@ -585,6 +613,11 @@ export function togglePlay() {
     engine.pause();
     saveListening();
   } else {
+    // Cued from where it was left (possibly elsewhere) while already loaded here: carry on from there.
+    if (cued?.id === s.currentId) {
+      engine.seek(cued.position);
+      cued = null;
+    }
     // Playing on after a clip preview counts again, from here.
     if (previewing && !s.clipDraft) {
       previewing = false;
@@ -709,6 +742,13 @@ export function previous() {
 
 export function seek(seconds: number) {
   if (listenLocked()) return;
+  const s = getState();
+  if (cued && cued.id === s.currentId) {
+    cued = { ...cued, position: Math.max(0, seconds) };
+    // Nothing of it is loaded yet (another song may be): it starts from here when played.
+    if (engine.loadedTrackId !== cued.id) return;
+    cued = null;
+  }
   engine.seek(seconds);
   updatePositionState();
 }
@@ -823,7 +863,7 @@ export function syncEngineEnd() {
   engine.setRange(r.start, r.end || t.duration || 1e9);
 }
 
-function applyEngineSettings() {
+export function applyEngineSettings() {
   const s = getState();
   engine.lead = s.settings.crossfade && s.repeat !== "one" ? s.settings.crossfadeSeconds : 0;
   engine.setNormalize(s.settings.normalize);
@@ -1215,6 +1255,8 @@ export function previewClip(trackId: string) {
   engine.captureProgress();
   finishListening("changed");
   previewing = true;
+  // A clip preview plays from the clip's start, not from where the song was left.
+  cued = null;
   if (s.currentId === trackId && engine.loadedTrackId === trackId) {
     syncEngineEnd();
     engine.seek(effectiveRange(trackId).start);
@@ -1241,7 +1283,10 @@ export function listenLocked() {
  * `position`, playing or paused. Small drifts are left alone; the room calls
  * this again whenever the host's playback changes and every few seconds.
  */
-export function followHost(id: string | null, position: number, playing: boolean, label: string) {
+export function followHost(id: string | null, position: number, playing: boolean, label: string, rate = 1) {
+  // The host decides where playback is now.
+  cued = null;
+  if (getState().speed !== rate) setSpeed(rate);
   const s = getState();
   if (!id) {
     if (s.isPlaying) {
@@ -1371,7 +1416,10 @@ export function wireEngine() {
     }
     retriedError = null;
     toast(`Couldn't play “${t?.title ?? "file"}”`, { tone: "error", detail: "The file may be unsupported by this browser." });
-    if (previewing) {
+    failedInRow.add(id);
+    const n = peekNext(st);
+    // Paused, or every song left to try has already failed (one broken song on Repeat, say): stop here.
+    if (previewing || !st.isPlaying || (n && failedInRow.has(n.id))) {
       finishListening("error");
       stopAtEnd(st);
     } else advance({ auto: true, end: "error" });

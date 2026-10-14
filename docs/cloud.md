@@ -18,7 +18,7 @@ The service checks each request's Clerk session token against the Clerk app's pu
 
 ## Set it up
 
-The service is deployed at `https://slopify-cloud.gavdie01.workers.dev`, using the Slopify Clerk development application. `release.config.json` includes the service URL and public Clerk key. The steps below describe setup for another account; do not create a second database for the existing deployment.
+The service is deployed at `https://slopify-cloud.gavdie01.workers.dev`, using the Slopify Clerk production instance (domain `slopify.unblocked.mov`, Frontend API `clerk.slopify.unblocked.mov`). Production keys only work from origins the instance allows, so the desktop app's `http://127.0.0.1:5197`/`5198` and the local web app's `http://localhost:5199` must be in its `allowed_origins` (set through Clerk's Backend API). `release.config.json` includes the service URL and public Clerk key. The steps below describe setup for another account; do not create a second database for the existing deployment.
 
 ### 1. Clerk
 

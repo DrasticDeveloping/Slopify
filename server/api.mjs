@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { pipeline } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 import { createRecommendations } from "./recommendations.mjs";
 import { createArtists } from "./artists.mjs";
 import { createCatalog } from "./catalog.mjs";
@@ -18,6 +19,7 @@ import { SongFiles } from "./song-files.mjs";
 import { SongStore } from "./songs.mjs";
 
 const require = createRequire(import.meta.url);
+const { checkoutDataDir } = require("./data-dir.cjs");
 const { LocalImportError, youtubeVideoID } = require("./providers/local-import-core.cjs");
 const { importConfirmedSource, resolveLocalImportSource } = require("./providers/local-import-platform.cjs");
 const { looksLikeLink, searchAllPlatforms, searchMorePlatforms } = require("./providers/local-search.cjs");
@@ -43,6 +45,19 @@ function sendJSON(res, status, value) {
   const body = JSON.stringify(value);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(body);
+}
+
+/** Whether a browser sent this request from another website (by its Fetch Metadata, else its Origin). */
+function crossSite(req) {
+  const site = req.headers["sec-fetch-site"];
+  if (site) return site !== "same-origin" && site !== "none";
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  try {
+    return new URL(origin).host !== req.headers.host;
+  } catch {
+    return true;
+  }
 }
 
 async function readJSON(req) {
@@ -524,6 +539,11 @@ export function createImportApi({ dataDir }) {
     if (!url.pathname.startsWith("/api/")) return next();
     const parts = url.pathname.split("/").filter(Boolean).slice(1);
     const method = req.method || "GET";
+    // Only Slopify's own pages may change the library: any website could otherwise post
+    // here from the browser (a plain form or text/plain fetch needs no CORS permission).
+    if (!["GET", "HEAD", "OPTIONS"].includes(method) && crossSite(req)) {
+      return sendJSON(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "Requests from other websites aren't allowed." } });
+    }
     try {
       if (parts[0] === "health" && method === "GET") {
         return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()) });
@@ -721,10 +741,11 @@ export function createImportApi({ dataDir }) {
 
 /** Vite plugin that mounts the import API on the dev and preview servers. */
 export function slopifyApi(options = {}) {
-  const dataDir = path.resolve(options.dataDir || process.env.SLOPIFY_DATA_DIR || "data");
   let handler = null;
   const mount = (server) => {
-    handler ??= createImportApi({ dataDir });
+    // Chosen when a server starts, not when the config loads, so `vite build` never touches the library.
+    const chosen = options.dataDir || process.env.SLOPIFY_DATA_DIR;
+    handler ??= createImportApi({ dataDir: chosen ? path.resolve(chosen) : checkoutDataDir(fileURLToPath(new URL("../", import.meta.url))) });
     server.middlewares.use((req, res, next) => {
       handler(req, res, next).catch(next);
     });

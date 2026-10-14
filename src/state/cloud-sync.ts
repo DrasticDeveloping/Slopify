@@ -53,14 +53,19 @@ const forCloud = (s: ServerSong & { playableURL?: string | null }) => ({
   clip: s.clip,
   extra: s.extra,
 });
+/** The account's length and cover, where it has them (a cover kept only on this computer is never cleared). */
+const cloudDuration = (c: CloudSong) => (Number.isFinite(c.durationSeconds) && c.durationSeconds! > 0 ? c.durationSeconds! : null);
+const cloudArtwork = (c: CloudSong) => (c.artworkUrl?.startsWith("https://") ? c.artworkUrl : null);
 const sameDetails = (a: ReturnType<typeof forCloud>, b: CloudSong) =>
   a.title === b.title && a.artist === b.artist && (a.album ?? null) === (b.album ?? null) && JSON.stringify(a.clip ?? null) === JSON.stringify(b.clip ?? null)
-  && a.savedAs === b.savedAs && JSON.stringify(a.extra ?? {}) === JSON.stringify(b.extra ?? {});
+  && a.savedAs === b.savedAs && JSON.stringify(a.extra ?? {}) === JSON.stringify(b.extra ?? {})
+  && (cloudDuration(b) === null || a.durationSeconds === cloudDuration(b))
+  && (cloudArtwork(b) === null || a.artworkUrl === cloudArtwork(b));
 
 async function local<T>(url: string, init: RequestInit) {
   const res = await fetch(url, { cache: "no-store", ...init, headers: { "Content-Type": "application/json", ...init.headers } });
   const body = (await res.json().catch(() => null)) as { ok?: boolean; song?: T; error?: { message?: string } } | null;
-  if (!res.ok || !body?.ok) throw new Error(body?.error?.message || `Music server error (HTTP ${res.status}).`);
+  if (!res.ok || !body?.ok) throw Object.assign(new Error(body?.error?.message || `Music server error (HTTP ${res.status}).`), { status: res.status });
   return body.song as T;
 }
 
@@ -82,7 +87,11 @@ export async function syncCloudSongs(): Promise<boolean> {
       deletedThere.add(c.id);
       // Deleted elsewhere: delete here too, unless it was changed here since (then it's sent back).
       if (mine && (!was || mine.updatedAt <= was.local)) {
-        await local(`/api/songs/${encodeURIComponent(c.id)}`, { method: "DELETE" }).catch(() => undefined);
+        // If it can't be deleted, stop before this is recorded as done: the next sync tries again,
+        // rather than sending the song back to the account as if it were new.
+        await local(`/api/songs/${encodeURIComponent(c.id)}`, { method: "DELETE" }).catch((error: { status?: number }) => {
+          if (error.status !== 404) throw error;
+        });
         localSongs.delete(c.id);
         changedHere = true;
       }
@@ -99,6 +108,8 @@ export async function syncCloudSongs(): Promise<boolean> {
       // Unchanged here since we last agreed: take the account's version.
       if (!sameDetails(forCloud(mine), c)) {
         const changes: SongChanges = { title: c.title, artist: c.artist, album: c.album ?? null, savedAs: c.savedAs, clip: c.clip ?? null };
+        if (cloudDuration(c) !== null) changes.durationSeconds = cloudDuration(c);
+        if (cloudArtwork(c) !== null) changes.artworkUrl = cloudArtwork(c);
         const removed = Object.fromEntries(Object.keys(mine.extra ?? {}).filter((k) => !(k in (c.extra ?? {}))).map((k) => [k, null]));
         const updated = await updateSong(c.id, { ...changes, extra: { ...removed, ...(c.extra ?? {}) } });
         localSongs.set(c.id, updated);

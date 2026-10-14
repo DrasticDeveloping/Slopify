@@ -3,6 +3,7 @@ import { useCurrent } from "../lib/hooks";
 import { openTrackMenu } from "../lib/menus";
 import { isLiked, navigate, toggleLike, togglePlay } from "../state/actions";
 import { getState, setState, useStore } from "../state/store";
+import { ArtistLinks } from "./ArtistLinks";
 import { TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 import { openSpeedMenu, SeekRow, Transport, VolumeControl } from "./PlayerBar";
@@ -40,7 +41,7 @@ export function FullPlayer() {
 }
 
 function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { current: HTMLElement | null } }) {
-  const { id, track, artist, album } = useCurrent();
+  const { id, track, album } = useCurrent();
   const liked = useStore((s) => (id ? isLiked(id, s) : false));
   const context = useStore((s) => s.context);
   const speed = useStore((s) => s.speed);
@@ -181,7 +182,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
         <h2>
           <button type="button" className="link" onClick={() => go({ name: "album", id: album.id })}>{track.title}</button>
         </h2>
-        <button type="button" className="link fp-artist" onClick={() => artist && go({ name: "artist", id: artist.id })}>{artist?.name}</button>
+        <span className="fp-artist"><ArtistLinks track={track} go={go} /></span>
       </div>
       <button type="button" className={`icon-btn lg like-btn${liked ? " on" : ""}`} onClick={() => toggleLike(track.id)} aria-pressed={liked} aria-label={liked ? "Remove from Liked Songs" : "Add to Liked Songs"}>
         <Icon name={liked ? "heartFill" : "heart"} size={28} />
