@@ -1,3 +1,4 @@
+import { creditsArtist } from "../lib/credits";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Art } from "../components/Artwork";
 import { DiscoveryShelf } from "../components/DiscoveryShelf";
@@ -28,7 +29,7 @@ function ArtistPage({ artist }: { artist: Artist }) {
   const route: Route = { name: "artist", id };
   // Library songs only; streamed suggestions are not in the library.
   const popular = useMemo(
-    () => Object.values(tracks).filter((t) => t.artistId === id && !t.stream).sort((a, b) => b.plays - a.plays).map((t) => t.id),
+    () => Object.values(tracks).filter((t) => creditsArtist(t, id) && !t.stream).sort((a, b) => b.plays - a.plays).map((t) => t.id),
     [tracks, id],
   );
   // A single verified profile's picture; a collaboration has no one picture.

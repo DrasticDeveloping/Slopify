@@ -14,6 +14,8 @@ type Filter = "all" | EntryType;
 interface Entry {
   id: string;
   type: EntryType;
+  /** An album of one library song: a single, already listed under its artist. */
+  single?: boolean;
   name: string;
   subtitle: string;
   /** When it last gained a song (or was created), for most-recent-first order. */
@@ -33,11 +35,13 @@ const FILTERS: Array<[EntryType, string]> = [["playlist", "Playlists"], ["album"
 /** Playlists, plus the albums and artists of library songs, most recently added to first. */
 function libraryEntries(library: Track[], playlists: Playlist[], albums: Record<string, Album>, artists: Record<string, Artist>): Entry[] {
   const added = new Map<string, number>();
+  const albumSongs = new Map<string, number>();
   const latest = (key: string, at: number) => added.set(key, Math.max(added.get(key) ?? 0, at));
   for (const t of library) {
     latest(t.id, t.addedAt);
     latest(`album:${t.albumId}`, t.addedAt);
-    latest(`artist:${t.artistId}`, t.addedAt);
+    for (const id of [t.artistId, ...(t.featuring ?? [])]) latest(`artist:${id}`, t.addedAt);
+    albumSongs.set(t.albumId, (albumSongs.get(t.albumId) ?? 0) + 1);
   }
   const entries: Entry[] = playlists.map((p) => ({
     id: p.id,
@@ -50,7 +54,8 @@ function libraryEntries(library: Track[], playlists: Playlist[], albums: Record<
   for (const a of Object.values(albums)) {
     const at = added.get(`album:${a.id}`);
     if (at === undefined) continue;
-    entries.push({ id: a.id, type: "album", name: a.title, subtitle: `Album · ${artists[a.artistId]?.name ?? "Unknown artist"}`, at, art: <Art palette={a.palette} glyph={a.glyph} image={a.artworkUrl} className="side-art" /> });
+    const single = (albumSongs.get(a.id) ?? 0) < 2;
+    entries.push({ id: a.id, type: "album", single, name: a.title, subtitle: `${single ? "Single" : "Album"} · ${artists[a.artistId]?.name ?? "Unknown artist"}`, at, art: <Art palette={a.palette} glyph={a.glyph} image={a.artworkUrl} className="side-art" /> });
   }
   for (const a of Object.values(artists)) {
     const at = added.get(`artist:${a.id}`);
@@ -81,7 +86,9 @@ export function Sidebar() {
     const library = trackIds.map((id) => tracks[id]).filter((t) => t && !t.stream);
     return libraryEntries(library, playlists, albums, artists);
   }, [trackIds, tracks, artists, albums, playlists]);
-  const shown = filter === "all" ? entries : entries.filter((e) => e.type === filter);
+  // Most saved songs are singles; listing each as an album as well as under its artist
+  // would double the list. The Albums filter still shows them.
+  const shown = filter === "all" ? entries.filter((e) => !e.single) : entries.filter((e) => e.type === filter);
 
   const dragOver = (e: DragEvent, id: string) => {
     if (!e.dataTransfer.types.includes(DRAG_MIME)) return;

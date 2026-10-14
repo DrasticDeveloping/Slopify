@@ -57,7 +57,7 @@ function ToneControls() {
     <>
       <h3 className="set-section">Equalizer</h3>
       <div className="set-group">
-        <Row icon="sliders" title="Preset" desc="Shapes the sound of everything you play, on this device.">
+        <Row icon="sliders" title="Preset" desc="Shapes the sound of everything you play.">
           <label className="select">
             <select
               value={preset}
@@ -346,7 +346,7 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                 <Row
                   icon="sparkle"
                   title="What shapes your suggestions"
-                  desc={`${plural(taste.listens.filter(qualified).length, "listen")}, ${plural(Object.keys(taste.likes).length, "like")} and ${plural(Object.keys(taste.saves).length, "playlist save")} recorded on this device. ${learnedSummary(taste)}`}
+                  desc={`${plural(taste.listens.filter(qualified).length, "listen")}, ${plural(Object.keys(taste.likes).length, "like")} and ${plural(Object.keys(taste.saves).length, "playlist save")} recorded so far. ${learnedSummary(taste)}`}
                 />
                 <Row icon="close" title="Hidden suggestions" desc={hiddenCount ? `${plural(hiddenCount, "song")} you said you're not interested in.` : "Nothing hidden."}>
                   <button type="button" className="btn sm" disabled={!hiddenCount} onClick={showHiddenRecommendations}>Show again</button>

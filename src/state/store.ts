@@ -201,7 +201,7 @@ function catalogPatch(s: AppState): CatalogPatch {
   for (const id of trackIds) {
     const t = s.tracks[id];
     tracks[id] = t;
-    if (s.artists[t.artistId]) artists[t.artistId] = s.artists[t.artistId];
+    for (const a of [t.artistId, ...(t.featuring ?? [])]) if (s.artists[a]) artists[a] = s.artists[a];
     if (s.albums[t.albumId]) albums[t.albumId] = s.albums[t.albumId];
   }
   return { trackIds, tracks, artists, albums };
@@ -238,6 +238,8 @@ function initialState(): AppState {
     for (const t of Object.values(tracks)) {
       // Repair saves from older builds that lost an import's artist or album.
       artists[t.artistId] = patch.artists[t.artistId] ?? { id: t.artistId, name: "Unknown artist", genre: "indie", palette: paletteFromSeed(hashString(t.artistId)), listeners: 0 };
+      // Saves from before other credited artists were kept drop them; the next server sync puts them back.
+      for (const a of t.featuring ?? []) if (patch.artists[a]) artists[a] = patch.artists[a];
       albums[t.albumId] = patch.albums[t.albumId] ?? { id: t.albumId, title: t.title, artistId: t.artistId, palette: paletteFromSeed(hashString(t.albumId)), glyph: 0 };
     }
   }

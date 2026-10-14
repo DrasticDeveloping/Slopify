@@ -1,3 +1,4 @@
+import { creditLine } from "../../lib/credits";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import { videoFrames, wavePeaks } from "../../audio/analysis";
 import { engine } from "../../audio/engine";
@@ -226,13 +227,13 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
         <TrackArt trackId={id} className="clip-art" />
         <div className="title-text">
           <span className="t-name">{track.title}</span>
-          <span className="t-sub">{artists[track.artistId]?.name} · {formatTime(duration)}</span>
+          <span className="t-sub">{creditLine(track, artists)} · {formatTime(duration)}</span>
         </div>
         <label className="select">
           <span className="sr-only">Song</span>
           <select value={id} onChange={(e) => pick(e.target.value)} aria-label="Choose a song to clip">
             {options.map((o) => (
-              <option key={o} value={o}>{tracks[o].title} — {artists[tracks[o].artistId]?.name}{clips[o] ? " ✂" : ""}</option>
+              <option key={o} value={o}>{tracks[o].title} — {creditLine(tracks[o], artists)}{clips[o] ? " ✂" : ""}</option>
             ))}
           </select>
         </label>

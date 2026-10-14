@@ -1,22 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import { engine } from "./audio/engine";
 import { ContextMenu } from "./components/ContextMenu";
 import { FullPlayer } from "./components/FullPlayer";
 import { Icon } from "./components/Icon";
 import { ModalHost } from "./components/modals/ModalHost";
 import { PlayerBar } from "./components/PlayerBar";
-import { RightPanel } from "./components/RightPanel";
+import { RightPanel, usePanel } from "./components/RightPanel";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { themes } from "./components/modals/SettingsModal";
 import {
-  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, previous, seek, setVolume,
+  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume,
   toggleLike, toggleMute, togglePlay, toggleShuffle, wireEngine,
 } from "./state/actions";
 import { prepareMixes } from "./recommend/mixes";
 import { startMusicServer } from "./state/server";
 import { syncLibraryData, watchLibraryData } from "./state/sync";
+import { restorePlaybackSpot, watchPlaybackSpot } from "./state/resume";
 import { getState, setState, useStore, type Route } from "./state/store";
 import { AlbumView, PlaylistView } from "./views/Collection";
 import { HistoryView } from "./views/History";
@@ -172,7 +172,7 @@ function useShortcuts() {
           if (mod) {
             if (e.key === "ArrowRight") next();
             else previous();
-          } else if (s.currentId) seek(engine.position + (e.key === "ArrowRight" ? 5 : -5));
+          } else if (s.currentId) seek(positionOf(s.currentId) + (e.key === "ArrowRight" ? 5 : -5));
           break;
         }
         case "ArrowUp":
@@ -274,7 +274,7 @@ function useInertBackground() {
 
 export function App() {
   const route = useStore((s) => s.route);
-  const panel = useStore((s) => s.panel);
+  const panel = usePanel();
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const scroller = useRef<HTMLDivElement>(null);
   const [scrolled, setScrolled] = useState(false);
@@ -286,8 +286,12 @@ export function App() {
   useEffect(() => {
     wireEngine();
     watchLibraryData();
-    // Today's mixes are made once the library is known, then kept up to date each minute.
-    void startMusicServer(() => syncLibraryData().catch(() => undefined).then(() => prepareMixes()));
+    watchPlaybackSpot();
+    // Once the library is known: the song you were playing is put back, and today's mixes are made (then kept up to date each minute).
+    void startMusicServer(() => syncLibraryData().catch(() => undefined).then(() => {
+      restorePlaybackSpot();
+      return prepareMixes();
+    }));
     const mixTimer = window.setInterval(() => void prepareMixes(), 60_000);
     return () => clearInterval(mixTimer);
   }, []);

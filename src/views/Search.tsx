@@ -1,3 +1,4 @@
+import { creditsArtist } from "../lib/credits";
 import { useMemo, useRef, useState, type CSSProperties } from "react";
 import { ExternalSearch } from "../components/ExternalSearch";
 import { ExternalArtists } from "../components/ExternalArtists";
@@ -104,7 +105,7 @@ export function SearchView({ q }: { q: string }) {
 
   const top = results.topArtist;
   const topSong = !top && results.songs[0] ? tracks[results.songs[0]] : null;
-  const topIds = top ? Object.values(tracks).filter((t) => t.artistId === top.id && isPlayable(t)).sort((a, b) => b.plays - a.plays).map((t) => t.id) : results.songs;
+  const topIds = top ? Object.values(tracks).filter((t) => creditsArtist(t, top.id) && isPlayable(t)).sort((a, b) => b.plays - a.plays).map((t) => t.id) : results.songs;
   const artistSearch = !inputIsLink(q.trim());
   const showMusic = mode !== "artists" || !artistSearch;
 

@@ -1,3 +1,4 @@
+import { creditLine, creditsArtist } from "../lib/credits";
 import { useEffect, useMemo, type MouseEvent, type ReactNode } from "react";
 import { ensureMixes, mixSeed, useMixes } from "../recommend/mixes";
 import { paletteFromSeed } from "../data/library";
@@ -144,7 +145,7 @@ export function HomeView() {
                 </div>
                 <button type="button" className="card-link" onClick={() => navigate({ name: "album", id: t.albumId })}>
                   <strong>{t.title}</strong>
-                  <span>{artists[t.artistId]?.name}</span>
+                  <span>{creditLine(t, artists)}</span>
                 </button>
                 <p className="rec-reason">{reason}</p>
               </div>
@@ -209,7 +210,7 @@ export function HomeView() {
               </div>
               <button type="button" className="card-link" onClick={() => navigate({ name: "album", id: t.albumId })}>
                 <strong>{t.title}</strong>
-                <span>{artists[t.artistId]?.name}</span>
+                <span>{creditLine(t, artists)}</span>
               </button>
             </div>
           );
@@ -221,7 +222,7 @@ export function HomeView() {
       <Shelf title="Your top artists" subtitle="Based on your plays">
         {topArtists.map((id) => {
           const a = artists[id];
-          const ids = Object.values(tracks).filter((t) => t.artistId === id && isPlayable(t)).sort((x, y) => y.plays - x.plays).map((t) => t.id);
+          const ids = Object.values(tracks).filter((t) => creditsArtist(t, id) && isPlayable(t)).sort((x, y) => y.plays - x.plays).map((t) => t.id);
           return (
             <Card
               key={id}

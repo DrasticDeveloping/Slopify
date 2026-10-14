@@ -1,3 +1,4 @@
+import { creditLine } from "../../lib/credits";
 import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import { plural } from "../../lib/format";
 import { addToPlaylist, closeModal, createPlaylist, editPlaylist, libraryIds, navigate, removeFromPlaylist, toast } from "../../state/actions";
@@ -58,7 +59,7 @@ export function AddSongsModal({ playlistId }: { playlistId: string }) {
   const all = useMemo(() => libraryIds({ ...getState(), tracks, trackIds }), [tracks, trackIds]);
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return all.filter((id) => !needle || `${tracks[id].title} ${artists[tracks[id].artistId]?.name}`.toLowerCase().includes(needle)).slice(0, 80);
+    return all.filter((id) => !needle || `${tracks[id].title} ${creditLine(tracks[id], artists)}`.toLowerCase().includes(needle)).slice(0, 80);
   }, [all, q, tracks, artists]);
   if (!playlist) return null;
   const inList = new Set(playlist.trackIds);
@@ -78,7 +79,7 @@ export function AddSongsModal({ playlistId }: { playlistId: string }) {
               <TrackArt trackId={id} className="row-art" />
               <span className="title-text">
                 <span className="t-name">{t.title}</span>
-                <span className="t-sub">{artists[t.artistId]?.name}</span>
+                <span className="t-sub">{creditLine(t, artists)}</span>
               </span>
               <button
                 type="button"

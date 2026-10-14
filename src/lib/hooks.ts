@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { engine } from "../audio/engine";
-import { effectiveRange } from "../state/actions";
-import { useStore } from "../state/store";
+import { effectiveRange, positionOf } from "../state/actions";
+import { getState, useStore } from "../state/store";
 
 /** Writes a live value into an element's text every frame without re-rendering React. */
 export function useLiveText<T extends HTMLElement>(read: () => string): RefObject<T | null> {
@@ -39,8 +39,11 @@ export function useCurrent() {
   return { id, track, artist, album, range };
 }
 
-/** Polls the engine position; stable function identity for Slider.poll. */
-export const pollPosition = () => engine.position;
+/** Polls the playing position (or where a cued song will start); stable function identity for Slider.poll. */
+export const pollPosition = () => {
+  const id = getState().currentId;
+  return id ? positionOf(id) : engine.position;
+};
 
 export function useMediaQuery(query: string) {
   const [match, setMatch] = useState(() => window.matchMedia(query).matches);

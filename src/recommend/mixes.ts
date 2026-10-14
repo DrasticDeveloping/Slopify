@@ -9,7 +9,8 @@ import { qualified, tasteProfile } from "./taste";
 
 /*
  * "Made for you" mixes. Each is an edition kept in localStorage until it
- * expires, so a mix stays the same across visits and reloads. Editions are made
+ * expires, so a mix stays the same across visits and reloads, and synced with
+ * your library and account (sync.ts), so your devices share today's editions. Editions are made
  * when the app opens (prepareMixes), one after another, and no new song appears
  * in two mixes:
  *  - Daily Mix 1–3: songs by three of your artists, with new songs by related
@@ -83,6 +84,19 @@ const subscribe = (listener: () => void) => {
   return () => void listeners.delete(listener);
 };
 export const useMixes = () => useSyncExternalStore(subscribe, () => mixes);
+/** For sync.ts: the current editions, a way to hear of changes, and taking synced ones in. */
+export const currentMixes = () => mixes.filter((m) => m.expires > Date.now());
+export const onMixes = subscribe;
+export function adoptMixes(next: Mix[]) {
+  const valid = next.filter((m) => isMix(m) && m.expires > Date.now()).slice(0, 5).map((m) => ({ ...m, songs: m.songs.filter(isSong).slice(0, MAX_SONGS) }));
+  if (JSON.stringify(valid) === JSON.stringify(mixes)) return;
+  // A search under way for a mix replaced from elsewhere no longer owns it.
+  for (const m of valid) {
+    const own = mixes.find((x) => x.id === m.id);
+    if (!own || JSON.stringify(own) !== JSON.stringify(m)) searches.set(m.id, (searches.get(m.id) ?? 0) + 1);
+  }
+  publish(valid);
+}
 export const getMix = (id: string) => mixes.find((m) => m.id === id);
 /** A stable artwork seed for a mix. */
 export const mixSeed = (mix: Mix) => hashString(mix.id);
@@ -196,6 +210,8 @@ export function ensureMixes(now = new Date()) {
 /* ───────────────────────── finding new songs ───────────────────────── */
 
 const filling = new Map<string, Promise<void>>();
+/** Bumped when a mix is replaced by a synced copy, so a search started before then doesn't overwrite it. */
+const searches = new Map<string, number>();
 /** When a mix's search last failed; it's tried again after a while, not on every check. */
 const failedAt = new Map<string, number>();
 const RETRY_AFTER = 10 * 60_000;
@@ -240,7 +256,8 @@ async function findSongs(mix: Mix) {
   const target = mix.kind === "daily" ? Math.min(9, Math.round((mix.libraryIds.length * 3) / 7)) : MAX_SONGS;
   // The weekly spreads its searches over up to three sets of seeds, so one artist doesn't dominate.
   const rounds = mix.kind === "weekly" ? Math.min(3, Math.max(1, Math.ceil(mix.seedIds.length / 5))) : 1;
-  const sameEdition = (m: Mix) => m.id === mix.id && m.edition === mix.edition;
+  const search = searches.get(mix.id) ?? 0;
+  const sameEdition = (m: Mix) => m.id === mix.id && m.edition === mix.edition && (searches.get(mix.id) ?? 0) === search;
   // Songs already in the other mixes stay out of this one, so each mix is its own.
   const taken = new Set(mixes.filter((m) => m.id !== mix.id).flatMap((m) => m.songs.map((song) => song.key)));
   const songs: DiscoveredSong[] = [];
@@ -267,6 +284,8 @@ async function findSongs(mix: Mix) {
       return { ...m, libraryIds, songs: songs.slice(0, target), complete: true, note };
     }));
   } catch {
+    // A search replaced by a synced copy meanwhile says nothing about that copy.
+    if ((searches.get(mix.id) ?? 0) !== search) return;
     failedAt.set(`${mix.id}|${mix.edition}`, Date.now());
     publish(mixes.map((m) => (sameEdition(m) ? { ...m, songs, note: "Couldn't finish this edition. Open it again to retry." } : m)));
   }
