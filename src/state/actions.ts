@@ -1098,7 +1098,7 @@ function removeSongs(affected: Track[], demoted: string[], text: { one: (t: Trac
 
   const tracks = { ...s.tracks };
   for (const id of removed) delete tracks[id];
-  for (const id of demoted) tracks[id] = { ...tracks[id], storage: "server" };
+  for (const id of demoted) tracks[id] = { ...tracks[id], storage: "server", onlyStream: true };
 
   const wasCurrent = Boolean(s.currentId && removed.has(s.currentId));
   if (wasCurrent) engine.unload();
@@ -1148,7 +1148,11 @@ function removeSongs(affected: Track[], demoted: string[], text: { one: (t: Trac
     setState((st) => {
       const tr = { ...st.tracks };
       for (const t of record.tracks) tr[t.id] = t;
-      for (const id of record.demoted) if (tr[id]?.storage === "server") tr[id] = { ...tr[id], storage: "downloads" };
+      for (const id of record.demoted) {
+        if (tr[id]?.storage !== "server") continue;
+        const { onlyStream: _onlyStream, ...rest } = tr[id];
+        tr[id] = { ...rest, storage: "downloads" };
+      }
       return {
         tracks: tr,
         trackIds: reinsert(st.trackIds, record.trackIndex),

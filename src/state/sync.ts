@@ -36,6 +36,14 @@ const DEVICE_SETTINGS = new Set<keyof Settings>(["downloadMode"]);
 const QUICK = 2000;
 const SLOW = 30_000;
 const POLL = 30_000;
+/** The account's copy costs a request to the online service, so it's only checked this often while the window has focus. */
+const CLOUD_POLL = 30_000;
+/** Listening progress and where you left off reach the account within this long. */
+const CLOUD_SLOW = 5 * 60_000;
+/** A failed account sync waits this long before an automatic retry. */
+const CLOUD_RETRY = 60_000;
+/** Coming back to the window checks the account if it hasn't been checked for this long. */
+const CLOUD_ON_FOCUS = 30_000;
 const MAX_LISTENS = 500;
 
 type Counter = number | number[];
@@ -382,6 +390,7 @@ export async function linkComputer(replace = false) {
   if (!res.ok) throw new Error("The music server couldn't link this library to your account.");
   if (replace) {
     setState((s) => ({ server: { ...s.server, linkedElsewhere: undefined } }));
+    wantAccount(0);
     schedule(QUICK);
   }
   return true;
@@ -415,8 +424,27 @@ async function syncWithAccount() {
   }
 }
 
+/*
+ * When the account is contacted: soon after something changes here
+ * (`wantAccount`), and otherwise every 30 seconds while the window has
+ * focus, never while it's merely open, hidden or in the tray.
+ */
+let accountDue = 0;
+let accountCheckedAt = 0;
+function wantAccount(delay: number) {
+  accountDue = Math.min(accountDue, Date.now() + delay);
+}
+const inFront = () => document.visibilityState === "visible" && document.hasFocus();
+function accountWanted() {
+  const now = Date.now();
+  return now >= accountDue || (inFront() && now - accountCheckedAt >= CLOUD_POLL);
+}
+
 // Signing in brings the account's library here straight away.
-onSignedIn(() => void syncLibraryData().catch(() => undefined));
+onSignedIn(() => {
+  wantAccount(0);
+  void syncLibraryData().catch(() => undefined);
+});
 
 let running: Promise<void> | null = null;
 let again = false;
@@ -436,7 +464,12 @@ export function syncLibraryData(): Promise<void> {
       request({ method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseRev, data }) });
     await mergeWith(await request(), save, () => agreedBase, writeBase);
     setState((s) => ({ server: { ...s.server, syncedAt: Date.now() } }));
-    await syncWithAccount();
+    if (getAccount().status === "signedIn" && accountWanted()) {
+      accountDue = Infinity;
+      accountCheckedAt = Date.now();
+      await syncWithAccount();
+      if (getState().server.cloudError) wantAccount(CLOUD_RETRY);
+    }
   })().finally(() => {
     running = null;
     if (again) {
@@ -455,6 +488,7 @@ export async function syncNow() {
   }
   const id = toast("Syncing your library…", { sticky: true, progress: 0.3 });
   try {
+    wantAccount(0);
     await syncLibraryData();
     // This computer synced; say so plainly if the account didn't.
     const { cloudError, linkedElsewhere } = getState().server;
@@ -486,7 +520,11 @@ function schedule(delay: number) {
   }, delay);
 }
 
-/** Syncs shortly after library changes (listening progress less often) and checks for other browsers' changes every 30 seconds. */
+/**
+ * Syncs shortly after library changes (listening progress less often) and
+ * checks for other browsers' changes every 30 seconds; the account's copy only
+ * as `accountWanted` allows.
+ */
 let watching = false;
 export function watchLibraryData() {
   if (watching) return;
@@ -498,11 +536,39 @@ export function watchLibraryData() {
     last = s;
     if (s.playlists !== prev.playlists || s.settings !== prev.settings || s.taste.likes !== prev.taste.likes || s.taste.saves !== prev.taste.saves
       || s.taste.hidden !== prev.taste.hidden || s.taste.hiddenDiscoveries !== prev.taste.hiddenDiscoveries
-      || s.shuffle !== prev.shuffle || s.repeat !== prev.repeat || s.speed !== prev.speed) schedule(QUICK);
-    else if (s.listens !== prev.listens || s.listenLog !== prev.listenLog || s.taste.listens !== prev.taste.listens) schedule(SLOW);
+      || s.shuffle !== prev.shuffle || s.repeat !== prev.repeat || s.speed !== prev.speed || s.trackIds !== prev.trackIds || s.clips !== prev.clips) {
+      wantAccount(0);
+      schedule(QUICK);
+    } else if (s.listens !== prev.listens || s.listenLog !== prev.listenLog || s.taste.listens !== prev.taste.listens) {
+      wantAccount(CLOUD_SLOW);
+      schedule(SLOW);
+    } else if (s.tracks !== prev.tracks) wantAccount(CLOUD_SLOW); // Song details reach the account with the next sync.
   });
-  onSlipIns(() => schedule(QUICK));
-  onMixes(() => schedule(QUICK));
-  onPlaybackSpot(() => schedule(SLOW));
+  onSlipIns(() => {
+    wantAccount(0);
+    schedule(QUICK);
+  });
+  // Mixes are republished unchanged every minute; only a real change is worth contacting the account.
+  const mixesNow = () => JSON.stringify(byId(Object.fromEntries(currentMixes().map((m) => [m.id, m]))));
+  let lastMixes = mixesNow();
+  onMixes(() => {
+    const now = mixesNow();
+    if (now === lastMixes) return;
+    lastMixes = now;
+    wantAccount(0);
+    schedule(QUICK);
+  });
+  onPlaybackSpot(() => {
+    wantAccount(CLOUD_SLOW);
+    schedule(SLOW);
+  });
   window.setInterval(() => void syncLibraryData().catch(() => undefined), POLL);
+  // Back at the window: catch up with your other devices.
+  const back = () => {
+    if (!inFront() || Date.now() - accountCheckedAt < CLOUD_ON_FOCUS) return;
+    wantAccount(0);
+    schedule(QUICK);
+  };
+  window.addEventListener("focus", back);
+  document.addEventListener("visibilitychange", back);
 }

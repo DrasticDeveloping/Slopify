@@ -7,6 +7,7 @@ import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu } from "../lib/menus";
 import { findMusic, isPlayable, libraryIds, likedIds, navigate, openModal, toggleShuffle } from "../state/actions";
 import { useSlipIns } from "../state/slipins";
+import { downloadTracks } from "../state/server";
 import { syncNow } from "../state/sync";
 import { getState, setState, useStore, type Route } from "../state/store";
 import { Empty } from "./Collection";
@@ -52,6 +53,9 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
   const route: Route = filter === "all" ? { name: "library" } : { name: "library", filter };
   const total = ids.reduce((sum, id) => sum + tracks[id].duration, 0);
   const label = filter === "all" ? "Library" : filters.find(([f]) => f === filter)![1];
+  // Songs on the music server that this device doesn't have a copy of yet.
+  const missing = all.filter((id) => tracks[id].storage === "server" && tracks[id].serverId);
+  const downloadLabel = missing.length ? `Download ${plural(missing.length, "song")} to this device` : "Every song is on this device";
 
   return (
     <div className="view">
@@ -62,9 +66,8 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
           <p className="muted">{plural(all.length, "song")} on this device · {formatLongDuration(all.reduce((n, id) => n + tracks[id].duration, 0))}</p>
         </div>
         <div className="page-actions">
-          <button type="button" className="btn" onClick={() => findMusic()}>
-            <Icon name="search" size={18} />
-            Find music
+          <button type="button" className="icon-btn" disabled={!missing.length} onClick={() => downloadTracks(missing)} aria-label={downloadLabel} title={downloadLabel}>
+            <Icon name="download" size={20} />
           </button>
         </div>
       </header>

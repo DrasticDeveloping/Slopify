@@ -67,6 +67,8 @@ export interface Track {
   playableUrl?: string;
   /** A recommended song streamed in full from its source: playable like any song, but not in the library and never saved. */
   stream?: boolean;
+  /** Removed from this device on purpose: it streams from the server and isn't downloaded again by itself. */
+  onlyStream?: boolean;
 }
 
 export interface Playlist {

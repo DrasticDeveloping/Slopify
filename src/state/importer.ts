@@ -9,7 +9,7 @@ import {
   playList, retryServerDeletes, toast, togglePlay, updateToast, type StreamMedia,
 } from "./actions";
 import { dropFromDevice } from "./device";
-import { downloadTracks } from "./server";
+import { downloadTracks, keepLibraryOnDevice } from "./server";
 import { listSongs, pendingSongChanges, updateSong, type ServerSong } from "./song-api";
 import { getState, setState, subscribe as subscribeApp, type AppState } from "./store";
 
@@ -605,8 +605,12 @@ function releaseOf(p: ServerSong): { year?: number; released?: string } {
 const serverAlbumTitle = (p: ServerSong) => p.album?.trim() || songTitle(p);
 /** Uploads keep their video titles on the server; shown as the song's name here. */
 const songTitle = (p: ServerSong) => (isUploadLink(p.sourceURL) ? uploadTitle(p.artist ?? "", p.title) : p.title);
-/** A track's artists as one credit, to compare with the server's. */
-const creditOf = (t: Track, artists: Record<string, Artist>) => [t.artistId, ...(t.featuring ?? [])].map((id) => artists[id]?.name).join(", ");
+/**
+ * Whether a track's artists are the server credit's, one by one. (Compared as
+ * one string, an artist saved as "Lady Gaga, Bruno Mars" would pass for two.)
+ */
+const sameCredit = (t: Track, artists: Record<string, Artist>, credit: string) =>
+  JSON.stringify([t.artistId, ...(t.featuring ?? [])].map((id) => artists[id]?.name.toLowerCase())) === JSON.stringify(splitArtists(credit.trim() || "Unknown artist").map((name) => name.toLowerCase()));
 
 /** The artist of this name, added to `artists` if it's new. */
 function artistNamed(name: string, artists: Record<string, Artist>) {
@@ -726,7 +730,7 @@ export async function syncServerLibrary() {
     }
     const known = tracks[id];
     if (known) {
-      if (known.title !== songTitle(p) || creditOf(known, artists).toLowerCase() !== splitArtists(p.artist?.trim() || "Unknown artist").join(", ").toLowerCase() || known.mediaUrl !== p.fileUrl || known.sourceUrl !== (p.sourceURL ?? undefined) || known.playableUrl !== (p.playableURL ?? undefined)) {
+      if (known.title !== songTitle(p) || !sameCredit(known, artists, p.artist ?? "") || known.mediaUrl !== p.fileUrl || known.sourceUrl !== (p.sourceURL ?? undefined) || known.playableUrl !== (p.playableURL ?? undefined)) {
         const updated = placeServerTrack(p, artists, albums);
         tracks[id] = { ...known, ...updated, storage: known.storage, size: known.size, plays: known.plays };
         refreshed = true;
@@ -759,6 +763,8 @@ export async function syncServerLibrary() {
   // Old stored audio comes onto this device, so the server can let it go.
   const handOver = list.filter((p) => p.serverCopy).map((p) => `srv_${p.id}`);
   if (handOver.length) downloadTracks(handOver, { quiet: true });
+  // Songs saved on your other devices (and any whose file this device lost) are kept here too.
+  keepLibraryOnDevice();
 }
 
 /**
@@ -795,14 +801,15 @@ async function fixUploadCredits(list: ServerSong[]) {
 
 /* ───────────────────────── artist pictures ───────────────────────── */
 
-const PICTURES_TRIED = "slopify.artist-pictures.v1";
-const PICTURE_RETRY = 7 * 86_400_000;
+// v2: every artist is asked about again once (v1 had marked artists without pictures for a week).
+const PICTURES_TRIED = "slopify.artist-pictures.v2";
+const PICTURE_RETRY = 86_400_000;
 let fillingPictures = false;
 
 /**
  * Pictures for the artists in your library (sidebar, search, Home, artist cards),
- * from the music catalog. An artist it doesn't know is asked about again after a
- * week; one with a picture keeps it.
+ * from the music catalog. An artist it doesn't know is asked about again the
+ * next day; one with a picture keeps it.
  */
 export async function fillArtistPictures() {
   if (fillingPictures) return;
@@ -810,6 +817,7 @@ export async function fillArtistPictures() {
   try {
     let tried: Record<string, number> = {};
     try {
+      localStorage.removeItem("slopify.artist-pictures.v1");
       tried = JSON.parse(localStorage.getItem(PICTURES_TRIED) || "{}") as Record<string, number>;
     } catch { /* Start afresh. */ }
     const s = getState();
