@@ -14,7 +14,8 @@ import { getState, setState, subscribe, type RoomMember } from "./store";
  */
 
 interface PlaybackSong { title: string; artist: string; sourceURL: string; savedAs: "audio" | "video"; durationSeconds: number | null; artworkUrl: string | null; songId: string | null }
-interface Playback { song: PlaybackSong | null; position: number; playing: boolean; at: number }
+/** `rate` is missing from rooms on an older online service: normal speed. */
+interface Playback { song: PlaybackSong | null; position: number; playing: boolean; rate?: number; at: number }
 
 const PING_EVERY = 15_000;
 const FOLLOW_EVERY = 3_000;
@@ -26,6 +27,9 @@ let code = "";
 let leaving = false;
 let reconnects = 0;
 let timers: number[] = [];
+let retryTimer = 0;
+/** Stops the host's publishing (see startHosting). */
+let stopHosting: (() => void) | null = null;
 /** Server clock minus this clock, from ping round trips. */
 let offset = 0;
 let playback: Playback | null = null;
@@ -89,6 +93,10 @@ export function leaveRoom() {
 function reset() {
   timers.forEach(clearInterval);
   timers = [];
+  clearTimeout(retryTimer);
+  reconnects = 0;
+  stopHosting?.();
+  stopHosting = null;
   socket = null;
   code = "";
   playback = null;
@@ -123,10 +131,27 @@ async function connect(roomCode: string) {
       reset();
       return;
     }
-    reconnects++;
-    setListen({ mode: "connecting" });
-    window.setTimeout(() => void connect(code).catch(() => undefined), 1000 * 2 ** reconnects);
+    reconnect();
   });
+}
+
+/** Tries the room again after a growing wait, including when a reconnect itself fails to open. */
+function reconnect() {
+  if (reconnects >= RECONNECTS) {
+    toast("Lost the connection to the room", { tone: "error" });
+    reset();
+    return;
+  }
+  reconnects++;
+  setListen({ mode: "connecting" });
+  const room = code;
+  clearTimeout(retryTimer);
+  retryTimer = window.setTimeout(() => {
+    if (leaving || code !== room) return;
+    void connect(room).catch(() => {
+      if (!leaving && code === room) reconnect();
+    });
+  }, 1000 * 2 ** reconnects);
 }
 
 function received(message: Record<string, unknown>) {
@@ -227,8 +252,9 @@ function follow() {
     return;
   }
   toldHostOnly = false;
-  const elapsed = playback.playing ? (Date.now() + offset - playback.at) / 1000 : 0;
-  followHost(trackFor(playback.song), playback.position + Math.max(0, elapsed), playback.playing, label);
+  const rate = playback.rate ?? 1;
+  const elapsed = playback.playing ? ((Date.now() + offset - playback.at) / 1000) * rate : 0;
+  followHost(trackFor(playback.song), playback.position + Math.max(0, elapsed), playback.playing, label, rate);
 }
 
 /* ───────────────────────── host: telling the room ───────────────────────── */
@@ -266,8 +292,8 @@ function startHosting() {
     const s = getState();
     if (s.listen.mode !== "host") return;
     const song = current();
-    const key = JSON.stringify([song?.sourceURL ?? null, s.isPlaying]);
-    const expected = sentPosition + (s.isPlaying ? (Date.now() - sentAt) / 1000 : 0);
+    const key = JSON.stringify([song?.sourceURL ?? null, s.isPlaying, s.speed]);
+    const expected = sentPosition + (s.isPlaying ? ((Date.now() - sentAt) / 1000) * s.speed : 0);
     const jumped = Math.abs(engine.position - expected) > 2;
     if (!force && key === sent && !jumped) return;
     sent = key;
@@ -275,12 +301,13 @@ function startHosting() {
     sentPosition = engine.position;
     // Guests pause when song is null; preserve the host's actual playing state
     // so they can explain why this file cannot be heard.
-    send({ type: "state", song, position: engine.position, playing: s.isPlaying });
+    send({ type: "state", song, position: engine.position, playing: s.isPlaying, rate: s.speed });
   };
-  const stop = subscribe(() => publish());
+  stopHosting?.();
+  stopHosting = subscribe(() => publish());
   // Catches seeks (which don't change the app's state), and refreshes late joiners' timing.
   const check = window.setInterval(() => publish(), HOST_CHECK_EVERY);
   const refresh = window.setInterval(() => publish(true), 30_000);
-  timers.push(check, refresh, window.setInterval(() => getState().listen.mode !== "host" && stop(), 1000));
+  timers.push(check, refresh);
   publish(true);
 }

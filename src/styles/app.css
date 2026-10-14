@@ -1525,6 +1525,8 @@ button.th:not(:disabled):hover { color: var(--text); }
 .fp-video.ambient .video-host video { object-fit: cover; }
 .fp-video.ambient .video-surface > .art { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
 .fp-video .video-surface { display: grid; place-items: center; }
+/* An all-but-transparent layer keeps the video covered once the controls fade out, so browsers don't move it to a hardware overlay (where it can freeze). */
+.fp-video:not(.ambient)::after { content: ""; position: absolute; inset: 0; z-index: 3; background: rgb(0 0 0 / 0.004); pointer-events: none; }
 /* Cover art stands in until the video has loaded. */
 .fp-video .video-surface > .art { width: min(84vw, calc(56vh * 16 / 9)); height: auto; aspect-ratio: 16 / 9; border-radius: 14px; }
 .video-mode .fp-head { background: linear-gradient(180deg, rgb(0 0 0 / 0.7), transparent); padding-bottom: 40px; }

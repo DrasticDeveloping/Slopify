@@ -45,6 +45,19 @@ function sendJSON(res, status, value) {
   res.end(body);
 }
 
+/** Whether a browser sent this request from another website (by its Fetch Metadata, else its Origin). */
+function crossSite(req) {
+  const site = req.headers["sec-fetch-site"];
+  if (site) return site !== "same-origin" && site !== "none";
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  try {
+    return new URL(origin).host !== req.headers.host;
+  } catch {
+    return true;
+  }
+}
+
 async function readJSON(req) {
   let size = 0;
   const chunks = [];
@@ -524,6 +537,11 @@ export function createImportApi({ dataDir }) {
     if (!url.pathname.startsWith("/api/")) return next();
     const parts = url.pathname.split("/").filter(Boolean).slice(1);
     const method = req.method || "GET";
+    // Only Slopify's own pages may change the library: any website could otherwise post
+    // here from the browser (a plain form or text/plain fetch needs no CORS permission).
+    if (!["GET", "HEAD", "OPTIONS"].includes(method) && crossSite(req)) {
+      return sendJSON(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "Requests from other websites aren't allowed." } });
+    }
     try {
       if (parts[0] === "health" && method === "GET") {
         return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()) });

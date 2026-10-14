@@ -402,6 +402,8 @@ const collector = new ListeningCollector();
 let previewing = false;
 /** The server song whose playback failed and was tried again; a second failure moves on. */
 let retriedError: string | null = null;
+/** Songs that failed one after another, with nothing played in between; coming back round to one stops playback. */
+const failedInRow = new Set<string>();
 let lastListenSave = 0;
 
 function saveListening(end: Listen["end"] = "playing") {
@@ -455,6 +457,7 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
   const s = getState();
   const t = s.tracks[id];
   if (!t) return;
+  if (end !== "error") failedInRow.clear();
   pendingStream = null;
   if (s.buffering) setState({ buffering: null });
   engine.captureProgress();
@@ -1241,7 +1244,8 @@ export function listenLocked() {
  * `position`, playing or paused. Small drifts are left alone; the room calls
  * this again whenever the host's playback changes and every few seconds.
  */
-export function followHost(id: string | null, position: number, playing: boolean, label: string) {
+export function followHost(id: string | null, position: number, playing: boolean, label: string, rate = 1) {
+  if (getState().speed !== rate) setSpeed(rate);
   const s = getState();
   if (!id) {
     if (s.isPlaying) {
@@ -1371,7 +1375,10 @@ export function wireEngine() {
     }
     retriedError = null;
     toast(`Couldn't play “${t?.title ?? "file"}”`, { tone: "error", detail: "The file may be unsupported by this browser." });
-    if (previewing) {
+    failedInRow.add(id);
+    const n = peekNext(st);
+    // Paused, or every song left to try has already failed (one broken song on Repeat, say): stop here.
+    if (previewing || !st.isPlaying || (n && failedInRow.has(n.id))) {
       finishListening("error");
       stopAtEnd(st);
     } else advance({ auto: true, end: "error" });

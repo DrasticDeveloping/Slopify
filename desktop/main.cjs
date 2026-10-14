@@ -6,6 +6,9 @@ const { startBackground } = require("./background.cjs");
 
 app.setName("Slopify");
 app.setAppUserModelId("com.drasticdeveloping.slopify");
+// Once the video controls fade out, nothing covers the video and Chromium hands it to a
+// Windows hardware overlay, where the picture can freeze while the sound carries on.
+app.commandLine.appendSwitch("disable-direct-composition-video-overlays");
 // Running from a checkout (`npm run desktop`, T3's Launch) uses that checkout's
 // data/ library and its own profile and port, so it can run beside an installed copy.
 const fromCheckout = !app.isPackaged;
