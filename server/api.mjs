@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { pipeline } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 import { createRecommendations } from "./recommendations.mjs";
 import { createArtists } from "./artists.mjs";
 import { createCatalog } from "./catalog.mjs";
@@ -18,6 +19,7 @@ import { SongFiles } from "./song-files.mjs";
 import { SongStore } from "./songs.mjs";
 
 const require = createRequire(import.meta.url);
+const { checkoutDataDir } = require("./data-dir.cjs");
 const { LocalImportError, youtubeVideoID } = require("./providers/local-import-core.cjs");
 const { importConfirmedSource, resolveLocalImportSource } = require("./providers/local-import-platform.cjs");
 const { looksLikeLink, searchAllPlatforms, searchMorePlatforms } = require("./providers/local-search.cjs");
@@ -739,10 +741,11 @@ export function createImportApi({ dataDir }) {
 
 /** Vite plugin that mounts the import API on the dev and preview servers. */
 export function slopifyApi(options = {}) {
-  const dataDir = path.resolve(options.dataDir || process.env.SLOPIFY_DATA_DIR || "data");
   let handler = null;
   const mount = (server) => {
-    handler ??= createImportApi({ dataDir });
+    // Chosen when a server starts, not when the config loads, so `vite build` never touches the library.
+    const chosen = options.dataDir || process.env.SLOPIFY_DATA_DIR;
+    handler ??= createImportApi({ dataDir: chosen ? path.resolve(chosen) : checkoutDataDir(fileURLToPath(new URL("../", import.meta.url))) });
     server.middlewares.use((req, res, next) => {
       handler(req, res, next).catch(next);
     });

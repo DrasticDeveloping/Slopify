@@ -9,6 +9,8 @@
   "scripts": {
     "predev": "node scripts/ensure-deps.mjs",
     "dev": "vite",
+    "dev:isolated": "node scripts/isolated.mjs dev",
+    "desktop:isolated": "node scripts/isolated.mjs desktop",
     "prebuild": "node scripts/ensure-deps.mjs",
     "build": "tsc -b && vite build && node scripts/build-pwa.mjs",
     "preview": "vite preview",
