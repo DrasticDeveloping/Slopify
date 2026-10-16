@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { thisDevice } from "../lib/native";
 import { toast } from "./actions";
 import { getState, setState } from "./store";
 
@@ -88,7 +89,7 @@ export async function clerkChanged(user: { id: string; name: string | null; emai
   if (!user) {
     const was = account.status;
     set({ status: "signedOut", userId: null, email: null, profile: null, error: null });
-    if (was === "signedIn") toast("Signed out", { detail: "Your library stays on this computer." });
+    if (was === "signedIn") toast("Signed out", { detail: `Your library stays on ${thisDevice}.` });
     return;
   }
   if (account.userId === user.id && account.status === "signedIn") return;

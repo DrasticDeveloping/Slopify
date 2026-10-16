@@ -23,6 +23,7 @@ const require = createRequire(import.meta.url);
 const { checkoutDataDir } = require("./data-dir.cjs");
 const { LocalImportError, youtubeVideoID } = require("./providers/local-import-core.cjs");
 const { importConfirmedSource, resolveLocalImportSource } = require("./providers/local-import-platform.cjs");
+const { mp4Duration } = require("./providers/mp4-join.cjs");
 const { looksLikeLink, searchAllPlatforms, searchMorePlatforms } = require("./providers/local-search.cjs");
 const { downloadResolvedAudio, resolveYouTubeAudio } = require("./providers/local-youtube.cjs");
 const { downloadResolvedSoundCloudAudio, isSoundCloudURL, resolveSoundCloudAudio } = require("./providers/local-soundcloud.cjs");
@@ -148,10 +149,10 @@ function ffmpegPath() {
   }
 }
 
-/** Reads a media file's duration from ffmpeg's banner (ffmpeg-static ships no ffprobe). */
+/** Reads a media file's duration from ffmpeg's banner (ffmpeg-static ships no ffprobe), or without ffmpeg (the iPhone app) from an MP4's header. */
 function probeDuration(filePath) {
   const ffmpeg = ffmpegPath();
-  if (!ffmpeg) return Promise.resolve(null);
+  if (!ffmpeg) return /\.(m4a|mp4)$/i.test(filePath) ? mp4Duration(filePath).catch(() => null) : Promise.resolve(null);
   return new Promise((resolve) => {
     const child = spawn(ffmpeg, ["-hide_banner", "-i", filePath], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
     let stderr = "";

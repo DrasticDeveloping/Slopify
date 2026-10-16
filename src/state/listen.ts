@@ -1,4 +1,5 @@
 import { engine } from "../audio/engine";
+import { thisDevice } from "../lib/native";
 import { ownedIndex } from "../recommend/owned";
 import { followHost, toast } from "./actions";
 import { cloudCall, CloudError, getAccount, roomSocketUrl } from "./cloud";
@@ -269,7 +270,7 @@ function current(): PlaybackSong | null {
     // A file only this computer has: guests can't play it.
     if (toldNoLink !== t.id) {
       toldNoLink = t.id;
-      toast("Your room can't hear this song", { detail: "It's a file on this computer. Songs saved from the web play for everyone." });
+      toast("Your room can't hear this song", { detail: `It's a file on ${thisDevice}. Songs saved from the web play for everyone.` });
     }
     return null;
   }

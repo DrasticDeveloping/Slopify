@@ -151,12 +151,16 @@ async function serveApp(req, res) {
   await pipeline(createReadStream(file), res).catch(() => undefined);
 }
 
-let owned;
-try {
-  owned = lockLibrary(dataDir, { port });
-} catch (error) {
-  if (error instanceof LibraryInUseError) fail(error.message);
-  throw error;
+// The iPhone app is the only Slopify on its library, and iOS doesn't let it check
+// whether the process that left a lock is gone, so it doesn't lock it.
+let owned = () => true;
+if (process.platform !== "ios") {
+  try {
+    owned = lockLibrary(dataDir, { port });
+  } catch (error) {
+    if (error instanceof LibraryInUseError) fail(error.message);
+    throw error;
+  }
 }
 const api = createImportApi({ dataDir, owned });
 const server = http.createServer((req, res) => {

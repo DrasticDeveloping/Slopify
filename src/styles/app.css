@@ -1627,6 +1627,8 @@ button.th:not(:disabled):hover { color: var(--text); }
 @media (pointer: coarse) {
   .icon-btn::before, .toggle::before, .clip-handle::before { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
   .clip-handle::before { width: 44px; }
+  /* iPhones zoom into any text field under 16px when it's tapped, and stay zoomed. */
+  input, select, textarea, .input, .search-box input, .import-search input { font-size: 16px; }
   /* The profile picture is clipped to its circle, so it grows instead. */
   .avatar-btn { width: 44px; height: 44px; }
   .slider { height: 32px; }
@@ -1641,3 +1643,4 @@ button.th:not(:disabled):hover { color: var(--text); }
 .btn-note { color: var(--text-3); font-weight: 500; }
 .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .empty-actions.start { justify-content: flex-start; margin-top: 10px; }
+

@@ -1,4 +1,5 @@
 import type { Playlist } from "../data/types";
+import { ThisDevice, thisDevice } from "../lib/native";
 import { likedPlaylist } from "../data/library";
 import type { Listen } from "../recommend/taste";
 import { adoptMixes, currentMixes, onMixes, type Mix } from "../recommend/mixes";
@@ -652,7 +653,7 @@ export async function deleteAccount(): Promise<string | null> {
   } catch { /* Nothing kept. */ }
   if (cloudAgreed?.userId === userId) cloudAgreed = null;
   const notes: string[] = [];
-  if (!unlinked) notes.push("This computer's library is still marked as that account's; Slopify tries again next time it starts.");
+  if (!unlinked) notes.push(`${ThisDevice}'s library is still marked as that account's; Slopify tries again next time it starts.`);
   try {
     await deleteSignIn();
   } catch {
@@ -793,8 +794,8 @@ export async function syncNow() {
     const { cloudError, linkedElsewhere } = getState().server;
     if (getAccount().status === "signedIn" && (cloudError || linkedElsewhere)) {
       updateToast(id, {
-        message: "Synced this computer, but not your account",
-        detail: linkedElsewhere ? `This computer's library belongs to ${linkedElsewhere}. See Settings → Account.` : cloudError,
+        message: `Synced ${thisDevice}, but not your account`,
+        detail: linkedElsewhere ? `${ThisDevice}'s library belongs to ${linkedElsewhere}. See Settings → Account.` : cloudError,
         tone: "error", progress: undefined, sticky: false,
       }, 6000);
       return;

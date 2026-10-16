@@ -1,4 +1,5 @@
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
+import { isNativeApp, ThisDevice, thisDevice } from "../../lib/native";
 import { plural } from "../../lib/format";
 import { rovingKey } from "../../lib/roving";
 import { qualified, reasonWeight, type ReasonKind, type TasteState } from "../../recommend/taste";
@@ -215,13 +216,13 @@ function AccountRows() {
   if (!cloudEnabled) {
     return (
       <Row icon="user" title="Display name" desc="The name shown on your profile.">
-        <input className="input sm" value={name} maxLength={24} onChange={(e) => updateSettings({ profileName: e.target.value || "You" })} aria-label="Display name" />
+        <input className="input sm" value={name} maxLength={24} onChange={(e) => updateSettings({ profileName: e.target.value })} placeholder="Your name" aria-label="Display name" />
       </Row>
     );
   }
   if (account.status !== "signedIn") {
     return (
-      <Row icon="user" title="Slopify account" desc="Sign in to keep your library on every device and to listen along with friends. Without an account, everything stays on this computer.">
+      <Row icon="user" title="Slopify account" desc={`Sign in to keep your library on every device and to listen along with friends. Without an account, everything stays on ${thisDevice}.`}>
         <button type="button" className="btn primary sm" disabled={account.status === "loading"} onClick={signIn}>{account.status === "loading" ? "Loading…" : "Sign in"}</button>
       </Row>
     );
@@ -243,12 +244,12 @@ function AccountRows() {
         <button type="button" className="btn sm" onClick={() => void signOut()}>Sign out</button>
       </Row>
       {linkedElsewhere ? (
-        <Row icon="sync" title="This computer's library isn't synced" desc={`Its songs and playlists belong to ${linkedElsewhere}, so they stay out of this account. Use them with this account instead to add them to it.`}>
+        <Row icon="sync" title={`${ThisDevice}'s library isn't synced`} desc={`Its songs and playlists belong to ${linkedElsewhere}, so they stay out of this account. Use them with this account instead to add them to it.`}>
           <button
             type="button"
             className="btn sm"
             onClick={() => {
-              if (window.confirm(`Add this computer's songs and playlists to ${account.email ?? "this account"}? ${linkedElsewhere} will no longer sync with them.`)) void linkComputer(true);
+              if (window.confirm(`Add ${thisDevice}'s songs and playlists to ${account.email ?? "this account"}? ${linkedElsewhere} will no longer sync with them.`)) void linkComputer(true);
             }}
           >
             Use with this account
@@ -266,16 +267,16 @@ function AccountRows() {
           aria-label="Display name"
         />
       </Row>
-      <Row icon="trash" title="Delete account" desc="Deletes your profile and the copy of your library kept with your account, then your sign-in. Songs and playlists on this computer stay.">
+      <Row icon="trash" title="Delete account" desc={`Deletes your profile and the copy of your library kept with your account, then your sign-in. Songs and playlists on ${thisDevice} stay.`}>
         <button
           type="button"
           className="btn danger sm"
           disabled={deleting}
           onClick={() => {
-            if (!window.confirm(`Delete the Slopify account ${account.email ?? ""}? Your profile, synced library and sign-in are deleted for good. This computer keeps its songs and playlists.`)) return;
+            if (!window.confirm(`Delete the Slopify account ${account.email ?? ""}? Your profile, synced library and sign-in are deleted for good. ${ThisDevice} keeps its songs and playlists.`)) return;
             setDeleting(true);
             deleteAccount()
-              .then((note) => (note ? toast("Account deleted, with a problem", { tone: "error", detail: note, sticky: true }) : toast("Account deleted", { tone: "success", detail: "Your library stays on this computer." })))
+              .then((note) => (note ? toast("Account deleted, with a problem", { tone: "error", detail: note, sticky: true }) : toast("Account deleted", { tone: "success", detail: `Your library stays on ${thisDevice}.` })))
               .catch((error: unknown) => toast("Couldn't delete your account", { tone: "error", detail: error instanceof Error ? error.message : undefined }))
               .finally(() => setDeleting(false));
           }}
@@ -460,7 +461,7 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                 <Row
                   icon="server"
                   title="Music server"
-                  desc={<><span className={`status-orb sm ${status}`} /> {status === "connected" ? "Connected" : status === "connecting" ? "Connecting…" : "Offline"} · This computer ({location.host})</>}
+                  desc={<><span className={`status-orb sm ${status}`} /> {status === "connected" ? "Connected" : status === "connecting" ? "Connecting…" : "Offline"} · {isNativeApp ? "Built into the app" : `This computer (${location.host})`}</>}
                 >
                   {status === "offline" ? (
                     <button type="button" className="btn primary" onClick={() => void connect({ announce: true })}>Connect</button>

@@ -1,0 +1,15 @@
+{
+  "appId": "mov.unblocked.slopify",
+  "appName": "Slopify",
+  "webDir": "mobile/boot",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#0b0b10",
+    "appendUserAgent": "SlopifyiOS"
+  },
+  "server": {
+    "allowNavigation": [
+      "127.0.0.1"
+    ]
+  }
+}

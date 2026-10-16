@@ -100,7 +100,8 @@ export function HomeView() {
     <div className="view home">
       <div className="home-glow" aria-hidden="true" />
       <h1 className="greeting">
-        {greeting()}, <span className="grad-text">{name}</span>
+        {greeting()}
+        {name && <>, <span className="grad-text">{name}</span></>}
       </h1>
       <div className="quick-grid">
         {quick.map((p) => (

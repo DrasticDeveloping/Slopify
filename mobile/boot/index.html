@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Slopify</title>
+  <!--
+    The iPhone app's first page. Slopify's music server starts inside the app as
+    it opens (ios/App/App/NodeServer.swift); this waits until it answers, then
+    opens Slopify from it.
+  -->
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0b10; color: #b6b4c0; font: 15px/1.45 -apple-system, system-ui, sans-serif; }
+    main { height: 100%; display: grid; place-items: center; text-align: center; padding: 24px; box-sizing: border-box; }
+    .ring { width: 28px; height: 28px; margin: 0 auto 16px; border-radius: 50%; border: 3px solid #a78bfa; border-right-color: transparent; animation: spin 800ms linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .ring { animation: none; } }
+    button { margin-top: 14px; height: 44px; padding: 0 20px; border: 0; border-radius: 999px; background: #a78bfa; color: #14121f; font: 600 16px -apple-system, system-ui, sans-serif; }
+    [hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <div>
+      <div class="ring" id="ring" aria-hidden="true"></div>
+      <p id="status" role="status">Starting Slopify…</p>
+      <button id="retry" type="button" hidden>Try again</button>
+    </div>
+  </main>
+  <script>
+    const SERVER = "http://127.0.0.1:5198";
+    const GIVE_UP_AFTER = 30000;
+    const status = document.getElementById("status");
+    const ring = document.getElementById("ring");
+    const retry = document.getElementById("retry");
+
+    async function answering() {
+      try {
+        // From this page the answer can't be read (another origin), only whether there was one.
+        await fetch(`${SERVER}/api/health`, { mode: "no-cors", cache: "no-store" });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function open() {
+      const started = Date.now();
+      retry.hidden = true;
+      ring.hidden = false;
+      status.textContent = "Starting Slopify…";
+      while (Date.now() - started < GIVE_UP_AFTER) {
+        if (await answering()) return location.replace(`${SERVER}/`);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      ring.hidden = true;
+      status.textContent = "Slopify's music server didn't start. Close the app and open it again.";
+      retry.hidden = false;
+    }
+
+    retry.addEventListener("click", open);
+    open();
+  </script>
+</body>
+</html>

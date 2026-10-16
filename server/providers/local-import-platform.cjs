@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { sanitizeWindowsFilename, windowsCollisionFilename } = require("./filename-policy.cjs");
+const { joinMP4 } = require("./mp4-join.cjs");
 const { normalizeSourceIdentity } = require("./provenance.cjs");
 const {
   LocalImportError,
@@ -291,6 +292,16 @@ function ffmpegExecutable() {
     throw localImportError("processing", "FFMPEG_UNAVAILABLE", "The local media processor is unavailable in this build.");
   }
   return executable.replace(/app\.asar([\\/])/i, "app.asar.unpacked$1");
+}
+
+/** Whether this build has ffmpeg (the iPhone app doesn't). */
+function hasFFmpeg() {
+  try {
+    ffmpegExecutable();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function runFFmpeg(args, signal) {
@@ -938,12 +949,10 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
       let sourceSha256 = result.download?.sha256 || null;
       if (result.separateStreams) {
         onStage({ stage: "processing", progress: null });
-        await runFFmpeg(mp4MuxArguments(
-          result.separateStreams.video.path,
-          result.separateStreams.audio.path,
-          sourcePath,
-          metadata,
-        ), signal);
+        const { video, audio } = result.separateStreams;
+        // Without ffmpeg the streams are joined as they are, untagged.
+        if (adapters.tagM4A || hasFFmpeg()) await runFFmpeg(mp4MuxArguments(video.path, audio.path, sourcePath, metadata), signal);
+        else await joinMP4([video.path, audio.path], sourcePath, signal);
         sourceSha256 = await fileHash(sourcePath);
       }
       if (!sourceSha256) throw localImportError("processing", "VIDEO_HASH_FAILED", "The completed video could not be verified.");
@@ -983,22 +992,38 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
       if (error?.name === "AbortError") throw error;
       return null;
     });
-    try {
-      await m4aTag(sourcePath, outputPath, metadata, artwork, signal);
-    } catch (error) {
-      if (!artwork || error?.name === "AbortError") throw error;
-      await fs.rm(outputPath, { force: true }).catch(() => undefined);
-      await m4aTag(sourcePath, outputPath, metadata, null, signal);
+    // Without ffmpeg the download goes untagged (the library holds its details and artwork). A
+    // fragmented M4A, as YouTube sends, is rewritten as a plain one, which iOS times correctly.
+    const tags = Boolean(adapters.tagM4A) || hasFFmpeg();
+    let finalPath = tags ? outputPath : sourcePath;
+    if (!tags && path.extname(sourcePath).toLowerCase() === ".m4a") {
+      try {
+        await joinMP4([sourcePath], outputPath, signal);
+        finalPath = outputPath;
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        await fs.rm(outputPath, { force: true }).catch(() => undefined);
+      }
     }
-    const contentSha256 = await fileHash(outputPath);
+    if (tags) {
+      try {
+        await m4aTag(sourcePath, outputPath, metadata, artwork, signal);
+      } catch (error) {
+        if (!artwork || error?.name === "AbortError") throw error;
+        await fs.rm(outputPath, { force: true }).catch(() => undefined);
+        await m4aTag(sourcePath, outputPath, metadata, null, signal);
+      }
+    }
+    const contentSha256 = await fileHash(finalPath);
     const processedDuplicate = duplicateTrack(input.existing, result.download.sha256, contentSha256);
     if (processedDuplicate) return { kind: "duplicate", track: processedDuplicate, sourceIdentity: completedSourceIdentity };
     assertNotAborted(signal);
     onStage({ stage: "saving_local" });
     await fs.mkdir(input.destinationDirectory, { recursive: true });
-    const preferred = `${safeFilename(`${metadata.artist} - ${metadata.title}`) || `Track-${randomUUID()}`}.m4a`;
+    const extension = tags ? ".m4a" : path.extname(sourcePath);
+    const preferred = `${safeFilename(`${metadata.artist} - ${metadata.title}`) || `Track-${randomUUID()}`}${extension}`;
     savedPath = await uniqueDestination(input.destinationDirectory, preferred);
-    await fileMove(outputPath, savedPath);
+    await fileMove(finalPath, savedPath);
     assertNotAborted(signal);
     const information = await fs.stat(savedPath);
     assertNotAborted(signal);

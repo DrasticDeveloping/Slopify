@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { isNativeApp } from "../lib/native";
 import { toast } from "./actions";
 import { flushPersist } from "./store";
 
@@ -26,7 +27,7 @@ interface PwaState {
 const standalone = window.matchMedia("(display-mode: standalone)");
 /** Running as the installed app (iOS reports it through navigator.standalone). */
 const desktop = /Electron\//.test(navigator.userAgent);
-const isInstalled = () => desktop || standalone.matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+const isInstalled = () => desktop || isNativeApp || standalone.matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
 
 let state: PwaState = { installed: isInstalled(), canInstall: false, installing: false, updateReady: false };
 const listeners = new Set<() => void>();
@@ -123,8 +124,8 @@ export function startPwa() {
   });
   standalone.addEventListener("change", () => set({ installed: isInstalled(), canInstall: Boolean(installPrompt) && !isInstalled() }));
 
-  // The offline shell is built by `npm run build`; the dev server has none.
-  if (desktop || import.meta.env.DEV || !window.isSecureContext || !("serviceWorker" in navigator)) return;
+  // The offline shell is built by `npm run build`; the dev server has none. The phone app has its pages built in.
+  if (desktop || isNativeApp || import.meta.env.DEV || !window.isSecureContext || !("serviceWorker" in navigator)) return;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (restartRequested) location.reload();
   });

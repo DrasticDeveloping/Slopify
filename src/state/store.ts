@@ -168,7 +168,7 @@ export const defaultSettings: Settings = {
   autoplay: true,
   recommendLibrary: false,
   normalize: true,
-  profileName: "Daz",
+  profileName: "",
   downloadMode: "verified_file_cache",
   slipIns: "sometimes",
   tone: { bass: 0, mid: 0, treble: 0, balance: 0 },
