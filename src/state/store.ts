@@ -69,6 +69,8 @@ export interface Settings {
   crossfade: boolean;
   crossfadeSeconds: number;
   reduceMotion: boolean;
+  /** Single-key shortcuts (M, L, S, R, Q, F, / and ?). Off for speech input and screen reader keys. */
+  letterShortcuts: boolean;
   compact: boolean;
   autoplay: boolean;
   /** Also recommend songs already in the library (a shelf of their own on Home). */
@@ -142,7 +144,10 @@ export interface AppState {
   };
   /** Listen Along (src/state/listen.ts): the room this device is in, and who else is. */
   listen: { mode: "idle" | "connecting" | "host" | "guest"; code: string; members: RoomMember[]; host?: string };
+  /** Seconds listened each day on this device. */
   listenLog: Record<string, number>;
+  /** The same, on your other devices (sync.ts). */
+  listenElsewhere: Record<string, number>;
   /** Timestamped play starts, newest first, for the chronological history view. */
   listens: Array<{ id: string; at: number }>;
   /** Likes, saves, listening and feedback the recommender learns from. */
@@ -158,6 +163,7 @@ export const defaultSettings: Settings = {
   crossfade: false,
   crossfadeSeconds: 6,
   reduceMotion: false,
+  letterShortcuts: true,
   compact: false,
   autoplay: true,
   recommendLibrary: false,
@@ -177,7 +183,7 @@ interface CatalogPatch {
   albums: Record<string, Album>;
 }
 
-type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listens" | "taste">> & { catalog?: CatalogPatch; librarySync?: unknown };
+type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listenElsewhere" | "listens" | "taste">> & { catalog?: CatalogPatch; librarySync?: unknown };
 /*
  * The library sync base (see sync.ts) is saved in the same record as the app
  * data it describes. Tabs share this storage, so whichever tab saves last
@@ -286,6 +292,7 @@ function initialState(): AppState {
     server: { status: "connecting", downloads: {} },
     listen: { mode: "idle", code: "", members: [] },
     listenLog: saved.listenLog ?? {},
+    listenElsewhere: saved.listenElsewhere ?? {},
     listens: (saved.listens ?? []).filter((l) => tracks[l.id]),
     taste: restoreTaste(saved.taste, new Set(trackIds)),
     buffering: null,
@@ -324,6 +331,7 @@ export function flushPersist() {
     sidebarCollapsed: s.sidebarCollapsed,
     panel: s.panel,
     listenLog: s.listenLog,
+    listenElsewhere: s.listenElsewhere,
     // Session-only files and streamed recommendations are gone after a reload, so their plays are not kept.
     listens: s.listens.filter((l) => !s.tracks[l.id]?.fileUrl && !s.tracks[l.id]?.stream),
     // Session-only files are gone after a reload, so their feedback is too.

@@ -1,6 +1,7 @@
 import { memo, useMemo, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { Track } from "../data/types";
 import { formatAdded, formatTime } from "../lib/format";
+import { announce } from "../lib/announce";
 import { openTrackMenu } from "../lib/menus";
 import { isPlayable, moveInPlaylist, navigate, playList, toggleLike, togglePlay } from "../state/actions";
 import { PROVIDERS, trackPlatform } from "../state/importer";
@@ -59,10 +60,12 @@ export function TrackList({ ids, context, playlistId, showAlbum = true, showAdde
   };
 
   const header = (key: SortKey, label: string, cls: string) => (
-    <button type="button" className={`th ${cls}${sort?.key === key ? " sorted" : ""}`} onClick={() => cycleSort(key)} disabled={!sortable} aria-label={sortable ? `Sort by ${(label || key).toLowerCase()}` : label || key} title={label ? undefined : "Duration"} aria-sort={sort?.key === key ? (sort.dir === 1 ? "ascending" : "descending") : undefined}>
-      <span>{label}</span>
-      {sort?.key === key ? <Icon name={sort.dir === 1 ? "chevronUp" : "chevronDown"} size={14} /> : null}
-    </button>
+    <span className="th-cell" role="columnheader" aria-sort={sort?.key === key ? (sort.dir === 1 ? "ascending" : "descending") : undefined}>
+      <button type="button" className={`th ${cls}${sort?.key === key ? " sorted" : ""}`} onClick={() => cycleSort(key)} disabled={!sortable} aria-label={sortable ? `Sort by ${(label || key).toLowerCase()}` : label || key} title={label ? undefined : "Duration"}>
+        <span>{label}</span>
+        {sort?.key === key ? <Icon name={sort.dir === 1 ? "chevronUp" : "chevronDown"} size={14} /> : null}
+      </button>
+    </span>
   );
 
   if (!ids.length) return <>{empty}</>;
@@ -81,13 +84,13 @@ export function TrackList({ ids, context, playlistId, showAlbum = true, showAdde
   return (
     <div className={`tracklist${showAlbum ? "" : " no-album"}${showAdded ? "" : " no-added"}`} role="table" aria-label={`${context.label} songs`}>
       <div className="tl-head" role="row">
-        <span className="th num">#</span>
+        <span className="th num" role="columnheader">#</span>
         {header("title", "Title", "title")}
         {showAlbum ? header("album", "Album", "album") : null}
         {showAdded ? header("added", showPlays ? "Plays" : "Date added", "added") : null}
-        <span className="th like" />
+        <span className="th like" role="columnheader"><span className="sr-only">Liked</span></span>
         {header("duration", "", "dur")}
-        <span className="th more" />
+        <span className="th more" role="columnheader"><span className="sr-only">More</span></span>
       </div>
       <div className="tl-body" role="rowgroup" onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setDropAt(null)}>
         {sorted.map((id, i) => (
@@ -143,6 +146,9 @@ export function PlatformBadge({ track }: { track: Track }) {
   );
 }
 
+/** A phone or tablet, without a mouse. */
+const touchOnly = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+
 const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, showAdded, showPlays, draggableReorder, dropBefore, dropAfter, onDragOverRow, onDropRow }: RowProps) {
   const track = useStore((s) => s.tracks[id]);
   const album = useStore((s) => (track ? s.albums[track.albumId] : undefined));
@@ -163,6 +169,11 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
 
   const select = (e: MouseEvent) => {
     const s = getState();
+    // On a touch screen there's no double-click: a tap plays (its menu button, or a long press, has the rest).
+    if (touchOnly() && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      play();
+      return;
+    }
     if (e.shiftKey && s.selection.length) {
       const anchor = ctxIds.indexOf(s.selection[s.selection.length - 1]);
       const [a, b] = anchor < index ? [anchor, index] : [index, anchor];
@@ -179,18 +190,53 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
     openTrackMenu(e, ids, { playlistId, context: ctx });
   };
 
+  /*
+   * Keys on a focused row: Enter plays, the menu key (or Shift+F10) opens its
+   * menu, arrows move between rows, Shift+arrows select a range, Ctrl/Cmd+A
+   * selects every song and Escape clears the selection. In a playlist,
+   * Alt+arrows move the song up or down.
+   */
   const key = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget) return;
+    const s = getState();
     if (e.key === "Enter") {
       e.preventDefault();
       play();
     } else if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
       e.preventDefault();
       menu(e.currentTarget);
+    } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && e.altKey) {
+      e.preventDefault();
+      if (!draggableReorder || !playlistId) return;
+      const down = e.key === "ArrowDown";
+      if (down ? index >= ctxIds.length - 1 : index === 0) return;
+      moveInPlaylist(playlistId, id, down ? ctxIds[index + 2] ?? null : ctxIds[index - 1]);
+      announce(`${track.title} moved to position ${index + (down ? 2 : 0)} of ${ctxIds.length}`);
+      // The row is the same element after the move, but moving it can drop its focus.
+      requestAnimationFrame(() => document.querySelector<HTMLElement>(`.tl-row[data-id="${CSS.escape(id)}"]`)?.focus());
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
+      const next = ctxIds[index + (e.key === "ArrowDown" ? 1 : -1)];
       const sib = (e.key === "ArrowDown" ? e.currentTarget.nextElementSibling : e.currentTarget.previousElementSibling) as HTMLElement | null;
-      sib?.focus();
+      if (!sib || !next) return;
+      if (e.shiftKey) {
+        // Extends from where the selection started (this row when there's none).
+        const anchor = s.selection.length ? ctxIds.indexOf(s.selection[0]) : index;
+        const to = index + (e.key === "ArrowDown" ? 1 : -1);
+        const [a, b] = anchor <= to ? [anchor, to] : [to, anchor];
+        const range = ctxIds.slice(Math.max(0, a), b + 1);
+        setState({ selection: anchor <= to ? range : range.reverse() });
+        announce(`${range.length} ${range.length === 1 ? "song" : "songs"} selected`);
+      }
+      sib.focus();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      setState({ selection: [...ctxIds] });
+      announce(`All ${ctxIds.length} songs selected`);
+    } else if (e.key === "Escape" && s.selection.length) {
+      e.preventDefault();
+      setState({ selection: [] });
+      announce("Selection cleared");
     }
   };
 
@@ -225,7 +271,9 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
     <div
       className={`tl-row${current ? " current" : ""}${selected ? " selected" : ""}${playable ? "" : " unavailable"}${dropBefore ? " drop-before" : ""}${dropAfter ? " drop-after" : ""}`}
       role="row"
+      data-id={id}
       tabIndex={0}
+      aria-keyshortcuts={draggableReorder ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
       aria-selected={selected}
       onClick={select}
       onDoubleClick={play}
@@ -237,13 +285,13 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
       onDrop={drop}
       style={{ "--i": Math.min(index, 18) } as CSSProperties}
     >
-      <span className="td num">
+      <span className="td num" role="cell">
         <span className="num-label">{current ? <Bars paused={!playing} /> : index + 1}</span>
         <button type="button" className="row-play" tabIndex={-1} onClick={(e) => { e.stopPropagation(); play(); }} aria-label={playing ? `Pause ${track.title}` : `Play ${track.title}`} disabled={!playable}>
           <Icon name={playing ? "pause" : "play"} size={16} />
         </button>
       </span>
-      <span className="td title">
+      <span className="td title" role="cell">
         <TrackArt trackId={id} className="row-art" />
         <span className="title-text">
           <span className="t-name">
@@ -260,21 +308,21 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
         </span>
       </span>
       {showAlbum ? (
-        <span className="td album">
+        <span className="td album" role="cell">
           <button type="button" className="link" tabIndex={-1} onClick={(e) => { e.stopPropagation(); navigate({ name: "album", id: track.albumId }); }}>
             {/* A single's "album" is the song itself: naming it twice says nothing. */}
             {album && album.title.toLowerCase() !== track.title.toLowerCase() ? album.title : <span className="muted">Single</span>}
           </button>
         </span>
       ) : null}
-      {showAdded ? <span className="td added">{showPlays ? `${track.plays.toLocaleString()} plays` : formatAdded(track.addedAt)}</span> : null}
-      <span className="td like">
+      {showAdded ? <span className="td added" role="cell">{showPlays ? `${track.plays.toLocaleString()} plays` : formatAdded(track.addedAt)}</span> : null}
+      <span className="td like" role="cell">
         <button type="button" className={`icon-btn like-btn${liked ? " on" : ""}`} tabIndex={-1} onClick={(e) => { e.stopPropagation(); toggleLike(id); }} aria-label={liked ? "Remove from Liked Songs" : "Add to Liked Songs"} aria-pressed={liked}>
           <Icon name={liked ? "heartFill" : "heart"} size={17} />
         </button>
       </span>
-      <span className="td dur">{track.duration ? formatTime(track.duration) : "–:––"}</span>
-      <span className="td more">
+      <span className="td dur" role="cell">{track.duration ? formatTime(track.duration) : "–:––"}</span>
+      <span className="td more" role="cell">
         <button type="button" className="icon-btn" tabIndex={-1} onClick={(e) => { e.stopPropagation(); menu(e.currentTarget); }} aria-label={`More options for ${track.title}`}>
           <Icon name="more" size={18} />
         </button>

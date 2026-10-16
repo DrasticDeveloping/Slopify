@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
-import { useCurrent } from "../lib/hooks";
+import { useCurrent, useReducedMotion } from "../lib/hooks";
+import { focusFirstVisible, focusIsVisible } from "../lib/focus";
 import { openTrackMenu } from "../lib/menus";
 import { isLiked, navigate, toggleLike, togglePlay } from "../state/actions";
 import { getState, setState, useStore } from "../state/store";
@@ -46,7 +47,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
   const context = useStore((s) => s.context);
   const speed = useStore((s) => s.speed);
   const playing = useStore((s) => s.isPlaying);
-  const reduced = useStore((s) => s.settings.reduceMotion);
+  const reduced = useReducedMotion();
   const menuOpen = useStore((s) => s.menu !== null);
   const [queue, setQueue] = useState(false);
   const pulse = useRef<HTMLDivElement>(null);
@@ -78,6 +79,15 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
     requestAnimationFrame(() => watchBtn.current?.focus());
   };
   const fullscreen = useIsFullscreen();
+  /* On narrow screens the queue replaces the controls (and its button), so focus follows whichever is showing. */
+  const showQueue = (open: boolean) => {
+    setQueue(open);
+    requestAnimationFrame(() => {
+      const root = dialog.current;
+      if (!root || focusIsVisible()) return;
+      focusFirstVisible(open ? "[data-queue-hide]" : "[data-queue-toggle]", root) || closeBtn.current?.focus();
+    });
+  };
   // Video controls fade out while the video plays undisturbed.
   const idle = useIdle(dialog, watching && playing && !queue && !menuOpen);
 
@@ -105,7 +115,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
     const onKey = (e: globalThis.KeyboardEvent) => {
       const s = getState();
       const t = e.target as HTMLElement;
-      if (e.key.toLowerCase() !== "f" || e.ctrlKey || e.metaKey || e.altKey || s.modal || s.menu || t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
+      if (e.key.toLowerCase() !== "f" || !s.settings.letterShortcuts || e.ctrlKey || e.metaKey || e.altKey || s.modal || s.menu || t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
       e.preventDefault();
       e.stopPropagation();
       flipFullscreen();
@@ -198,7 +208,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
     <aside className="fp-queue" aria-label="Queue">
       <div className="fp-queue-head">
         <strong>Queue</strong>
-        <button type="button" className="icon-btn sm" onClick={() => setQueue(false)} aria-label="Hide queue">
+        <button type="button" className="icon-btn sm" data-queue-hide onClick={() => showQueue(false)} aria-label="Hide queue">
           <Icon name="close" size={16} />
         </button>
       </div>
@@ -265,7 +275,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
               </div>
               <Transport big />
               <div className="fp-vbar-side end">
-                <button type="button" className={`icon-btn${queue ? " on dot" : ""}`} onClick={() => setQueue(!queue)} aria-pressed={queue} aria-label="Queue" title="Queue">
+                <button type="button" className={`icon-btn${queue ? " on dot" : ""}`} data-queue-toggle onClick={() => showQueue(!queue)} aria-pressed={queue} aria-label="Queue" title="Queue">
                   <Icon name="queue" size={20} />
                 </button>
                 <button type="button" className="icon-btn" onClick={flipFullscreen} aria-label={fullscreen ? "Exit full screen" : "Full screen"} title={fullscreen ? "Exit full screen (F)" : "Full screen (F)"}>
@@ -297,7 +307,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
               <div className="fp-utils">
                 {speedBtn}
                 <VolumeControl />
-                <button type="button" className={`btn ghost sm${queue ? " on" : ""}`} onClick={() => setQueue(!queue)} aria-pressed={queue}>
+                <button type="button" className={`btn ghost sm${queue ? " on" : ""}`} data-queue-toggle onClick={() => showQueue(!queue)} aria-pressed={queue}>
                   <Icon name="queue" size={18} />
                   Queue
                 </button>

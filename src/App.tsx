@@ -158,6 +158,7 @@ function useShortcuts() {
       }
       const target = e.target as HTMLElement;
       const onControl = target.closest?.("button, a, [role=slider], [role=row]");
+      if (!s.settings.letterShortcuts && e.key.length === 1 && e.key !== " " && !mod) return;
       switch (e.key) {
         case " ":
           // Space presses a control only when you reached it from the keyboard (see `clicked`).
@@ -310,7 +311,7 @@ export function App() {
         <i />
       </div>
       <Sidebar />
-      <main className="main" aria-label="Content">
+      <main className="main" aria-label="Content" tabIndex={-1}>
         <div className="main-scroll" ref={scroller} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 8)}>
           <TopBar scrolled={scrolled} />
           <div className="view-wrap" key={key}>

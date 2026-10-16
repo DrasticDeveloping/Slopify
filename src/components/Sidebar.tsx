@@ -157,16 +157,16 @@ export function Sidebar() {
       </nav>
 
       <div className="side-section">
-        <div className="side-list" role="list">
+        <div className="side-list" role={shown.length ? "list" : undefined}>
           {shown.map((entry) => {
             const active = showsEntry(route, entry);
             const playing = showsEntry(contextRoute, entry);
             const playlist = entry.type === "playlist";
             return (
+              // A wrapper carries the list role so the button keeps its own (it lays out as if absent).
+              <div key={`${entry.type}:${entry.id}`} role="listitem" className="side-li">
               <button
-                key={`${entry.type}:${entry.id}`}
                 type="button"
-                role="listitem"
                 className={`side-item${active ? " active" : ""}${dropId === entry.id ? " drop" : ""}`}
                 onClick={() => navigate({ name: entry.type, id: entry.id })}
                 onContextMenu={playlist ? (e) => openPlaylistMenu(e, entry.id) : undefined}
@@ -184,6 +184,7 @@ export function Sidebar() {
                 </span>
                 {playing ? <Icon name={isPlaying ? "volume" : "volumeLow"} size={16} className="accent side-speaker" /> : null}
               </button>
+              </div>
             );
           })}
           {!shown.length ? <p className="muted small library-empty">Your saved music will appear here</p> : null}

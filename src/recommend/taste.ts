@@ -47,8 +47,12 @@ export interface TasteState {
   hidden: Record<string, number>;
   /** Outside-library suggestions dismissed, keyed by `songKey`. */
   hiddenDiscoveries: Record<string, number>;
-  /** Kept / rejected counts per reason kind. */
+  /** Kept / rejected counts per reason kind, on this device. */
   reasons: Partial<Record<ReasonKind, [number, number]>>;
+  /** The same, on your other devices (state/sync.ts), counted with these. */
+  elsewhere?: Partial<Record<ReasonKind, [number, number]>>;
+  /** When recommendations were last reset, so every device forgets its counts from before. */
+  resetAt?: number;
   links: SongLink[];
 }
 
@@ -202,13 +206,21 @@ export function restoreTaste(value: unknown, ids: ReadonlySet<string>, now = Dat
       if (t.listens.length === MAX_LISTENS) break;
     }
   }
-  if (isObject(value.reasons)) {
-    for (const [kind, pair] of Object.entries(value.reasons)) {
-      if (KINDS.has(kind) && Array.isArray(pair) && pair.length === 2 && pair.every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1000)) {
-        t.reasons[kind as ReasonKind] = [pair[0], pair[1]];
+  const counts = (v: unknown, most: number, least = 0) => {
+    const out: TasteState["reasons"] = {};
+    if (!isObject(v)) return out;
+    for (const [kind, pair] of Object.entries(v)) {
+      if (KINDS.has(kind) && Array.isArray(pair) && pair.length === 2 && pair.every((n) => typeof n === "number" && Number.isFinite(n) && n >= least && n <= most)) {
+        out[kind as ReasonKind] = [pair[0], pair[1]];
       }
     }
-  }
+    return out;
+  };
+  t.reasons = counts(value.reasons, 1000);
+  // Every other device's, added up.
+  // Negative where kept/rejected counts this device shares with others were halved here (see sync.ts).
+  if (isObject(value.elsewhere)) t.elsewhere = counts(value.elsewhere, 1_000_000, -1_000_000);
+  if (time(value.resetAt)) t.resetAt = value.resetAt;
   if (Array.isArray(value.links)) {
     t.links = (value.links as unknown[]).filter((l): l is SongLink =>
       isObject(l) && typeof l.from === "string" && l.from.length <= 600 && typeof l.to === "string" && l.to.length <= 600 &&
@@ -369,6 +381,7 @@ function buildProfile({ tracks, artists, playlists, taste }: TasteInput, now: nu
  * handful of plays nudges it and only a consistent pattern moves it far).
  */
 export function reasonWeight(t: TasteState, kind: ReasonKind) {
-  const [kept, rejected] = t.reasons[kind] ?? [0, 0];
+  const [here, there] = [t.reasons[kind] ?? [0, 0], t.elsewhere?.[kind] ?? [0, 0]];
+  const [kept, rejected] = [here[0] + there[0], here[1] + there[1]];
   return 0.5 + (kept + 2) / (kept + rejected + 4);
 }

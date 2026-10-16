@@ -1,7 +1,9 @@
-import { useState, type CSSProperties } from "react";
+import { useId, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { formatTime, plural } from "../lib/format";
 import { useCurrent } from "../lib/hooks";
 import { openTrackMenu } from "../lib/menus";
+import { focusFirstVisible } from "../lib/focus";
+import { rovingKey } from "../lib/roving";
 import { clearUpNext, isLiked, togglePlay, jumpToOrderIndex, jumpToUpNext, navigate, nextTrackId, openModal, playTrackNow, removeFromUpNext, toggleLike } from "../state/actions";
 import { setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
@@ -46,6 +48,18 @@ export function QueueView() {
   const history = useStore((s) => s.history);
   const repeat = useStore((s) => s.repeat);
   const [tab, setTab] = useState<"queue" | "recent">("queue");
+  const uid = useId();
+  const tabProps = (value: "queue" | "recent") => ({
+    type: "button" as const,
+    role: "tab",
+    id: `${uid}-${value}-tab`,
+    "aria-controls": `${uid}-panel`,
+    "aria-selected": tab === value,
+    tabIndex: tab === value ? 0 : -1,
+    className: tab === value ? "on" : "",
+    onClick: () => setTab(value),
+    onKeyDown: (e: KeyboardEvent<HTMLElement>) => rovingKey(e, ["queue", "recent"] as const, tab, setTab),
+  });
   const rest = order.slice(index + 1, index + 61);
   // With repeat-all the queue wraps around to the start of the context.
   const wrap = repeat === "all" && rest.length < 60 ? order.slice(0, Math.max(0, Math.min(index, 60 - rest.length))) : [];
@@ -53,12 +67,12 @@ export function QueueView() {
   return (
     <>
       <div className="tabs" role="tablist" aria-label="Queue view">
-        <button type="button" role="tab" aria-selected={tab === "queue"} className={tab === "queue" ? "on" : ""} onClick={() => setTab("queue")}>Queue</button>
-        <button type="button" role="tab" aria-selected={tab === "recent"} className={tab === "recent" ? "on" : ""} onClick={() => setTab("recent")}>Recently played</button>
+        <button {...tabProps("queue")}>Queue</button>
+        <button {...tabProps("recent")}>Recently played</button>
         <span className="tab-pill" style={{ "--x": tab === "queue" ? 0 : 1 } as CSSProperties} />
       </div>
       {tab === "queue" ? (
-        <div className="q-scroll" role="tabpanel">
+        <div className="q-scroll" role="tabpanel" id={`${uid}-panel`} aria-labelledby={`${uid}-queue-tab`}>
           {currentId ? (
             <section>
               <h3 className="q-head">Now playing</h3>
@@ -93,7 +107,7 @@ export function QueueView() {
           ) : null}
         </div>
       ) : (
-        <div className="q-scroll" role="tabpanel">
+        <div className="q-scroll" role="tabpanel" id={`${uid}-panel`} aria-labelledby={`${uid}-recent-tab`}>
           {history.length ? history.map((id, i) => <QueueRow key={`${id}-${i}`} id={id} index={i} onPlay={() => playTrackNow(id)} />) : <p className="muted small q-empty">Songs you play will show up here.</p>}
         </div>
       )}
@@ -145,7 +159,7 @@ function DetailsView() {
         <h3>Details</h3>
         <dl className="kv">
           <dt>Album</dt><dd><button type="button" className="link" onClick={() => navigate({ name: "album", id: album.id })}>{album.title}</button>{album.year ? ` · ${album.year}` : ""}</dd>
-          <dt>Format</dt><dd>{track.kind === "video" ? "Video" : "Audio"} · {track.storage === "server" ? "Streaming" : track.storage === "downloads" ? "Downloaded" : "Local file"}</dd>
+          <dt>Format</dt><dd>{track.kind === "video" ? "Video" : "Audio"} · {track.stream ? "Streaming online" : track.storage === "server" ? "From your music server" : track.storage === "downloads" ? "Downloaded" : "File on this device"}</dd>
           <dt>Plays</dt><dd>{track.plays.toLocaleString("en")}</dd>
           <dt>Clip</dt>
           <dd>
@@ -189,6 +203,12 @@ function DetailsView() {
 /** The side panel that's open: Now playing waits for a song, rather than taking up the screen with nothing in it. */
 export const usePanel = () => useStore((s) => (s.panel === "details" && !s.currentId ? null : s.panel));
 
+/** Closes the panel and puts focus back on the player bar button that opens it (or the page content, where that's hidden). */
+function closePanel(panel: "queue" | "details") {
+  setState({ panel: null });
+  requestAnimationFrame(() => focusFirstVisible(`[data-panel-opener="${panel}"]`) || focusFirstVisible("main.main"));
+}
+
 export function RightPanel() {
   const panel = usePanel();
   const label = useStore((s) => s.context?.label);
@@ -204,7 +224,7 @@ export function RightPanel() {
           <button type="button" className="icon-btn sm" onClick={() => setState({ panel: panel === "queue" ? "details" : "queue" })} aria-label={panel === "queue" ? "Show now playing" : "Show queue"} title={panel === "queue" ? "Now playing" : "Queue"}>
             <Icon name={panel === "queue" ? "nowPlaying" : "queue"} size={18} />
           </button>
-          <button type="button" className="icon-btn sm" onClick={() => setState({ panel: null })} aria-label="Close panel">
+          <button type="button" className="icon-btn sm" onClick={() => closePanel(panel)} aria-label="Close panel">
             <Icon name="close" size={18} />
           </button>
         </div>

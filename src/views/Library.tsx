@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { PlaylistArt } from "../components/Artwork";
+import { ChooseFiles } from "../components/ChooseFiles";
 import { Icon } from "../components/Icon";
 import { Card, PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
@@ -71,6 +72,7 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
           </button>
         </div>
       </header>
+      {all.length ? (<>
       <div className="chips" role="group" aria-label="Filter songs">
         {filters.map(([f, name]) => (
           <button key={f} type="button" className={`chip${filter === f ? " on" : ""}`} aria-pressed={filter === f} onClick={() => setFilter(f)}>
@@ -85,11 +87,12 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
         </button>
         <span className="muted small">{plural(ids.length, "song")} · {formatLongDuration(total)}</span>
       </div>
+      </>) : null}
       <TrackList
         key={filter}
         ids={ids}
         context={{ label, route }}
-        empty={<Empty icon="music" title="No songs here yet" body={filter === "all" ? "Find songs online, add files from your computer, or download songs from your music server." : "Try another filter."} action={filter === "all" ? <button type="button" className="btn primary" onClick={() => findMusic()}>Find music</button> : undefined} />}
+        empty={<Empty icon="music" title="No songs here yet" body={filter === "all" ? "Find songs online and save them, choose files from this device, or download songs from your music server." : "Try another filter."} action={filter === "all" ? <><button type="button" className="btn primary" onClick={() => findMusic()}><Icon name="search" size={18} />Find music</button><ChooseFiles /></> : undefined} />}
       />
     </div>
   );

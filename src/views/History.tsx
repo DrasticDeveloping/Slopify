@@ -134,7 +134,8 @@ export function HistoryView() {
 }
 
 function StatsView() {
-  const log = useStore((s) => s.listenLog);
+  const own = useStore((s) => s.listenLog);
+  const elsewhere = useStore((s) => s.listenElsewhere);
   const tracks = useStore((s) => s.tracks);
   const artists = useStore((s) => s.artists);
   const [range, setRange] = useState<(typeof RANGES)[number]>(30);
@@ -144,9 +145,9 @@ function StatsView() {
   const today = todayKey();
   const days = useMemo(() => {
     // Only real listening: the minutes the player logged each day.
-    const merged = recentDays(90).map((date) => ({ date, minutes: Math.round((log[date] ?? 0) / 60) }));
+    const merged = recentDays(90).map((date) => ({ date, minutes: Math.round(((own[date] ?? 0) + (elsewhere[date] ?? 0)) / 60) }));
     return merged.slice(-range);
-  }, [log, range, today]);
+  }, [own, elsewhere, range, today]);
 
   const total = days.reduce((n, d) => n + d.minutes, 0);
   const active = days.filter((d) => d.minutes > 0).length;

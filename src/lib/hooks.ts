@@ -66,3 +66,10 @@ export function useOnClickOutside(ref: RefObject<HTMLElement | null>, handler: (
     return () => document.removeEventListener("pointerdown", on, true);
   }, [ref, handler, active]);
 }
+
+/** Reduce motion, from Slopify's setting or the system's. */
+export function useReducedMotion() {
+  const setting = useStore((s) => s.settings.reduceMotion);
+  const system = useMediaQuery("(prefers-reduced-motion: reduce)");
+  return setting || system;
+}

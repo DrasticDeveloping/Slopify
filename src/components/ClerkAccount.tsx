@@ -45,6 +45,9 @@ function ClerkBridge() {
       openSignIn: () => clerk.openSignIn(),
       openUserProfile: () => clerk.openUserProfile(),
       signOut: () => clerk.signOut(),
+      deleteUser: async () => {
+        await clerk.user?.delete();
+      },
     });
   }, [clerk, getToken]);
 

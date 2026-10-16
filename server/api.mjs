@@ -17,6 +17,7 @@ import { createStateStore, readLargeJSON } from "./library-state.mjs";
 import { runFolder, sweepOldTemp, sweepRunFolders } from "./run-folders.mjs";
 import { SongFiles } from "./song-files.mjs";
 import { SongStore } from "./songs.mjs";
+import { lockLibrary } from "./library-lock.mjs";
 
 const require = createRequire(import.meta.url);
 const { checkoutDataDir } = require("./data-dir.cjs");
@@ -329,8 +330,13 @@ async function prepareSongFile(song, dir, signal) {
   return { filePath: result.filePath, size: result.size, sha256: result.contentSha256 };
 }
 
-export function createImportApi({ dataDir }) {
-  const songs = new SongStore(dataDir);
+/** `owned`: whether this server still has the library (see library-lock.mjs); changes are refused once it hasn't. */
+export function createImportApi({ dataDir, owned = () => true }) {
+  // Checked again just before each save: a request that started before a takeover mustn't finish it.
+  const stillOwned = () => {
+    if (!owned()) throw Object.assign(new Error("Another Slopify took over this library. Restart this one to use it again."), { status: 409 });
+  };
+  const songs = new SongStore(dataDir, stillOwned);
   const songFiles = new SongFiles(prepareSongFile, dataDir);
   const previews = new Previews(dataDir);
   // Leftovers from servers that didn't stop cleanly go now, not on first use.
@@ -339,7 +345,7 @@ export function createImportApi({ dataDir }) {
   const recommendations = createRecommendations();
   const artists = createArtists();
   const catalog = createCatalog();
-  const libraryState = createStateStore(dataDir);
+  const libraryState = createStateStore(dataDir, stillOwned);
 
   /*
    * Release dates for saved songs, looked up in the background and kept in each
@@ -544,6 +550,9 @@ export function createImportApi({ dataDir }) {
     if (!["GET", "HEAD", "OPTIONS"].includes(method) && crossSite(req)) {
       return sendJSON(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "Requests from other websites aren't allowed." } });
     }
+    if (!["GET", "HEAD", "OPTIONS"].includes(method) && !owned()) {
+      return sendJSON(res, 409, { ok: false, error: { code: "LIBRARY_IN_USE", message: "Another Slopify took over this library. Restart this one to use it again." } });
+    }
     try {
       if (parts[0] === "health" && method === "GET") {
         return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()) });
@@ -680,8 +689,19 @@ export function createImportApi({ dataDir }) {
           }
           const link = { userId, name: typeof body.name === "string" ? body.name.slice(0, 100) : null, email: typeof body.email === "string" ? body.email.slice(0, 200) : null, linkedAt: Date.now() };
           await fs.mkdir(dataDir, { recursive: true });
+          stillOwned();
           await fs.writeFile(file, JSON.stringify(link, null, 2));
           return sendJSON(res, 200, { ok: true, link });
+        }
+        // The account was deleted: this library belongs to no account (only that account can let it go).
+        if (method === "DELETE") {
+          const userId = url.searchParams.get("userId");
+          const current = await fs.readFile(file, "utf8").then(JSON.parse).catch(() => null);
+          if (current?.userId && current.userId === userId) {
+            stillOwned();
+            await fs.rm(file, { force: true });
+          }
+          return sendJSON(res, 200, { ok: true, link: null });
         }
       }
       if (parts[0] === "state" && parts.length === 1 && method === "GET") {
@@ -745,7 +765,11 @@ export function slopifyApi(options = {}) {
   const mount = (server) => {
     // Chosen when a server starts, not when the config loads, so `vite build` never touches the library.
     const chosen = options.dataDir || process.env.SLOPIFY_DATA_DIR;
-    handler ??= createImportApi({ dataDir: chosen ? path.resolve(chosen) : checkoutDataDir(fileURLToPath(new URL("../", import.meta.url))) });
+    if (!handler) {
+      const dataDir = chosen ? path.resolve(chosen) : checkoutDataDir(fileURLToPath(new URL("../", import.meta.url)));
+      const owned = lockLibrary(dataDir, { port: server.config.server?.port });
+      handler = createImportApi({ dataDir, owned });
+    }
     server.middlewares.use((req, res, next) => {
       handler(req, res, next).catch(next);
     });

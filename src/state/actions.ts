@@ -252,7 +252,7 @@ export function rememberSongLinks(links: SongLink[]) {
 /** Forgets listening, likes and saves as signals, hidden songs and what was learned. Library and playlists stay. */
 export function resetRecommendations() {
   collector.clear();
-  setState((s) => ({ taste: emptyTaste(s.taste.rev + 1), context: s.context ? { ...s.context, picks: undefined } : null }));
+  setState((s) => ({ taste: { ...emptyTaste(s.taste.rev + 1), resetAt: Date.now() }, context: s.context ? { ...s.context, picks: undefined } : null }));
   const current = getState().currentId;
   if (current && getState().isPlaying) startListening(current);
   flushPersist();
@@ -263,6 +263,9 @@ export function resetRecommendations() {
 
 const sameRoute = (a: Route, b: Route) => JSON.stringify(a) === JSON.stringify(b);
 
+/** Below 1240px the side panel floats over the page (full screen on phones), so going somewhere closes it. */
+const closeFloatingPanel = (): Partial<AppState> => (window.matchMedia("(max-width: 1240px)").matches ? { panel: null } : {});
+
 export function navigate(route: Route) {
   const s = getState();
   if (sameRoute(s.route, route)) return;
@@ -271,21 +274,21 @@ export function navigate(route: Route) {
     setState({ route });
     return;
   }
-  setState({ route, back: [...s.back, s.route].slice(-50), forward: [], selection: [], menu: null });
+  setState({ route, back: [...s.back, s.route].slice(-50), forward: [], selection: [], menu: null, ...closeFloatingPanel() });
 }
 
 export function goBack() {
   const s = getState();
   const prev = s.back[s.back.length - 1];
   if (!prev) return;
-  setState({ route: prev, back: s.back.slice(0, -1), forward: [s.route, ...s.forward], selection: [] });
+  setState({ route: prev, back: s.back.slice(0, -1), forward: [s.route, ...s.forward], selection: [], ...closeFloatingPanel() });
 }
 
 export function goForward() {
   const s = getState();
   const next = s.forward[0];
   if (!next) return;
-  setState({ route: next, forward: s.forward.slice(1), back: [...s.back, s.route], selection: [] });
+  setState({ route: next, forward: s.forward.slice(1), back: [...s.back, s.route], selection: [], ...closeFloatingPanel() });
 }
 
 /* ───────────────────────── toasts / menus / modals ───────────────────────── */

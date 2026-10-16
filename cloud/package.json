@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply slopify --local",
     "db:migrate": "wrangler d1 migrations apply slopify --remote",
+    "db:backup": "node scripts/backup.mjs",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {

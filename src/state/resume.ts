@@ -40,7 +40,8 @@ function deviceId() {
     return "this-device";
   }
 }
-const device = deviceId();
+/** This device, as named in synced data. */
+export const device = deviceId();
 
 const isSpot = (x: PlaybackSpot | null | undefined): x is PlaybackSpot =>
   Boolean(x) && typeof x!.id === "string" && Number.isFinite(x!.position) && Number.isFinite(x!.at) && typeof x!.device === "string" && Array.isArray(x!.ids);

@@ -1,12 +1,13 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { plural } from "../../lib/format";
+import { rovingKey } from "../../lib/roving";
 import { qualified, reasonWeight, type ReasonKind, type TasteState } from "../../recommend/taste";
 import { resetRecommendations, showHiddenRecommendations, updateSettings } from "../../state/actions";
 import { checkForUpdates, installUpdate, isDesktopApp, setDesktopSetting, setUpdateChannel, useDesktopSettings, useDesktopUpdates, type DesktopUpdates, type UpdateChannel } from "../../state/desktop";
 import { cloudEnabled, manageAccount, saveProfile, signIn, signOut, useAccount } from "../../state/cloud";
 import { toast } from "../../state/actions";
 import { connect, disconnect } from "../../state/server";
-import { linkComputer } from "../../state/sync";
+import { deleteAccount, linkComputer } from "../../state/sync";
 import { installApp, installationHelp, updateApp, usePwa } from "../../state/pwa";
 import { defaultSettings, resetAppData, useStore, type Settings, type SettingsTab, type Theme } from "../../state/store";
 import { Icon } from "../Icon";
@@ -71,7 +72,7 @@ function ToneControls() {
               {preset === "Custom" ? <option value="Custom">Custom</option> : null}
             </select>
           </label>
-          <button type="button" className="btn sm" disabled={flat} onClick={() => change({ bass: 0, mid: 0, treble: 0, balance: 0 })}>Reset</button>
+          <button type="button" className="btn sm" disabled={flat} onClick={() => change({ bass: 0, mid: 0, treble: 0, balance: 0 })} aria-label="Reset sound controls">Reset</button>
         </Row>
         {bands.map(([key, name, desc]) => (
           <div className="set-slider tone-slider" key={key}>
@@ -91,14 +92,16 @@ function ToneControls() {
 }
 
 function Row({ icon, title, desc, children, column }: { icon: string; title: string; desc?: ReactNode; children?: ReactNode; column?: boolean }) {
+  const id = useId();
   return (
     <div className={`set-row${column ? " column" : ""}`}>
       <span className="set-icon"><Icon name={icon} size={19} /></span>
       <span className="set-copy">
-        <strong>{title}</strong>
-        {desc ? <small>{desc}</small> : null}
+        <strong id={`${id}-title`}>{title}</strong>
+        {desc ? <small id={`${id}-desc`}>{desc}</small> : null}
       </span>
-      {children ? <span className="set-control">{children}</span> : null}
+      {/* A group, so controls inside are announced with the row's title and description. */}
+      {children ? <span className="set-control" role="group" aria-labelledby={`${id}-title`} aria-describedby={desc ? `${id}-desc` : undefined}>{children}</span> : null}
     </div>
   );
 }
@@ -208,6 +211,7 @@ function AccountRows() {
   const syncError = useStore((s) => s.server.cloudError);
   const linkedElsewhere = useStore((s) => s.server.linkedElsewhere);
   const [draft, setDraft] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   if (!cloudEnabled) {
     return (
       <Row icon="user" title="Display name" desc="The name shown on your profile.">
@@ -262,9 +266,28 @@ function AccountRows() {
           aria-label="Display name"
         />
       </Row>
+      <Row icon="trash" title="Delete account" desc="Deletes your profile and the copy of your library kept with your account, then your sign-in. Songs and playlists on this computer stay.">
+        <button
+          type="button"
+          className="btn danger sm"
+          disabled={deleting}
+          onClick={() => {
+            if (!window.confirm(`Delete the Slopify account ${account.email ?? ""}? Your profile, synced library and sign-in are deleted for good. This computer keeps its songs and playlists.`)) return;
+            setDeleting(true);
+            deleteAccount()
+              .then((note) => (note ? toast("Account deleted, with a problem", { tone: "error", detail: note, sticky: true }) : toast("Account deleted", { tone: "success", detail: "Your library stays on this computer." })))
+              .catch((error: unknown) => toast("Couldn't delete your account", { tone: "error", detail: error instanceof Error ? error.message : undefined }))
+              .finally(() => setDeleting(false));
+          }}
+        >
+          {deleting ? "Deleting…" : "Delete account"}
+        </button>
+      </Row>
     </>
   );
 }
+
+const DOCS = "https://github.com/DrasticDeveloping/Slopify/blob/master/docs";
 
 function installDescription(pwa: { installed: boolean; canInstall: boolean }) {
   if (pwa.installed) return "Launch it from your apps. Songs kept on this device also play offline.";
@@ -352,13 +375,17 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                   <button type="button" className="btn sm" disabled={!hiddenCount} onClick={showHiddenRecommendations}>Show again</button>
                 </Row>
                 <Row icon="sync" title="Reset recommendations" desc="Forget listening, likes and saves as signals, and what was learned. Your library and playlists stay.">
-                  <button type="button" className="btn sm" onClick={resetRecommendations}>Reset</button>
+                  <button type="button" className="btn sm" onClick={resetRecommendations} aria-label="Reset recommendations">Reset</button>
                 </Row>
               </div>
               <h3 className="set-section">Data</h3>
               <div className="set-group">
                 <Row icon="sync" title="Reset app data" desc="Clears playlists, settings and recommendations on this device. Songs you imported from the web stay and come back.">
-                  <button type="button" className="btn danger sm" onClick={resetAppData}>Reset</button>
+                  <button type="button" className="btn danger sm" onClick={resetAppData} aria-label="Reset app data">Reset</button>
+                </Row>
+                <Row icon="help" title="Privacy and terms" desc="What Slopify keeps, where, and how to delete it.">
+                  <a className="btn sm" href={`${DOCS}/PRIVACY.md`} target="_blank" rel="noreferrer">Privacy</a>
+                  <a className="btn sm" href={`${DOCS}/TERMS.md`} target="_blank" rel="noreferrer">Terms</a>
                 </Row>
               </div>
             </>
@@ -397,6 +424,8 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                     type="button"
                     role="radio"
                     aria-checked={settings.theme === t.id}
+                    tabIndex={settings.theme === t.id ? 0 : -1}
+                    onKeyDown={(e) => rovingKey(e, themes.map((x) => x.id), settings.theme, (theme) => updateSettings({ theme }))}
                     className={`theme-card${settings.theme === t.id ? " on" : ""}`}
                     style={{ "--s1": t.swatch[0], "--s2": t.swatch[1], "--s3": t.swatch[2] } as CSSProperties}
                     onClick={() => updateSettings({ theme: t.id })}
@@ -455,6 +484,11 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
           {tab === "shortcuts" ? (
             <>
               <h3 className="set-section">Keyboard shortcuts</h3>
+              <div className="set-group">
+                <Row icon="sliders" title="Single-key shortcuts" desc="M, L, S, R, Q, F, / and ? work on their own. Turn off if they get in the way of speech input or a screen reader.">
+                  <Toggle checked={settings.letterShortcuts} onChange={set("letterShortcuts")} label="Single-key shortcuts" />
+                </Row>
+              </div>
               <div className="set-group shortcuts">
                 {shortcuts.map(([keys, label]) => (
                   <div key={label} className="shortcut">

@@ -16,11 +16,13 @@ import { getState, type AppState } from "./store";
 
 export interface SlipIn {
   addedAt: number;
-  /** Times it was slipped in. */
+  /** Times it was slipped in, on this device. */
   slipped: number;
-  /** Times it was heard to the end, and skipped early, when slipped in. */
+  /** Times it was heard to the end, and skipped early, when slipped in on this device. */
   finished: number;
   skipped: number;
+  /** The same three counts on your other devices (sync.ts). */
+  elsewhere?: [number, number, number];
   /** Skips in a row since it was last heard to the end. */
   skipStreak: number;
   lastAt?: number;
@@ -175,8 +177,9 @@ function ended(id: string, end: Listen["end"], listen: Listen | null) {
   const heardMost = listen ? listen.covered / Math.max(1, listen.span) >= 0.8 : false;
   const t = getState().tracks[id];
   if (end === "finished" || heardMost) {
-    const finished = record.finished + 1;
-    publish({ ...songs, [id]: { ...record, finished, skipStreak: 0, offered: record.offered || finished >= OFFER_AFTER } });
+    // Heard to the end on any of your devices.
+    const finished = record.finished + 1 + (record.elsewhere?.[1] ?? 0);
+    publish({ ...songs, [id]: { ...record, finished: record.finished + 1, skipStreak: 0, offered: record.offered || finished >= OFFER_AFTER } });
     if (finished >= OFFER_AFTER && !record.offered && t && !isLiked(id)) {
       toast(`You've heard “${t.title}” all the way through ${finished} times`, { detail: "It'll keep slipping in. Like it to keep it with your favourites.", action: { label: "Like", run: () => toggleLike(id) } });
     }

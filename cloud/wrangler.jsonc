@@ -8,9 +8,21 @@
     { "binding": "DB", "database_name": "slopify", "database_id": "d0512d09-5cff-4dd4-8ec0-1b157cf27f20", "migrations_dir": "migrations" }
   ],
   "durable_objects": {
-    "bindings": [{ "name": "ROOMS", "class_name": "ListenRoom" }]
+    "bindings": [{ "name": "ROOMS", "class_name": "ListenAlongRoom" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ListenRoom"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ListenRoom"] },
+    // Ends every room made before rooms had a longest lifetime and a record of their members (src/room.ts).
+    { "tag": "v2", "new_sqlite_classes": ["ListenAlongRoom"], "deleted_classes": ["ListenRoom"] }
+  ],
+  // Daily: removes deletion and room records that are no longer needed (`tidy` in src/library.ts).
+  "triggers": { "crons": ["17 4 * * *"] },
+  // Calls a minute per account, and per address before sign-in is checked (src/index.ts).
+  // A first sync of a big library sends one call per song, so the account limit leaves room for that.
+  "ratelimits": [
+    { "name": "USER_LIMIT", "namespace_id": "1001", "simple": { "limit": 300, "period": 60 } },
+    { "name": "ADDRESS_LIMIT", "namespace_id": "1002", "simple": { "limit": 600, "period": 60 } }
+  ],
   "vars": {
     // Your Clerk application's Publishable Key (pk_test_… or pk_live_…). It is public.
     "CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuc2xvcGlmeS51bmJsb2NrZWQubW92JA"

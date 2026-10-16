@@ -1,14 +1,14 @@
 import { creditsArtist } from "../lib/credits";
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { ExternalSearch } from "../components/ExternalSearch";
 import { ExternalArtists } from "../components/ExternalArtists";
 import { inputIsLink } from "../state/importer";
-import { Icon } from "../components/Icon";
 import { Art, PlaylistArt, TrackArt } from "../components/Artwork";
 import { Card, PlayFab, Shelf } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { plural } from "../lib/format";
-import { importFiles, isPlayable, navigate } from "../state/actions";
+import { isPlayable, navigate } from "../state/actions";
+import { ChooseFiles } from "../components/ChooseFiles";
 import { useStore } from "../state/store";
 
 function score(text: string, q: string) {
@@ -23,9 +23,11 @@ function score(text: string, q: string) {
 type Category = "all" | "music" | "artists";
 const CATEGORIES: Array<[Category, string]> = [["all", "All"], ["music", "Music"], ["artists", "Artists"]];
 
+/** What "Playing from" says for search results: a pasted link would only be a long address. */
+const searchLabel = (q: string) => (inputIsLink(q) ? "Pasted link" : `Search “${q}”`);
+
 export function SearchView({ q }: { q: string }) {
   const [mode, setMode] = useState<Category>("all");
-  const file = useRef<HTMLInputElement>(null);
   const tracks = useStore((s) => s.tracks);
   const trackIds = useStore((s) => s.trackIds);
   const artists = useStore((s) => s.artists);
@@ -68,21 +70,7 @@ export function SearchView({ q }: { q: string }) {
       <div className="view">
         <h1 className="section-title big">Browse all</h1>
         <p className="muted">Find songs on YouTube, Spotify and SoundCloud using the search bar above. You can also paste playlist links.</p>
-        <input
-          ref={file}
-          type="file"
-          accept="audio/*,video/*,.flac,.m4a,.opus"
-          multiple
-          hidden
-          onChange={(e) => {
-            if (e.target.files) importFiles(e.target.files);
-            e.target.value = "";
-          }}
-        />
-        <button type="button" className="btn" onClick={() => file.current?.click()}>
-          <Icon name="folder" size={18} />
-          Add files from your computer
-        </button>
+        <ChooseFiles />
         <div className="browse-grid">
           <button type="button" className="browse-tile" style={{ "--h": 260 } as CSSProperties} onClick={() => navigate({ name: "library" })}>
             <strong>Your library</strong>
@@ -142,13 +130,13 @@ export function SearchView({ q }: { q: string }) {
         </section>
         <section className="search-songs">
           <h2 className="section-title">Songs</h2>
-          <TrackList ids={results.songs.slice(0, 5)} context={{ label: `Search “${q}”`, route: { name: "search", q } }} showAlbum={false} showAdded={false} sortable={false} />
+          <TrackList ids={results.songs.slice(0, 5)} context={{ label: searchLabel(q), route: { name: "search", q } }} showAlbum={false} showAdded={false} sortable={false} />
         </section>
       </div></> : null}
       {showMusic && results.songs.length > 5 ? (
         <section>
           <h2 className="section-title">All songs <span className="muted">{results.songs.length}</span></h2>
-          <TrackList ids={results.songs} context={{ label: `Search “${q}”`, route: { name: "search", q } }} showAdded={false} />
+          <TrackList ids={results.songs} context={{ label: searchLabel(q), route: { name: "search", q } }} showAdded={false} />
         </section>
       ) : null}
       {mode !== "music" && results.artists.length ? (

@@ -15,8 +15,26 @@ export class HttpError extends Error {
 }
 
 const MAX_SONG_BYTES = 32 * 1024;
+/** Songs one account can keep. */
+const MAX_SONGS = 20_000;
 const MAX_STATE_BYTES = 900 * 1024;
 const SONG_ID = /^[A-Za-z0-9-]{8,64}$/;
+/**
+ * How long writes for a deleted account are refused: longer than another
+ * device's sign-in lasts once its user is deleted (Clerk session tokens live a
+ * minute), so a sync it started can't put the data back.
+ */
+const DELETED_FOR_MS = 15 * 60_000;
+/** SQL that's true unless user `?1` was deleted after `?<at>` (now less DELETED_FOR_MS). */
+const notDeleted = (at: number) => `NOT EXISTS (SELECT 1 FROM deleted_users WHERE id = ?1 AND deleted_at > ?${at})`;
+const deletedSince = () => Date.now() - DELETED_FOR_MS;
+const gone = () => new HttpError(410, "This account was deleted.");
+
+/** Refuses with 410 when the account was just deleted. Every write checks this itself too, in the same statement. */
+export async function checkNotDeleted(env: LibraryEnv, userId: string) {
+  const row = await env.DB.prepare(`SELECT ${notDeleted(2)} AS ok`).bind(userId, deletedSince()).first<{ ok: number }>();
+  if (!row?.ok) throw gone();
+}
 
 const bytes = (s: string) => new TextEncoder().encode(s).length;
 const record = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
@@ -50,11 +68,63 @@ export async function saveProfile(env: LibraryEnv, userId: string, body: unknown
   if (!displayName) throw new HttpError(400, "Choose a display name.");
   const avatarUrl = "avatarUrl" in input ? (input.avatarUrl === null ? null : https(input.avatarUrl)) : current?.avatarUrl ?? null;
   const now = Date.now();
-  await env.DB.prepare(
-    "INSERT INTO users (id, display_name, avatar_url, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4) " +
+  const result = await env.DB.prepare(
+    `INSERT INTO users (id, display_name, avatar_url, created_at, updated_at) SELECT ?1, ?2, ?3, ?4, ?4 WHERE ${notDeleted(5)} ` +
       "ON CONFLICT(id) DO UPDATE SET display_name = ?2, avatar_url = ?3, updated_at = ?4",
-  ).bind(userId, displayName, avatarUrl, now).run();
+  ).bind(userId, displayName, avatarUrl, now, deletedSince()).run();
+  if (!result.meta.changes) throw gone();
   return { id: userId, displayName, avatarUrl };
+}
+
+/** Room records older than this are removed: rooms never last that long (MAX_ROOM_MS in src/room.ts). */
+const ROOM_RECORD_MS = 2 * 24 * 60 * 60_000;
+
+/**
+ * Deletes the caller's profile and library: everything this service keeps
+ * about them, except the deletion itself for a few minutes (see DELETED_FOR_MS).
+ * All at once, so a write can't land in between. Returns the Listen Along
+ * rooms they're in, to be left (src/index.ts), then forgotten with leftRooms.
+ *
+ * The rooms are read after the deletion is recorded: a room can only be noted
+ * before that (noteRoom refuses after), so none is missed. One started or
+ * joined meanwhile is checked again once it's set up (src/index.ts).
+ */
+export async function deleteAccount(env: LibraryEnv, userId: string) {
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO deleted_users (id, deleted_at) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET deleted_at = ?2").bind(userId, Date.now()),
+    env.DB.prepare("DELETE FROM songs WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM library_state WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId),
+  ]);
+  const { results } = await env.DB.prepare("SELECT code FROM room_members WHERE user_id = ?").bind(userId).all<{ code: string }>();
+  return { rooms: results.map((r) => r.code) };
+}
+
+/** Records room `code` for a deleted account that still has to be removed from it (deleting again retries it). */
+export async function noteLeftRoom(env: LibraryEnv, userId: string, code: string) {
+  await env.DB.prepare("INSERT INTO room_members (user_id, code, at) VALUES (?1, ?2, ?3) ON CONFLICT(user_id, code) DO UPDATE SET at = ?3").bind(userId, code, Date.now()).run();
+}
+
+/** Forgets the rooms a deleted account was removed from. Those it couldn't be removed from stay, for the next try. */
+export async function leftRooms(env: LibraryEnv, userId: string, codes: string[]) {
+  if (!codes.length) return;
+  await env.DB.batch(codes.map((code) => env.DB.prepare("DELETE FROM room_members WHERE user_id = ? AND code = ?").bind(userId, code)));
+}
+
+/** Remembers that the caller started or joined room `code` (see deleteAccount). Refused for a deleted account. */
+export async function noteRoom(env: LibraryEnv, userId: string, code: string) {
+  const result = await env.DB.prepare(`INSERT INTO room_members (user_id, code, at) SELECT ?1, ?2, ?3 WHERE ${notDeleted(4)} ON CONFLICT(user_id, code) DO UPDATE SET at = ?3`)
+    .bind(userId, code, Date.now(), deletedSince()).run();
+  if (!result.meta.changes) throw gone();
+}
+
+/** Removes deletion and room records that are no longer needed. Run daily (`scheduled` in src/index.ts). */
+export async function tidy(env: LibraryEnv) {
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM deleted_users WHERE deleted_at <= ?").bind(now - DELETED_FOR_MS),
+    env.DB.prepare("DELETE FROM room_members WHERE at < ?").bind(now - ROOM_RECORD_MS),
+  ]);
 }
 
 /* ───────────────────────── songs ───────────────────────── */
@@ -110,15 +180,20 @@ export async function listSongs(env: LibraryEnv, userId: string, since: number) 
 const NEXT_TIME = "MAX(?4, COALESCE((SELECT MAX(updated_at) FROM songs WHERE user_id = ?1), 0) + 1)";
 async function writeSong(env: LibraryEnv, userId: string, id: string, data: string, deleted: 0 | 1) {
   const row = await env.DB.prepare(
-    `INSERT INTO songs (user_id, id, data, deleted, updated_at) VALUES (?1, ?2, ?3, ?5, ${NEXT_TIME}) ` +
+    `INSERT INTO songs (user_id, id, data, deleted, updated_at) SELECT ?1, ?2, ?3, ?5, ${NEXT_TIME} WHERE ${notDeleted(6)} ` +
       `ON CONFLICT(user_id, id) DO UPDATE SET data = ?3, deleted = ?5, updated_at = ${NEXT_TIME} RETURNING updated_at`,
-  ).bind(userId, id, data, Date.now(), deleted).first<{ updated_at: number }>();
-  return row!.updated_at;
+  ).bind(userId, id, data, Date.now(), deleted, deletedSince()).first<{ updated_at: number }>();
+  if (!row) throw gone();
+  return row.updated_at;
 }
 
 export async function putSong(env: LibraryEnv, userId: string, id: string, body: unknown) {
   if (!SONG_ID.test(id)) throw new HttpError(400, "Invalid song id.");
   const data = checkSong(id, body);
+  // A new song (or one deleted before) counts towards the limit; changes to a saved one don't.
+  const row = await env.DB.prepare("SELECT (SELECT deleted FROM songs WHERE user_id = ?1 AND id = ?2) AS deleted, (SELECT COUNT(*) FROM songs WHERE user_id = ?1 AND deleted = 0) AS saved")
+    .bind(userId, id).first<{ deleted: number | null; saved: number }>();
+  if (row && row.deleted !== 0 && row.saved >= MAX_SONGS) throw new HttpError(413, `An account can keep up to ${MAX_SONGS.toLocaleString("en")} songs.`);
   const updatedAt = await writeSong(env, userId, id, data, 0);
   return { ...JSON.parse(data), updatedAt };
 }
@@ -146,10 +221,11 @@ export async function putState(env: LibraryEnv, userId: string, body: unknown) {
   if (bytes(data) > MAX_STATE_BYTES) throw new HttpError(413, "Your library's playlists and settings are too large to sync.");
   const baseRev = input.baseRev as number;
   const now = Date.now();
-  // One statement, so two devices writing at once can't both win.
+  // One statement, so two devices writing at once can't both win (nor a write land after a deletion).
   const result = baseRev === 0
-    ? await env.DB.prepare("INSERT INTO library_state (user_id, rev, data, updated_at) VALUES (?, 1, ?, ?) ON CONFLICT(user_id) DO NOTHING").bind(userId, data, now).run()
-    : await env.DB.prepare("UPDATE library_state SET rev = rev + 1, data = ?, updated_at = ? WHERE user_id = ? AND rev = ?").bind(data, now, userId, baseRev).run();
+    ? await env.DB.prepare(`INSERT INTO library_state (user_id, rev, data, updated_at) SELECT ?1, 1, ?2, ?3 WHERE ${notDeleted(4)} ON CONFLICT(user_id) DO NOTHING`).bind(userId, data, now, deletedSince()).run()
+    : await env.DB.prepare(`UPDATE library_state SET rev = rev + 1, data = ?2, updated_at = ?3 WHERE user_id = ?1 AND rev = ?4 AND ${notDeleted(5)}`).bind(userId, data, now, baseRev, deletedSince()).run();
+  if (!result.meta.changes) await checkNotDeleted(env, userId);
   const current = await getState(env, userId);
   return { conflict: result.meta.changes === 0, ...current };
 }

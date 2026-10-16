@@ -146,10 +146,10 @@ export function PlayerBar() {
         <button type="button" className={`speed-btn${speed !== 1 ? " on" : ""}`} onClick={(e) => openSpeedMenu(e.currentTarget)} aria-label={`Playback speed ${speed}x`} title="Playback speed">
           {speed}×
         </button>
-        <button type="button" className={`icon-btn${panel === "details" ? " on dot" : ""}`} onClick={() => setState({ panel: panel === "details" ? null : "details" })} aria-pressed={panel === "details"} aria-label="Now playing view" title="Now playing view">
+        <button type="button" className={`icon-btn${panel === "details" ? " on dot" : ""}`} data-panel-opener="details" onClick={() => setState({ panel: panel === "details" ? null : "details" })} aria-pressed={panel === "details"} aria-label="Now playing view" title="Now playing view">
           <Icon name="nowPlaying" size={19} />
         </button>
-        <button type="button" className={`icon-btn${panel === "queue" ? " on dot" : ""}`} onClick={() => setState({ panel: panel === "queue" ? null : "queue" })} aria-pressed={panel === "queue"} aria-label="Queue" title="Queue (Q)">
+        <button type="button" className={`icon-btn${panel === "queue" ? " on dot" : ""}`} data-panel-opener="queue" onClick={() => setState({ panel: panel === "queue" ? null : "queue" })} aria-pressed={panel === "queue"} aria-label="Queue" title="Queue (Q)">
           <Icon name="queue" size={19} />
         </button>
         <VolumeControl />

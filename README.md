@@ -27,7 +27,7 @@ For example: `npm start -- --port 5253`.
 
 `npm run desktop` opens Slopify as a desktop app (Electron), in its own window with its own title bar, like Discord or T3 Code, not in a browser. Run from a checkout, it uses port 5197, separate from an installed copy. Clicking Launch again while it's open brings the window forward. Closing the window keeps Slopify playing in the system tray (right-click the tray icon to quit), and it can show what you're playing on Discord; both are in **Settings → General**.
 
-**Your library follows you between checkouts.** Every clone and worktree shares one library and desktop profile, in `%APPDATA%\Slopify Dev\library` (on macOS, `~/Library/Application Support/Slopify Dev/library`; on Linux, `~/.config/Slopify Dev/library`), so songs saved while running one worktree are there in the next. The first run starts it from that checkout's own `data/` folder, if it has songs. To try changes without touching it, use isolated mode: `npm run desktop:isolated`, `npm run dev:isolated` or `node server/main.mjs --isolated` use the checkout's own `data/` folder, which starts empty, and (for the desktop app) a profile of its own in `data/desktop-profile`. Run one checkout at a time against the shared library: two running at once can overwrite each other's changes.
+**Your library follows you between checkouts.** Every clone and worktree shares one library and desktop profile, in `%APPDATA%\Slopify Dev\library` (on macOS, `~/Library/Application Support/Slopify Dev/library`; on Linux, `~/.config/Slopify Dev/library`), so songs saved while running one worktree are there in the next. The first run starts it from that checkout's own `data/` folder, if it has songs. To try changes without touching it, use isolated mode: `npm run desktop:isolated`, `npm run dev:isolated` or `node server/main.mjs --isolated` use the checkout's own `data/` folder, which starts empty, and (for the desktop app) a profile of its own in `data/desktop-profile`. Only one copy can use a library at a time: a second one started on the same library (another checkout, `npm start` beside the desktop app) says so and stops, rather than overwriting the first one's changes.
 
 In T3, **Launch Slopify** runs `npm.cmd run desktop`, and **Launch Slopify (worktree data)** runs `npm.cmd run desktop:isolated`. **Build Windows EXEs** and **Build nightly EXEs** make the files to send to people (see below).
 
@@ -59,5 +59,7 @@ Use the search bar or **Find music** to search Spotify, SoundCloud, and YouTube,
 - **Existing libraries:** the first run migrates `library.json` into link records and keeps a backup. Old media is retained until a device verifies its copy; records without a source link retain their old file to avoid losing existing songs.
 - **Spotify:** Spotify songs are matched to a YouTube audio source. Spotify search goes through the same third-party search API (`debridvault.elfhosted.com`) that Resonance used.
 - **Static builds:** use `npm start` for the backend and production app together. A static `dist/` deployment alone cannot save links or sync; files already kept on the device still play.
+
+See the [privacy policy](docs/PRIVACY.md) and [terms of use](docs/TERMS.md).
 
 Created in [T3 Code](https://t3.codes).

@@ -53,6 +53,8 @@ interface ClerkBridge {
   openSignIn(): void;
   openUserProfile(): void;
   signOut(): Promise<void>;
+  /** Deletes the Clerk user (the sign-in itself), which also signs out. */
+  deleteUser(): Promise<void>;
 }
 let clerk: ClerkBridge | null = null;
 
@@ -60,6 +62,10 @@ export const signIn = () => clerk?.openSignIn();
 export const manageAccount = () => clerk?.openUserProfile();
 export async function signOut() {
   await clerk?.signOut();
+}
+/** Deletes the sign-in (after the service's data is gone: see deleteAccount in sync.ts). */
+export async function deleteSignIn() {
+  await clerk?.deleteUser();
 }
 
 /** A fresh session token for the online service (Clerk refreshes them as needed), or null when signed out. */

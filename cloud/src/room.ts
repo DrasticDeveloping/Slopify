@@ -40,6 +40,11 @@ const MAX_MESSAGE_BYTES = 8 * 1024;
 const HOST_GRACE_MS = 60_000;
 /** An empty room is removed after this. */
 const EMPTY_TTL_MS = 5 * 60_000;
+/**
+ * The longest a room lasts, even with its host there. The service's record of
+ * who was in which room (to remove a deleted account) is kept longer than this.
+ */
+const MAX_ROOM_MS = 24 * 60 * 60_000;
 
 const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
 const https = (v: unknown) => {
@@ -68,12 +73,33 @@ function checkSong(value: unknown): PlaybackSong | null {
   };
 }
 
-export class ListenRoom extends DurableObject {
+/*
+ * Called ListenRoom before rooms had a longest lifetime and a record of who was in
+ * them. Rooms of that class were removed when this one replaced it (wrangler.jsonc
+ * migration v2), so every room left follows the rules here.
+ */
+export class ListenAlongRoom extends DurableObject {
   /** Called by the Worker once, when the room is made. */
   async create(room: Room) {
     await this.ctx.storage.put("room", room);
     await this.ctx.storage.put("playback", { song: null, position: 0, playing: false, rate: 1, at: Date.now() } satisfies Playback);
     await this.ctx.storage.setAlarm(Date.now() + EMPTY_TTL_MS);
+  }
+
+  /** Sets the room's alarm for `at`, or for when the room has lasted its longest if that's sooner. */
+  private async wake(room: Room, at: number) {
+    await this.ctx.storage.setAlarm(Math.min(at, room.createdAt + MAX_ROOM_MS));
+  }
+
+  /** Removes an account that was deleted: the room ends if it's the host's, otherwise just they leave. */
+  async removeUser(userId: string) {
+    const room = await this.ctx.storage.get<Room>("room");
+    if (!room) return;
+    if (room.hostId === userId) return this.end("The host's account was deleted.");
+    for (const ws of this.ctx.getWebSockets(userId)) {
+      ws.close(4002, "Account deleted.");
+      await this.left(ws);
+    }
   }
 
   /** The room's summary, or null when there's no such room. */
@@ -106,13 +132,13 @@ export class ListenRoom extends DurableObject {
     this.broadcast({ type: "members", members: this.members() });
     // The host being here cancels any pending end. A guest joining doesn't: a room
     // whose host has gone still ends when the host's minute is up.
-    if (member.host) await this.ctx.storage.deleteAlarm();
+    if (member.host) await this.wake(room, Infinity);
     else if (!this.members().some((m) => m.host)) {
       const deadline = Date.now() + HOST_GRACE_MS;
       const pending = await this.ctx.storage.getAlarm();
       // Shorten the initial empty-room timer, while preserving an earlier host
       // deadline so more guests cannot keep extending an abandoned room.
-      if (pending === null || pending > deadline) await this.ctx.storage.setAlarm(deadline);
+      if (pending === null || pending > deadline) await this.wake(room, deadline);
     }
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -148,19 +174,22 @@ export class ListenRoom extends DurableObject {
   }
 
   private async left(ws: WebSocket) {
+    const room = await this.ctx.storage.get<Room>("room");
+    if (!room) return;
     const member = ws.deserializeAttachment() as Member | null;
     const remaining = this.ctx.getWebSockets().filter((other) => other !== ws);
     this.broadcast({ type: "members", members: this.members(ws) }, ws);
     // The host left: give them a minute to come back. Nobody left: tidy up later.
-    if (member?.host && !remaining.some((other) => (other.deserializeAttachment() as Member).host)) await this.ctx.storage.setAlarm(Date.now() + HOST_GRACE_MS);
-    else if (!remaining.length) await this.ctx.storage.setAlarm(Date.now() + EMPTY_TTL_MS);
+    if (member?.host && !remaining.some((other) => (other.deserializeAttachment() as Member).host)) await this.wake(room, Date.now() + HOST_GRACE_MS);
+    else if (!remaining.length) await this.wake(room, Date.now() + EMPTY_TTL_MS);
   }
 
   async alarm() {
     const room = await this.ctx.storage.get<Room>("room");
     if (!room) return;
+    if (Date.now() >= room.createdAt + MAX_ROOM_MS) return this.end("Rooms last up to a day. Start a new one to keep listening.");
     const sockets = this.ctx.getWebSockets();
-    if (sockets.some((ws) => (ws.deserializeAttachment() as Member).host)) return;
+    if (sockets.some((ws) => (ws.deserializeAttachment() as Member).host)) return this.wake(room, Infinity);
     await this.end(sockets.length ? "The host left." : "The room was empty.");
   }
 

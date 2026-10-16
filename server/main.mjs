@@ -25,6 +25,7 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createImportApi } from "./api.mjs";
+import { LibraryInUseError, lockLibrary } from "./library-lock.mjs";
 import dataDirs from "./data-dir.cjs";
 
 const appDir = fileURLToPath(new URL("../", import.meta.url));
@@ -150,7 +151,14 @@ async function serveApp(req, res) {
   await pipeline(createReadStream(file), res).catch(() => undefined);
 }
 
-const api = createImportApi({ dataDir });
+let owned;
+try {
+  owned = lockLibrary(dataDir, { port });
+} catch (error) {
+  if (error instanceof LibraryInUseError) fail(error.message);
+  throw error;
+}
+const api = createImportApi({ dataDir, owned });
 const server = http.createServer((req, res) => {
   api(req, res, () => serveApp(req, res)).catch((error) => {
     // The browser left (a reload, or a request it no longer needs): nothing went wrong.

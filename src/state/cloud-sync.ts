@@ -32,6 +32,12 @@ function readAgreed(userId: string): Agreed {
   } catch { /* Start afresh. */ }
   return { cursor: 0, songs: {} };
 }
+/** Forgets what was agreed with an account (it was deleted). */
+export function forgetCloudSongs(userId: string) {
+  try {
+    localStorage.removeItem(key(userId));
+  } catch { /* Nothing kept. */ }
+}
 function writeAgreed(userId: string, agreed: Agreed) {
   try {
     localStorage.setItem(key(userId), JSON.stringify(agreed));

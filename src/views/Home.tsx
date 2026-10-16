@@ -4,10 +4,12 @@ import { ensureMixes, mixSeed, useMixes } from "../recommend/mixes";
 import { paletteFromSeed } from "../data/library";
 import { Art, PlaylistArt, TrackArt } from "../components/Artwork";
 import { Bars, Icon } from "../components/Icon";
+import { ChooseFiles } from "../components/ChooseFiles";
 import { DiscoveryShelf } from "../components/DiscoveryShelf";
 import { ReleaseShelves } from "../components/ReleaseShelves";
 import { Card, PlayFab, Shelf, useContextPlaying } from "../components/Shelf";
 import { greeting, plural } from "../lib/format";
+import { useMediaQuery } from "../lib/hooks";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
 import { hasTaste } from "../recommend/rank";
 import { findMusic, hideRecommendation, isPlayable, libraryIds, navigate, playList, recommendations, togglePlay } from "../state/actions";
@@ -38,6 +40,7 @@ export function HomeView() {
   const isPlaying = useStore((s) => s.isPlaying);
   const status = useStore((s) => s.server.status);
   const name = useStore((s) => s.settings.profileName);
+  const touch = useMediaQuery("(hover: none) and (pointer: coarse)");
   // Only changes that can move suggestions (not every listening progress save) re-rank the shelves.
   const tasteRev = useStore((s) => s.taste.rev);
   // Library and taste changes can make a new mix; the timer catches midnight and Monday.
@@ -106,15 +109,23 @@ export function HomeView() {
       </div>
 
       {!recent.length ? (
-        <section className="panel home-empty">
+        <section className="panel home-empty" aria-labelledby="home-empty-title">
           <div>
-            <strong>Your library is empty</strong>
-            <p className="muted">Import songs or a whole playlist from Spotify, YouTube or SoundCloud, or drop audio files anywhere. Recommendations follow what you bring in.</p>
+            <strong id="home-empty-title">Start with some music</strong>
+            <ul className="home-steps">
+              <li><strong>Search</strong> YouTube, Spotify and SoundCloud, or <strong>paste a link</strong> to a song or a whole playlist.</li>
+              <li><strong>Play</strong> streams a song right away; <strong>Save</strong> keeps it in your library, on every device you sign in on.</li>
+              <li>Files from this device play until you reload{touch ? "" : " (or drop them anywhere on the window)"}.</li>
+              <li>Likes, saves and what you listen to shape your recommendations here.</li>
+            </ul>
           </div>
-          <button type="button" className="btn primary" onClick={() => findMusic()}>
-            <Icon name="search" size={18} />
-            Find music
-          </button>
+          <div className="home-empty-actions">
+            <button type="button" className="btn primary" onClick={() => findMusic()}>
+              <Icon name="search" size={18} />
+              Find music
+            </button>
+            <ChooseFiles />
+          </div>
         </section>
       ) : null}
 

@@ -22,6 +22,10 @@ function DevAccount() {
         signedIn = false;
         await clerkChanged(null);
       },
+      deleteUser: async () => {
+        signedIn = false;
+        await clerkChanged(null);
+      },
     });
     void clerkChanged({ id: claims.sub, name, email: `${claims.sub}@test.local`, imageUrl: null });
   }, []);

@@ -85,7 +85,11 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
   const clips = useStore((s) => s.clips);
   const currentId = useStore((s) => s.currentId);
   const isPlaying = useStore((s) => s.isPlaying);
-  const options = useMemo(() => libraryIds(getState()).filter((id) => isPlayable(tracks[id]) && tracks[id].duration > MIN_LEN * 2), [tracks]);
+  // Library songs to switch between, and the one opened here even when it isn't in the library (a song streamed from search).
+  const options = useMemo(() => {
+    const ids = libraryIds(getState()).filter((id) => isPlayable(tracks[id]) && tracks[id].duration > MIN_LEN * 2);
+    return trackId && tracks[trackId] && !ids.includes(trackId) ? [trackId, ...ids] : ids;
+  }, [tracks, trackId]);
   const [id, setId] = useState(() => (trackId && tracks[trackId] ? trackId : currentId && options.includes(currentId) ? currentId : options[0]));
   const track = id ? tracks[id] : undefined;
   const duration = track?.duration ?? 0;
@@ -229,14 +233,14 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
           <span className="t-name">{track.title}</span>
           <span className="t-sub">{creditLine(track, artists)} · {formatTime(duration)}</span>
         </div>
-        <label className="select">
+        {options.length > 1 ? <label className="select">
           <span className="sr-only">Song</span>
           <select value={id} onChange={(e) => pick(e.target.value)} aria-label="Choose a song to clip">
             {options.map((o) => (
               <option key={o} value={o}>{tracks[o].title} — {creditLine(tracks[o], artists)}{clips[o] ? " ✂" : ""}</option>
             ))}
           </select>
-        </label>
+        </label> : null}
       </div>
 
       <div className="clip-stage">

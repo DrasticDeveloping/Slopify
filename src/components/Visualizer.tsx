@@ -4,7 +4,7 @@ import { engine } from "../audio/engine";
 /**
  * Frequency bars drawn from the shared analyser. Also publishes a smoothed
  * bass "energy" value as a CSS variable on `pulseTarget` so artwork can breathe
- * with the music.
+ * with the music. With reduced motion it draws its bars once, at rest.
  */
 export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: RefObject<HTMLElement | null>; bars?: number; reduced?: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -23,14 +23,11 @@ export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: 
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       el.width = el.clientWidth * dpr;
       el.height = el.clientHeight * dpr;
+      if (reduced) draw();
     };
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(el);
-
     const draw = () => {
-      raf = requestAnimationFrame(draw);
-      const analyser = engine.analyser;
+      if (!reduced) raf = requestAnimationFrame(draw);
+      const analyser = reduced ? null : engine.analyser;
       const w = el.width;
       const h = el.height;
       ctx.clearRect(0, 0, w, h);
@@ -66,7 +63,10 @@ export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: 
       energy += (bass - energy) * 0.18;
       if (pulseTarget?.current && !reduced) pulseTarget.current.style.setProperty("--energy", energy.toFixed(3));
     };
-    raf = requestAnimationFrame(draw);
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(el);
+    if (!reduced) raf = requestAnimationFrame(draw);
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();

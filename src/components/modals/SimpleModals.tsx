@@ -1,11 +1,12 @@
 import { creditLine } from "../../lib/credits";
 import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import { plural } from "../../lib/format";
-import { addToPlaylist, closeModal, createPlaylist, editPlaylist, libraryIds, navigate, removeFromPlaylist, toast } from "../../state/actions";
+import { addToPlaylist, closeModal, createPlaylist, editPlaylist, findMusic, libraryIds, navigate, removeFromPlaylist, toast } from "../../state/actions";
 import { signIn, useAccount } from "../../state/cloud";
 import { joinRoom, leaveRoom, startRoom } from "../../state/listen";
 import { getState, useStore } from "../../state/store";
 import { Art, TrackArt } from "../Artwork";
+import { ChooseFiles } from "../ChooseFiles";
 import { Icon } from "../Icon";
 import { Shell } from "./Shell";
 
@@ -94,7 +95,16 @@ export function AddSongsModal({ playlistId }: { playlistId: string }) {
             </div>
           );
         })}
-        {!shown.length ? <p className="muted small pad">No songs match “{q}”.</p> : null}
+        {!shown.length && q.trim() ? <p className="muted small pad">No songs match “{q}”.</p> : null}
+        {!all.length ? (
+          <div className="pad">
+            <p className="muted small">Your library is empty. Find songs online and save them, or choose files from this device, then add them here.</p>
+            <div className="empty-actions start">
+              <button type="button" className="btn primary" onClick={() => { closeModal(); findMusic(); }}><Icon name="search" size={18} />Find music</button>
+              <ChooseFiles />
+            </div>
+          </div>
+        ) : null}
       </div>
     </Shell>
   );
