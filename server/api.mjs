@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { pipeline } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 import { createRecommendations } from "./recommendations.mjs";
 import { createArtists } from "./artists.mjs";
 import { createCatalog } from "./catalog.mjs";
@@ -16,10 +17,13 @@ import { createStateStore, readLargeJSON } from "./library-state.mjs";
 import { runFolder, sweepOldTemp, sweepRunFolders } from "./run-folders.mjs";
 import { SongFiles } from "./song-files.mjs";
 import { SongStore } from "./songs.mjs";
+import { lockLibrary } from "./library-lock.mjs";
 
 const require = createRequire(import.meta.url);
+const { checkoutDataDir } = require("./data-dir.cjs");
 const { LocalImportError, youtubeVideoID } = require("./providers/local-import-core.cjs");
 const { importConfirmedSource, resolveLocalImportSource } = require("./providers/local-import-platform.cjs");
+const { mp4Duration } = require("./providers/mp4-join.cjs");
 const { looksLikeLink, searchAllPlatforms, searchMorePlatforms } = require("./providers/local-search.cjs");
 const { downloadResolvedAudio, resolveYouTubeAudio } = require("./providers/local-youtube.cjs");
 const { downloadResolvedSoundCloudAudio, isSoundCloudURL, resolveSoundCloudAudio } = require("./providers/local-soundcloud.cjs");
@@ -43,6 +47,19 @@ function sendJSON(res, status, value) {
   const body = JSON.stringify(value);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(body);
+}
+
+/** Whether a browser sent this request from another website (by its Fetch Metadata, else its Origin). */
+function crossSite(req) {
+  const site = req.headers["sec-fetch-site"];
+  if (site) return site !== "same-origin" && site !== "none";
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  try {
+    return new URL(origin).host !== req.headers.host;
+  } catch {
+    return true;
+  }
 }
 
 async function readJSON(req) {
@@ -132,10 +149,10 @@ function ffmpegPath() {
   }
 }
 
-/** Reads a media file's duration from ffmpeg's banner (ffmpeg-static ships no ffprobe). */
+/** Reads a media file's duration from ffmpeg's banner (ffmpeg-static ships no ffprobe), or without ffmpeg (the iPhone app) from an MP4's header. */
 function probeDuration(filePath) {
   const ffmpeg = ffmpegPath();
-  if (!ffmpeg) return Promise.resolve(null);
+  if (!ffmpeg) return /\.(m4a|mp4)$/i.test(filePath) ? mp4Duration(filePath).catch(() => null) : Promise.resolve(null);
   return new Promise((resolve) => {
     const child = spawn(ffmpeg, ["-hide_banner", "-i", filePath], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
     let stderr = "";
@@ -314,8 +331,13 @@ async function prepareSongFile(song, dir, signal) {
   return { filePath: result.filePath, size: result.size, sha256: result.contentSha256 };
 }
 
-export function createImportApi({ dataDir }) {
-  const songs = new SongStore(dataDir);
+/** `owned`: whether this server still has the library (see library-lock.mjs); changes are refused once it hasn't. */
+export function createImportApi({ dataDir, owned = () => true }) {
+  // Checked again just before each save: a request that started before a takeover mustn't finish it.
+  const stillOwned = () => {
+    if (!owned()) throw Object.assign(new Error("Another Slopify took over this library. Restart this one to use it again."), { status: 409 });
+  };
+  const songs = new SongStore(dataDir, stillOwned);
   const songFiles = new SongFiles(prepareSongFile, dataDir);
   const previews = new Previews(dataDir);
   // Leftovers from servers that didn't stop cleanly go now, not on first use.
@@ -324,7 +346,7 @@ export function createImportApi({ dataDir }) {
   const recommendations = createRecommendations();
   const artists = createArtists();
   const catalog = createCatalog();
-  const libraryState = createStateStore(dataDir);
+  const libraryState = createStateStore(dataDir, stillOwned);
 
   /*
    * Release dates for saved songs, looked up in the background and kept in each
@@ -524,6 +546,14 @@ export function createImportApi({ dataDir }) {
     if (!url.pathname.startsWith("/api/")) return next();
     const parts = url.pathname.split("/").filter(Boolean).slice(1);
     const method = req.method || "GET";
+    // Only Slopify's own pages may change the library: any website could otherwise post
+    // here from the browser (a plain form or text/plain fetch needs no CORS permission).
+    if (!["GET", "HEAD", "OPTIONS"].includes(method) && crossSite(req)) {
+      return sendJSON(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "Requests from other websites aren't allowed." } });
+    }
+    if (!["GET", "HEAD", "OPTIONS"].includes(method) && !owned()) {
+      return sendJSON(res, 409, { ok: false, error: { code: "LIBRARY_IN_USE", message: "Another Slopify took over this library. Restart this one to use it again." } });
+    }
     try {
       if (parts[0] === "health" && method === "GET") {
         return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()) });
@@ -660,8 +690,19 @@ export function createImportApi({ dataDir }) {
           }
           const link = { userId, name: typeof body.name === "string" ? body.name.slice(0, 100) : null, email: typeof body.email === "string" ? body.email.slice(0, 200) : null, linkedAt: Date.now() };
           await fs.mkdir(dataDir, { recursive: true });
+          stillOwned();
           await fs.writeFile(file, JSON.stringify(link, null, 2));
           return sendJSON(res, 200, { ok: true, link });
+        }
+        // The account was deleted: this library belongs to no account (only that account can let it go).
+        if (method === "DELETE") {
+          const userId = url.searchParams.get("userId");
+          const current = await fs.readFile(file, "utf8").then(JSON.parse).catch(() => null);
+          if (current?.userId && current.userId === userId) {
+            stillOwned();
+            await fs.rm(file, { force: true });
+          }
+          return sendJSON(res, 200, { ok: true, link: null });
         }
       }
       if (parts[0] === "state" && parts.length === 1 && method === "GET") {
@@ -721,10 +762,15 @@ export function createImportApi({ dataDir }) {
 
 /** Vite plugin that mounts the import API on the dev and preview servers. */
 export function slopifyApi(options = {}) {
-  const dataDir = path.resolve(options.dataDir || process.env.SLOPIFY_DATA_DIR || "data");
   let handler = null;
   const mount = (server) => {
-    handler ??= createImportApi({ dataDir });
+    // Chosen when a server starts, not when the config loads, so `vite build` never touches the library.
+    const chosen = options.dataDir || process.env.SLOPIFY_DATA_DIR;
+    if (!handler) {
+      const dataDir = chosen ? path.resolve(chosen) : checkoutDataDir(fileURLToPath(new URL("../", import.meta.url)));
+      const owned = lockLibrary(dataDir, { port: server.config.server?.port });
+      handler = createImportApi({ dataDir, owned });
+    }
     server.middlewares.use((req, res, next) => {
       handler(req, res, next).catch(next);
     });

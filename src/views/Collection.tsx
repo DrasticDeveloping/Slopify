@@ -1,5 +1,7 @@
+import { creditLine } from "../lib/credits";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Art, PlaylistArt } from "../components/Artwork";
+import { ChooseFiles } from "../components/ChooseFiles";
 import { Hero } from "../components/Hero";
 import { Icon } from "../components/Icon";
 import { PlayFab } from "../components/Shelf";
@@ -7,7 +9,7 @@ import { TrackList } from "../components/TrackList";
 import { PlaylistSuggestions } from "../components/PlaylistSuggestions";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
-import { navigate, openModal, startCollectionRadio, toggleShuffle } from "../state/actions";
+import { findMusic, libraryIds, navigate, openModal, startCollectionRadio, toggleShuffle } from "../state/actions";
 import { downloadTracks } from "../state/server";
 import { useStore, type Route } from "../state/store";
 
@@ -59,7 +61,7 @@ function useFiltered(ids: string[], q: string) {
     if (!needle) return ids;
     return ids.filter((id) => {
       const t = tracks[id];
-      return t && `${t.title} ${artists[t.artistId]?.name} ${albums[t.albumId]?.title}`.toLowerCase().includes(needle);
+      return t && `${t.title} ${creditLine(t, artists)} ${albums[t.albumId]?.title}`.toLowerCase().includes(needle);
     });
   }, [ids, q, tracks, artists, albums]);
 }
@@ -67,6 +69,7 @@ function useFiltered(ids: string[], q: string) {
 export function PlaylistView({ id }: { id: string }) {
   const playlist = useStore((s) => s.playlists.find((p) => p.id === id));
   const tracks = useStore((s) => s.tracks);
+  const libraryCount = useStore((s) => libraryIds(s).length);
   const [q, setQ] = useState("");
   const ids = useMemo(() => playlist?.trackIds.filter((t) => tracks[t]) ?? [], [playlist, tracks]);
   const shown = useFiltered(ids, q);
@@ -117,8 +120,14 @@ export function PlaylistView({ id }: { id: string }) {
             <Empty
               icon={playlist.system ? "heart" : "playlists"}
               title={playlist.system ? "Songs you like will appear here" : "Let's find something for your playlist"}
-              body={playlist.system ? "Tap the heart on any song to save it here." : "Add songs from your library, or drag them onto this playlist in the sidebar."}
-              action={editable ? <button type="button" className="btn primary" onClick={() => openModal({ type: "addSongs", playlistId: id })}><Icon name="plus" size={18} />Add songs</button> : <button type="button" className="btn" onClick={() => navigate({ name: "library" })}>Browse library</button>}
+              body={playlist.system ? "Tap the heart on any song to save it here." : libraryCount ? "Add songs from your library, or find new music to save." : "Your library is empty: find some music or choose files first, then add them here."}
+              action={editable ? (
+                <>
+                  {libraryCount ? <button type="button" className="btn primary" onClick={() => openModal({ type: "addSongs", playlistId: id })}><Icon name="plus" size={18} />Add songs</button> : null}
+                  <button type="button" className={`btn${libraryCount ? "" : " primary"}`} onClick={() => findMusic()}><Icon name="search" size={18} />Find music</button>
+                  {libraryCount ? null : <ChooseFiles />}
+                </>
+              ) : <button type="button" className="btn" onClick={() => navigate({ name: "library" })}>Browse library</button>}
             />
           )
         }
@@ -175,7 +184,7 @@ export function Empty({ icon, title, body, action }: { icon: string; title: stri
       <span className="empty-icon"><Icon name={icon} size={28} /></span>
       <strong>{title}</strong>
       {body ? <p>{body}</p> : null}
-      {action}
+      {action ? <div className="empty-actions">{action}</div> : null}
     </div>
   );
 }

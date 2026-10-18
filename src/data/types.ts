@@ -43,7 +43,10 @@ export interface Album {
 export interface Track {
   id: string;
   title: string;
+  /** The main artist; others credited on the song are in `featuring`. */
   artistId: string;
+  /** Further credited artists ("Lady Gaga, Bruno Mars": Bruno Mars), in credit order. */
+  featuring?: string[];
   albumId: string;
   duration: number;
   addedAt: number;
@@ -64,6 +67,8 @@ export interface Track {
   playableUrl?: string;
   /** A recommended song streamed in full from its source: playable like any song, but not in the library and never saved. */
   stream?: boolean;
+  /** Removed from this device on purpose: it streams from the server and isn't downloaded again by itself. */
+  onlyStream?: boolean;
 }
 
 export interface Playlist {

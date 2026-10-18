@@ -69,6 +69,8 @@ export interface Settings {
   crossfade: boolean;
   crossfadeSeconds: number;
   reduceMotion: boolean;
+  /** Single-key shortcuts (M, L, S, R, Q, F, / and ?). Off for speech input and screen reader keys. */
+  letterShortcuts: boolean;
   compact: boolean;
   autoplay: boolean;
   /** Also recommend songs already in the library (a shelf of their own on Home). */
@@ -142,7 +144,10 @@ export interface AppState {
   };
   /** Listen Along (src/state/listen.ts): the room this device is in, and who else is. */
   listen: { mode: "idle" | "connecting" | "host" | "guest"; code: string; members: RoomMember[]; host?: string };
+  /** Seconds listened each day on this device. */
   listenLog: Record<string, number>;
+  /** The same, on your other devices (sync.ts). */
+  listenElsewhere: Record<string, number>;
   /** Timestamped play starts, newest first, for the chronological history view. */
   listens: Array<{ id: string; at: number }>;
   /** Likes, saves, listening and feedback the recommender learns from. */
@@ -158,11 +163,12 @@ export const defaultSettings: Settings = {
   crossfade: false,
   crossfadeSeconds: 6,
   reduceMotion: false,
+  letterShortcuts: true,
   compact: false,
   autoplay: true,
   recommendLibrary: false,
   normalize: true,
-  profileName: "Daz",
+  profileName: "",
   downloadMode: "verified_file_cache",
   slipIns: "sometimes",
   tone: { bass: 0, mid: 0, treble: 0, balance: 0 },
@@ -177,7 +183,7 @@ interface CatalogPatch {
   albums: Record<string, Album>;
 }
 
-type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listens" | "taste">> & { catalog?: CatalogPatch; librarySync?: unknown };
+type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listenElsewhere" | "listens" | "taste">> & { catalog?: CatalogPatch; librarySync?: unknown };
 /*
  * The library sync base (see sync.ts) is saved in the same record as the app
  * data it describes. Tabs share this storage, so whichever tab saves last
@@ -201,7 +207,7 @@ function catalogPatch(s: AppState): CatalogPatch {
   for (const id of trackIds) {
     const t = s.tracks[id];
     tracks[id] = t;
-    if (s.artists[t.artistId]) artists[t.artistId] = s.artists[t.artistId];
+    for (const a of [t.artistId, ...(t.featuring ?? [])]) if (s.artists[a]) artists[a] = s.artists[a];
     if (s.albums[t.albumId]) albums[t.albumId] = s.albums[t.albumId];
   }
   return { trackIds, tracks, artists, albums };
@@ -238,6 +244,8 @@ function initialState(): AppState {
     for (const t of Object.values(tracks)) {
       // Repair saves from older builds that lost an import's artist or album.
       artists[t.artistId] = patch.artists[t.artistId] ?? { id: t.artistId, name: "Unknown artist", genre: "indie", palette: paletteFromSeed(hashString(t.artistId)), listeners: 0 };
+      // Saves from before other credited artists were kept drop them; the next server sync puts them back.
+      for (const a of t.featuring ?? []) if (patch.artists[a]) artists[a] = patch.artists[a];
       albums[t.albumId] = patch.albums[t.albumId] ?? { id: t.albumId, title: t.title, artistId: t.artistId, palette: paletteFromSeed(hashString(t.albumId)), glyph: 0 };
     }
   }
@@ -284,6 +292,7 @@ function initialState(): AppState {
     server: { status: "connecting", downloads: {} },
     listen: { mode: "idle", code: "", members: [] },
     listenLog: saved.listenLog ?? {},
+    listenElsewhere: saved.listenElsewhere ?? {},
     listens: (saved.listens ?? []).filter((l) => tracks[l.id]),
     taste: restoreTaste(saved.taste, new Set(trackIds)),
     buffering: null,
@@ -322,6 +331,7 @@ export function flushPersist() {
     sidebarCollapsed: s.sidebarCollapsed,
     panel: s.panel,
     listenLog: s.listenLog,
+    listenElsewhere: s.listenElsewhere,
     // Session-only files and streamed recommendations are gone after a reload, so their plays are not kept.
     listens: s.listens.filter((l) => !s.tracks[l.id]?.fileUrl && !s.tracks[l.id]?.stream),
     // Session-only files are gone after a reload, so their feedback is too.

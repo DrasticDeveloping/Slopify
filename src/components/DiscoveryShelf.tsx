@@ -36,6 +36,8 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
   const playable = songs.filter((song) => (song.owned || canStream(song.candidate)) && tracks[idOf(song)]);
   const ids = playable.map(idOf);
   const context = { label: title, route, picks: Object.fromEntries(playable.filter((song) => !song.owned).map((song) => [streamTrackId(song.key), song.kind])) as Record<string, ReasonKind> };
+  // Most cards usually share one reason ("Listeners of … also play"): it's said once, under the title.
+  const shared = sharedReason(songs);
   const play = (song: DiscoveredSong) => {
     const id = idOf(song);
     if (getState().currentId === id) togglePlay();
@@ -48,7 +50,7 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
     <section className="discovery" aria-label={title}>
       <Shelf
         title={title}
-        subtitle={subtitle}
+        subtitle={shared ? shared.replace(/ also play this\b/u, " also play these") : subtitle}
         action={
           <>
             <button type="button" className="text-btn" disabled={!ids.length} onClick={() => playList(ids, ids[0], context)}>Play all</button>
@@ -57,7 +59,7 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
         }
       >
         {songs.map((song) => (
-          <DiscoveryCard key={song.key} song={song} onPlay={() => play(song)} menuContext={{ label: title, route, ids }} />
+          <DiscoveryCard key={song.key} song={song} onPlay={() => play(song)} menuContext={{ label: title, route, ids }} showReason={song.reason !== shared} />
         ))}
         {!songs.length ? <p className="muted shelf-empty" role="status">{loading ? "Finding songs for you…" : note || "No new songs found right now. Try Find more."}</p> : null}
       </Shelf>
@@ -66,7 +68,15 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
   );
 }
 
-function DiscoveryCard({ song, onPlay, menuContext }: { song: DiscoveredSong; onPlay: () => void; menuContext: { label: string; route: Route; ids: string[] } }) {
+/** The reason at least half the songs give, if there is one. */
+function sharedReason(songs: DiscoveredSong[]) {
+  const counts = new Map<string, number>();
+  for (const song of songs) if (song.reason) counts.set(song.reason, (counts.get(song.reason) ?? 0) + 1);
+  const [reason, count] = [...counts].sort((a, b) => b[1] - a[1])[0] ?? [];
+  return reason && songs.length > 1 && count! * 2 >= songs.length ? reason : undefined;
+}
+
+function DiscoveryCard({ song, onPlay, menuContext, showReason }: { song: DiscoveredSong; onPlay: () => void; menuContext: { label: string; route: Route; ids: string[] }; showReason: boolean }) {
   const id = song.owned ?? streamTrackId(song.key);
   const track = useStore((s) => s.tracks[id]);
   const current = useStore((s) => s.currentId === id);
@@ -90,7 +100,7 @@ function DiscoveryCard({ song, onPlay, menuContext }: { song: DiscoveredSong; on
         <strong>{song.title}</strong>
         <span>{song.artist}</span>
       </button>
-      <p className="rec-reason">{song.reason}</p>
+      {showReason ? <p className="rec-reason">{song.reason}</p> : null}
       {song.owned ? (
         <span className="small muted rec-save"><Icon name="check" size={14} />In your library</span>
       ) : <button type="button" className="text-btn rec-save" disabled={importing} onClick={() => (track ? saveStream(id) : void addDiscoveredSong(song.candidate, song.kind, { play: false }))}>

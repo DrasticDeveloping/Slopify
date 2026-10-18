@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | Accounts | Clerk (sign-in) + D1 table `users` | Display name and picture, by Clerk user id |
 | Library | D1 tables `songs`, `library_state` | Saved songs as links and details (never audio), and one document of playlists, likes, history and settings |
-| Listen Along | One Durable Object per room (`ListenRoom`) | Who's in the room and what the host is playing; WebSockets, so changes arrive live |
+| Listen Along | One Durable Object per room (`ListenAlongRoom`) | Who's in the room and what the host is playing; WebSockets, so changes arrive live |
 
 The service checks each request's Clerk session token against the Clerk app's public signing keys. It needs only the Clerk **Publishable Key**, never the secret key.
 
@@ -14,11 +14,13 @@ The service checks each request's Clerk session token against the Clerk app's pu
 
 - **Signing in.** Profile menu → **Sign in**, or Settings → General → Account. The first sign-in creates the Slopify profile from the Clerk account's name and picture; the name can be changed there. Without a configured service, Slopify works as before, entirely on your computer.
 - **Library sync.** The first account to sync links this computer's library to that account. Signing in to another account keeps its library sync off; Settings offers **Use with this account**, with confirmation before copying this library to that account. Linked accounts merge through `src/state/cloud-sync.ts` (songs) and `src/state/sync.ts` (playlists and preferences), using the same three-way merge as the music server. On another computer, songs from the account are added by link under the same ids, so playlists match; their audio is fetched when played. Songs added from files stay on their original computer.
+- **When it syncs.** Soon after a change on this computer, at startup, sign-in, **Sync now** and when the window comes back into focus, and every 30 seconds while the window has focus. A window that's open but not focused, hidden or in the tray never checks the account on its own, so it costs no requests.
+- **Deleting an account.** Settings → General → Account → **Delete account** deletes the profile and synced library (`DELETE /v1/me`), removes the account from its Listen Along rooms (ending the ones it hosts), unlinks this computer's library, and deletes the Clerk sign-in. For 15 minutes the service refuses writes for that account (D1 table `deleted_users`), so a sync another device had already started can't put the data back. The computer keeps its songs and playlists.
 - **Listen Along.** Start a room and share its code. Guests play the host's song from its link on their own device (or their own copy if they have it), at the host's position, and follow pause, play and skips. Each guest's volume is their own. Songs that are only a file on the host's computer can't be shared.
 
 ## Set it up
 
-The service is deployed at `https://slopify-cloud.gavdie01.workers.dev`, using the Slopify Clerk development application. `release.config.json` includes the service URL and public Clerk key. The steps below describe setup for another account; do not create a second database for the existing deployment.
+The service is deployed at `https://slopify-cloud.gavdie01.workers.dev`, using the Slopify Clerk production instance (domain `slopify.unblocked.mov`, Frontend API `clerk.slopify.unblocked.mov`). Production keys only work from origins the instance allows, so the desktop app's `http://127.0.0.1:5197`/`5198` and the local web app's `http://localhost:5199` must be in its `allowed_origins` (set through Clerk's Backend API). `release.config.json` includes the service URL and public Clerk key. The steps below describe setup for another account; do not create a second database for the existing deployment.
 
 ### 1. Clerk
 
@@ -42,6 +44,8 @@ npm.cmd run db:migrate      # creates the tables in the remote database
 npm.cmd run deploy          # prints the service's address, e.g. https://slopify-cloud.<you>.workers.dev
 ```
 
+When updating the service later, run `npm.cmd run db:migrate` again before `npm.cmd run deploy`: a new version may need tables the old one didn't have. The first deploy with migration `v2` (`wrangler.jsonc`) ends every Listen Along room open at the time: rooms from before it are removed, and people start a new one.
+
 ### 3. The app
 
 In `release.config.json`, set `cloudUrl` to the service's address and `clerkPublishableKey` to the same Publishable Key. The next `npm run desktop`, `node server/main.mjs --open` or EXE build includes them (`SLOPIFY_CLOUD_URL` and `SLOPIFY_CLERK_PUBLISHABLE_KEY` override them for one build).
@@ -58,6 +62,17 @@ npm.cmd run dev             # http://127.0.0.1:8787
 
 ## Limits
 
-- Free Cloudflare plans include D1 and SQLite Durable Objects with daily request limits that are far above one group of friends' use.
-- Rooms hold 20 people. A room ends a minute after its host leaves, or five minutes after everyone has.
+- The Free Workers plan allows 100,000 requests a day for the whole account. A focused window uses about 2 requests every 30 seconds, and nothing while it isn't focused.
+- Each account may make 300 calls a minute, and each address 600 (wrangler.jsonc `ratelimits`); past that, calls get 429 and the app retries a minute later. A first sync sends one call per song, so a very large library takes a few minutes to upload.
+- An account can keep up to 20,000 songs.
+- Rooms hold 20 people. A room ends a minute after its host leaves, five minutes after everyone has, or a day after it started.
+- Once a day (a cron trigger in `wrangler.jsonc`), the service removes deletion records older than 15 minutes and room records older than two days.
 - The library document is limited to about 900 KB, which is many thousands of playlist entries.
+
+## Backups
+
+D1 keeps its own recovery points (Time Travel: 7 days on the Free plan, 30 on Paid), which can restore the database to any minute in that window: `npx.cmd wrangler d1 time-travel restore slopify --timestamp=<time>`. For a copy kept longer, run `npm.cmd run db:backup` in `cloud/`; it saves the whole database as SQL in `cloud/backups/` (ignored by git). Backups contain every account's personal data: keep them private, and delete them when they're no longer needed.
+
+## Privacy
+
+What the service keeps, and how people delete it, is in the [privacy policy](PRIVACY.md) and [terms](TERMS.md). Keep them up to date when the service starts keeping something new.

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { thisDevice } from "../lib/native";
 import { toast } from "./actions";
 import { getState, setState } from "./store";
 
@@ -53,6 +54,8 @@ interface ClerkBridge {
   openSignIn(): void;
   openUserProfile(): void;
   signOut(): Promise<void>;
+  /** Deletes the Clerk user (the sign-in itself), which also signs out. */
+  deleteUser(): Promise<void>;
 }
 let clerk: ClerkBridge | null = null;
 
@@ -60,6 +63,10 @@ export const signIn = () => clerk?.openSignIn();
 export const manageAccount = () => clerk?.openUserProfile();
 export async function signOut() {
   await clerk?.signOut();
+}
+/** Deletes the sign-in (after the service's data is gone: see deleteAccount in sync.ts). */
+export async function deleteSignIn() {
+  await clerk?.deleteUser();
 }
 
 /** A fresh session token for the online service (Clerk refreshes them as needed), or null when signed out. */
@@ -82,7 +89,7 @@ export async function clerkChanged(user: { id: string; name: string | null; emai
   if (!user) {
     const was = account.status;
     set({ status: "signedOut", userId: null, email: null, profile: null, error: null });
-    if (was === "signedIn") toast("Signed out", { detail: "Your library stays on this computer." });
+    if (was === "signedIn") toast("Signed out", { detail: `Your library stays on ${thisDevice}.` });
     return;
   }
   if (account.userId === user.id && account.status === "signedIn") return;

@@ -16,7 +16,7 @@ const tooLarge = (message) => Object.assign(new Error(message), { status: 413 })
  * revision it was based on; if another browser wrote in between, it is refused
  * with the current document, so the writer can merge and try again.
  */
-export function createStateStore(dataDir) {
+export function createStateStore(dataDir, beforeSave = () => {}) {
   const file = path.join(dataDir, "library-state.json");
   let current = null;
   let writing = Promise.resolve();
@@ -48,6 +48,7 @@ export function createStateStore(dataDir) {
         await fs.mkdir(dataDir, { recursive: true });
         const temp = `${file}.${process.pid}.tmp`;
         await fs.writeFile(temp, text);
+        beforeSave();
         await fs.rename(temp, file);
         current = saved;
         return { conflict: false, doc: saved };

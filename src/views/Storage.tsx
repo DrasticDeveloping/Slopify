@@ -1,3 +1,4 @@
+import { creditLine } from "../lib/credits";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { TrackArt } from "../components/Artwork";
 import { Icon } from "../components/Icon";
@@ -202,7 +203,7 @@ export function StorageView() {
                 <TrackArt trackId={t.id} className="row-art" />
                 <span className="title-text">
                   <span className="t-name">{t.title}</span>
-                  <span className="t-sub">{artists[t.artistId]?.name} · {t.storage === "downloads" ? "Downloaded" : "Imported"}{t.kind === "video" ? " · Video" : ""}</span>
+                  <span className="t-sub">{creditLine(t, artists)} · {t.storage === "downloads" ? "Downloaded" : "Imported"}{t.kind === "video" ? " · Video" : ""}</span>
                 </span>
                 <span className="size-bar" aria-hidden="true"><i style={{ "--w": Math.min(1, t.size / (list[0]?.size || 1)) } as CSSProperties} /></span>
                 <span className="size">{formatBytes(t.size)}</span>

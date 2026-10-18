@@ -95,6 +95,9 @@ const transfers = new Map<string, AbortController>();
 const queue: string[] = [];
 let transferToast = 0;
 let quietBatch = false;
+/** When each song last failed to download (this session), so automatic downloads don't retry it on every sync. */
+const failedAt = new Map<string, number>();
+const RETRY_FAILED = 6 * 3600_000;
 
 function setProgress(id: string, progress: number | null) {
   setState((s) => {
@@ -165,6 +168,7 @@ async function runQueue() {
         void releaseSong(t.serverId!).catch(() => undefined);
       })
       .catch((error: unknown) => {
+        if (!controller.signal.aborted) failedAt.set(id, Date.now());
         if (!controller.signal.aborted && !quietBatch) toast(`Couldn't save “${t.title}” on this device`, { tone: "error", detail: error instanceof Error ? error.message : undefined });
       })
       .finally(() => {
@@ -192,12 +196,33 @@ export function downloadTracks(ids: string[], { quiet = false } = {}) {
   }
   const targets = ids.filter((id) => s.tracks[id]?.storage === "server" && s.tracks[id].serverId && !transfers.has(id) && !queue.includes(id));
   if (!targets.length) return;
-  if (!quiet) quietBatch = false;
+  if (!quiet) {
+    // Asked for: these are kept on the device from now on.
+    if (targets.some((id) => s.tracks[id].onlyStream)) {
+      setState((st) => ({ tracks: { ...st.tracks, ...Object.fromEntries(targets.filter((id) => st.tracks[id]).map((id) => { const { onlyStream: _onlyStream, ...t } = st.tracks[id]; return [id, t]; })) } }));
+    }
+    quietBatch = false;
+  }
   else if (!transfers.size && !queue.length) quietBatch = true;
   queue.push(...targets);
   setState((st) => ({ server: { ...st.server, downloads: { ...st.server.downloads, ...Object.fromEntries(targets.map((id) => [id, 0])) } } }));
   refreshToast();
   void runQueue();
+}
+
+/**
+ * Keeps every music-server song in the library on this device (with the
+ * offline cache on), including ones saved on your other devices, except songs
+ * you removed from it. One that couldn't be fetched waits a while before trying again.
+ */
+export function keepLibraryOnDevice() {
+  const s = getState();
+  const now = Date.now();
+  const ids = s.trackIds.filter((id) => {
+    const t = s.tracks[id];
+    return t?.storage === "server" && t.serverId && !t.onlyStream && !(now - (failedAt.get(id) ?? 0) < RETRY_FAILED);
+  });
+  if (ids.length) downloadTracks(ids, { quiet: true });
 }
 
 export function cancelDownloads({ quiet = false } = {}) {

@@ -11,7 +11,10 @@
  *   --open                   open the desktop app instead of the standalone server
  *   --port, PORT              default 5199
  *   --host, HOST              default 127.0.0.1 (this computer only); 0.0.0.0 shares it on your network
- *   --data, SLOPIFY_DATA_DIR  where the library is kept; default data/ in the app folder
+ *   --data, SLOPIFY_DATA_DIR  where the library is kept; default: the library all checkouts
+ *                            share (see data-dir.cjs), or data/ in an installed app folder
+ *   --isolated, SLOPIFY_ISOLATED_DATA=1
+ *                            use this checkout's own data/ folder (and desktop profile) instead
  */
 
 import { createReadStream } from "node:fs";
@@ -22,20 +25,24 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createImportApi } from "./api.mjs";
+import { LibraryInUseError, lockLibrary } from "./library-lock.mjs";
+import dataDirs from "./data-dir.cjs";
 
 const appDir = fileURLToPath(new URL("../", import.meta.url));
 const dist = path.join(appDir, "dist");
 
 let flags;
 try {
-  ({ values: flags } = parseArgs({ options: { open: { type: "boolean" }, port: { type: "string" }, host: { type: "string" }, data: { type: "string" } } }));
+  ({ values: flags } = parseArgs({ options: { open: { type: "boolean" }, isolated: { type: "boolean" }, port: { type: "string" }, host: { type: "string" }, data: { type: "string" } } }));
 } catch (error) {
-  fail(`${error.message.replace(/\.?$/, ".")} The options are --port, --host and --data.`);
+  fail(`${error.message.replace(/\.?$/, ".")} The options are --open, --isolated, --port, --host and --data.`);
 }
 const port = Number(flags.port ?? (flags.open ? process.env.SLOPIFY_DESKTOP_PORT ?? 5197 : process.env.PORT ?? 5199));
 const host = flags.host ?? process.env.HOST ?? "127.0.0.1";
+if (flags.isolated) process.env.SLOPIFY_ISOLATED_DATA = "1";
 const chosenData = flags.data ?? process.env.SLOPIFY_DATA_DIR;
-const dataDir = chosenData ? path.resolve(chosenData) : path.join(appDir, "data");
+const fromCheckout = (await fs.stat(path.join(appDir, "src")).catch(() => null))?.isDirectory() ?? false;
+const dataDir = chosenData ? path.resolve(chosenData) : fromCheckout ? dataDirs.checkoutDataDir(appDir) : path.join(appDir, "data");
 const shownHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
 const appUrl = `http://${shownHost.includes(":") ? `[${shownHost}]` : shownHost}:${port}`;
 
@@ -144,7 +151,18 @@ async function serveApp(req, res) {
   await pipeline(createReadStream(file), res).catch(() => undefined);
 }
 
-const api = createImportApi({ dataDir });
+// The iPhone app is the only Slopify on its library, and iOS doesn't let it check
+// whether the process that left a lock is gone, so it doesn't lock it.
+let owned = () => true;
+if (process.platform !== "ios") {
+  try {
+    owned = lockLibrary(dataDir, { port });
+  } catch (error) {
+    if (error instanceof LibraryInUseError) fail(error.message);
+    throw error;
+  }
+}
+const api = createImportApi({ dataDir, owned });
 const server = http.createServer((req, res) => {
   api(req, res, () => serveApp(req, res)).catch((error) => {
     // The browser left (a reload, or a request it no longer needs): nothing went wrong.

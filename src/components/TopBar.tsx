@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { thisDevice } from "../lib/native";
 import { goBack, goForward, navigate, openMenu, openModal, playList, togglePlay } from "../state/actions";
 import { useStore } from "../state/store";
 import { installApp, usePwa } from "../state/pwa";
@@ -42,8 +43,8 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
     openMenu({
       x: r.right - 240,
       y: r.bottom + 8,
-      title: name,
-      subtitle: account.status === "signedIn" ? account.email ?? "Signed in" : cloudEnabled ? "Not signed in" : "On this computer",
+      title: name || "You",
+      subtitle: account.status === "signedIn" ? account.email ?? "Signed in" : cloudEnabled ? "Not signed in" : `On ${thisDevice}`,
       items: [
         ...(account.status === "signedOut" ? [{ label: "Sign in", icon: "user", run: signIn }, { separator: true }] : []),
         { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
@@ -119,7 +120,7 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
           <Icon name="users" size={19} />
         </button>
         <button type="button" className="avatar-btn" onClick={(e) => profileMenu(e.currentTarget)} aria-label="Open profile menu" aria-haspopup="menu">
-          {avatar ? <img src={avatar} alt="" referrerPolicy="no-referrer" /> : name.slice(0, 1).toUpperCase()}
+          {avatar ? <img src={avatar} alt="" referrerPolicy="no-referrer" /> : name ? name.slice(0, 1).toUpperCase() : <Icon name="user" size={18} />}
         </button>
       </div>
     </div>

@@ -1,3 +1,4 @@
+import { creditLine } from "../lib/credits";
 import { useMemo, useState, type CSSProperties } from "react";
 import { Art, TrackArt } from "../components/Artwork";
 import { recentDays } from "../data/library";
@@ -101,7 +102,7 @@ function RecentListens() {
                   <TrackArt trackId={t.id} className="row-art" />
                   <span className="title-text">
                     <span className={`t-name${currentId === t.id ? " accent" : ""}`}>{t.title}</span>
-                    <span className="t-sub">{artists[t.artistId]?.name}</span>
+                    <span className="t-sub">{creditLine(t, artists)}</span>
                   </span>
                 </li>
               );
@@ -133,7 +134,8 @@ export function HistoryView() {
 }
 
 function StatsView() {
-  const log = useStore((s) => s.listenLog);
+  const own = useStore((s) => s.listenLog);
+  const elsewhere = useStore((s) => s.listenElsewhere);
   const tracks = useStore((s) => s.tracks);
   const artists = useStore((s) => s.artists);
   const [range, setRange] = useState<(typeof RANGES)[number]>(30);
@@ -143,9 +145,9 @@ function StatsView() {
   const today = todayKey();
   const days = useMemo(() => {
     // Only real listening: the minutes the player logged each day.
-    const merged = recentDays(90).map((date) => ({ date, minutes: Math.round((log[date] ?? 0) / 60) }));
+    const merged = recentDays(90).map((date) => ({ date, minutes: Math.round(((own[date] ?? 0) + (elsewhere[date] ?? 0)) / 60) }));
     return merged.slice(-range);
-  }, [log, range, today]);
+  }, [own, elsewhere, range, today]);
 
   const total = days.reduce((n, d) => n + d.minutes, 0);
   const active = days.filter((d) => d.minutes > 0).length;
@@ -319,7 +321,7 @@ function StatsView() {
                 <TrackArt trackId={t.id} className="row-art" />
                 <span className="title-text">
                   <span className="t-name">{t.title}</span>
-                  <span className="t-sub">{artists[t.artistId]?.name}</span>
+                  <span className="t-sub">{creditLine(t, artists)}</span>
                 </span>
                 <span className="muted small">{plural(t.plays, "play")}</span>
               </li>

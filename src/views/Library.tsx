@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { PlaylistArt } from "../components/Artwork";
+import { ChooseFiles } from "../components/ChooseFiles";
 import { Icon } from "../components/Icon";
 import { Card, PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
@@ -7,6 +8,7 @@ import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu } from "../lib/menus";
 import { findMusic, isPlayable, libraryIds, likedIds, navigate, openModal, toggleShuffle } from "../state/actions";
 import { useSlipIns } from "../state/slipins";
+import { downloadTracks } from "../state/server";
 import { syncNow } from "../state/sync";
 import { getState, setState, useStore, type Route } from "../state/store";
 import { Empty } from "./Collection";
@@ -52,6 +54,9 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
   const route: Route = filter === "all" ? { name: "library" } : { name: "library", filter };
   const total = ids.reduce((sum, id) => sum + tracks[id].duration, 0);
   const label = filter === "all" ? "Library" : filters.find(([f]) => f === filter)![1];
+  // Songs on the music server that this device doesn't have a copy of yet.
+  const missing = all.filter((id) => tracks[id].storage === "server" && tracks[id].serverId);
+  const downloadLabel = missing.length ? `Download ${plural(missing.length, "song")} to this device` : "Every song is on this device";
 
   return (
     <div className="view">
@@ -62,12 +67,12 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
           <p className="muted">{plural(all.length, "song")} on this device · {formatLongDuration(all.reduce((n, id) => n + tracks[id].duration, 0))}</p>
         </div>
         <div className="page-actions">
-          <button type="button" className="btn" onClick={() => findMusic()}>
-            <Icon name="search" size={18} />
-            Find music
+          <button type="button" className="icon-btn" disabled={!missing.length} onClick={() => downloadTracks(missing)} aria-label={downloadLabel} title={downloadLabel}>
+            <Icon name="download" size={20} />
           </button>
         </div>
       </header>
+      {all.length ? (<>
       <div className="chips" role="group" aria-label="Filter songs">
         {filters.map(([f, name]) => (
           <button key={f} type="button" className={`chip${filter === f ? " on" : ""}`} aria-pressed={filter === f} onClick={() => setFilter(f)}>
@@ -82,11 +87,12 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
         </button>
         <span className="muted small">{plural(ids.length, "song")} · {formatLongDuration(total)}</span>
       </div>
+      </>) : null}
       <TrackList
         key={filter}
         ids={ids}
         context={{ label, route }}
-        empty={<Empty icon="music" title="No songs here yet" body={filter === "all" ? "Find songs online, add files from your computer, or download songs from your music server." : "Try another filter."} action={filter === "all" ? <button type="button" className="btn primary" onClick={() => findMusic()}>Find music</button> : undefined} />}
+        empty={<Empty icon="music" title="No songs here yet" body={filter === "all" ? "Find songs online and save them, choose files from this device, or download songs from your music server." : "Try another filter."} action={filter === "all" ? <><button type="button" className="btn primary" onClick={() => findMusic()}><Icon name="search" size={18} />Find music</button><ChooseFiles /></> : undefined} />}
       />
     </div>
   );

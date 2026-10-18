@@ -112,8 +112,10 @@ function fromVersion1(t) {
 }
 
 export class SongStore {
-  constructor(dataDir) {
+  /** `beforeSave` throws when this server may no longer write the library (see library-lock.mjs). */
+  constructor(dataDir, beforeSave = () => {}) {
     this.dir = dataDir;
+    this.beforeSave = beforeSave;
     this.file = path.join(dataDir, "songs.json");
     this.legacyLibrary = path.join(dataDir, "library.json");
     this.mediaDir = path.join(dataDir, "media");
@@ -170,6 +172,7 @@ export class SongStore {
       await fs.mkdir(this.dir, { recursive: true });
       const temp = `${this.file}.${process.pid}.tmp`;
       await fs.writeFile(temp, JSON.stringify({ version: 2, songs: this.songs }, null, 2));
+      this.beforeSave();
       await fs.rename(temp, this.file);
     });
     this.writing = write;

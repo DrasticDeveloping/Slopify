@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef } from "react";
 import { engine } from "../audio/engine";
 import { formatTime } from "../lib/format";
 import { pollPosition, useCurrent, useLiveText } from "../lib/hooks";
-import { cycleRepeat, isLiked, navigate, next, openMenu, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, toggleShuffle } from "../state/actions";
+import { cycleRepeat, isLiked, navigate, next, openMenu, positionOf, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, toggleShuffle } from "../state/actions";
 import { setState, useStore } from "../state/store";
+import { ArtistLinks } from "./ArtistLinks";
 import { TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 import { Slider } from "./Slider";
@@ -60,7 +61,7 @@ export function Transport({ big }: { big?: boolean }) {
 export function SeekRow({ big }: { big?: boolean }) {
   const { track, range } = useCurrent();
   const duration = track?.duration ?? 0;
-  const elapsed = useLiveText<HTMLSpanElement>(() => formatTime(track ? engine.position : 0));
+  const elapsed = useLiveText<HTMLSpanElement>(() => formatTime(track ? positionOf(track.id) : 0));
   const fmt = useCallback((v: number) => formatTime(v), []);
   const locked = useStore((s) => s.listen.mode === "guest");
   const clipped = Boolean(track && (range.start > 0 || range.end < duration - 0.5));
@@ -102,7 +103,7 @@ export function VolumeControl() {
 }
 
 export function PlayerBar() {
-  const { id, track, artist, album } = useCurrent();
+  const { id, track, album } = useCurrent();
   const liked = useStore((s) => (id ? isLiked(id, s) : false));
   const panel = useStore((s) => s.panel);
   const speed = useStore((s) => s.speed);
@@ -121,9 +122,7 @@ export function PlayerBar() {
               <button type="button" className="link pb-title" onClick={() => album && navigate({ name: "album", id: album.id })}>
                 {track.title}
               </button>
-              <button type="button" className="link pb-artist" onClick={() => artist && navigate({ name: "artist", id: artist.id })}>
-                {artist?.name}
-              </button>
+              <span className="pb-artist"><ArtistLinks track={track} /></span>
             </div>
             <button type="button" className={`icon-btn like-btn${liked ? " on" : ""}`} onClick={() => toggleLike(track.id)} aria-pressed={liked} aria-label={liked ? "Remove from Liked Songs" : "Add to Liked Songs"} title="Like (L)">
               <Icon name={liked ? "heartFill" : "heart"} size={19} />
@@ -147,10 +146,10 @@ export function PlayerBar() {
         <button type="button" className={`speed-btn${speed !== 1 ? " on" : ""}`} onClick={(e) => openSpeedMenu(e.currentTarget)} aria-label={`Playback speed ${speed}x`} title="Playback speed">
           {speed}×
         </button>
-        <button type="button" className={`icon-btn${panel === "details" ? " on dot" : ""}`} onClick={() => setState({ panel: panel === "details" ? null : "details" })} aria-pressed={panel === "details"} aria-label="Now playing view" title="Now playing view">
+        <button type="button" className={`icon-btn${panel === "details" ? " on dot" : ""}`} data-panel-opener="details" onClick={() => setState({ panel: panel === "details" ? null : "details" })} aria-pressed={panel === "details"} aria-label="Now playing view" title="Now playing view">
           <Icon name="nowPlaying" size={19} />
         </button>
-        <button type="button" className={`icon-btn${panel === "queue" ? " on dot" : ""}`} onClick={() => setState({ panel: panel === "queue" ? null : "queue" })} aria-pressed={panel === "queue"} aria-label="Queue" title="Queue (Q)">
+        <button type="button" className={`icon-btn${panel === "queue" ? " on dot" : ""}`} data-panel-opener="queue" onClick={() => setState({ panel: panel === "queue" ? null : "queue" })} aria-pressed={panel === "queue"} aria-label="Queue" title="Queue (Q)">
           <Icon name="queue" size={19} />
         </button>
         <VolumeControl />
@@ -171,7 +170,7 @@ function MiniProgress() {
   useEffect(() => {
     let raf = 0;
     const loop = () => {
-      if (ref.current) ref.current.style.transform = `scaleX(${track ? Math.min(1, engine.position / end) : 0})`;
+      if (ref.current) ref.current.style.transform = `scaleX(${track ? Math.min(1, positionOf(track.id) / end) : 0})`;
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
