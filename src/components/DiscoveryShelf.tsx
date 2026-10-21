@@ -3,8 +3,8 @@ import { hashString, paletteFromSeed } from "../data/library";
 import { openTrackMenu } from "../lib/menus";
 import type { DiscoveredSong, DiscoveryQuery } from "../recommend/discover";
 import { useDiscovery } from "../recommend/useDiscovery";
-import { hideDiscovery, navigate, playList, saveStream, togglePlay } from "../state/actions";
-import { addDiscoveredSong, canStream, registerStreams, streamTrackId, useImport } from "../state/importer";
+import { hideDiscovery, navigate, playList, togglePlay } from "../state/actions";
+import { addDiscoveredSong, canStream, registerStreams, streamTrackId } from "../state/importer";
 import { getState, useStore, type Route } from "../state/store";
 import type { ReasonKind } from "../recommend/taste";
 import { Art, TrackArt } from "./Artwork";
@@ -82,7 +82,6 @@ function DiscoveryCard({ song, onPlay, menuContext, showReason }: { song: Discov
   const current = useStore((s) => s.currentId === id);
   const playing = useStore((s) => s.isPlaying) && current;
   const buffering = useStore((s) => s.buffering === id);
-  const importing = useImport((s) => s.busy === "import");
   return (
     <div className={`card rec-card${current ? " current" : ""}`} onContextMenu={track ? (e) => openTrackMenu(e, [id], { context: menuContext }) : undefined}>
       <div className="card-art">
@@ -101,12 +100,7 @@ function DiscoveryCard({ song, onPlay, menuContext, showReason }: { song: Discov
         <span>{song.artist}</span>
       </button>
       {showReason ? <p className="rec-reason">{song.reason}</p> : null}
-      {song.owned ? (
-        <span className="small muted rec-save"><Icon name="check" size={14} />In your library</span>
-      ) : <button type="button" className="text-btn rec-save" disabled={importing} onClick={() => (track ? saveStream(id) : void addDiscoveredSong(song.candidate, song.kind, { play: false }))}>
-        <Icon name="plus" size={14} />
-        {song.candidate.requiresReview ? "Review & add" : "Add to library"}
-      </button>}
+      {song.owned ? <span className="small muted rec-save"><Icon name="check" size={14} />In your library</span> : null}
     </div>
   );
 }

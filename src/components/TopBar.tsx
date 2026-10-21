@@ -4,6 +4,7 @@ import { goBack, goForward, navigate, openMenu, openModal, playList, togglePlay 
 import { useStore } from "../state/store";
 import { installApp, usePwa } from "../state/pwa";
 import { cloudEnabled, manageAccount, signIn, signOut, useAccount } from "../state/cloud";
+import { openShared, parseShareLink } from "../state/social";
 import { Icon } from "./Icon";
 import { useContextPlaying } from "./Shelf";
 
@@ -34,6 +35,13 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
   }, [nonce]);
 
   const onSearch = (q: string) => {
+    // A shared playlist's link opens the playlist.
+    const shareId = parseShareLink(q);
+    if (shareId) {
+      setDraft("");
+      openShared(shareId);
+      return;
+    }
     setDraft(q);
     navigate({ name: "search", q });
   };
@@ -43,10 +51,15 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
     openMenu({
       x: r.right - 240,
       y: r.bottom + 8,
-      title: name || "You",
-      subtitle: account.status === "signedIn" ? account.email ?? "Signed in" : cloudEnabled ? "Not signed in" : `On ${thisDevice}`,
+      // Signed out, the name is only this device's: say plainly that no account is signed in.
+      title: account.status === "signedIn" ? account.profile?.displayName ?? name ?? "You" : account.status === "disabled" ? name || "You" : "Not signed in",
+      subtitle: account.status === "signedIn"
+        ? account.profile?.username ? `@${account.profile.username}` : account.email ?? "Signed in"
+        : account.status === "loading" ? "Checking your account…"
+        : account.status === "signedOut" ? account.error ?? "Sign in to sync your library and add friends" : `On ${thisDevice}`,
       items: [
         ...(account.status === "signedOut" ? [{ label: "Sign in", icon: "user", run: signIn }, { separator: true }] : []),
+        ...(cloudEnabled ? [{ label: "Friends", icon: "users", run: () => navigate({ name: "friends" }) }] : []),
         { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
         { label: "Song storage", icon: "storage", run: () => navigate({ name: "storage" }) },
         { label: "Music server", icon: "server", run: () => navigate({ name: "server" }) },
@@ -120,7 +133,7 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
           <Icon name="users" size={19} />
         </button>
         <button type="button" className="avatar-btn" onClick={(e) => profileMenu(e.currentTarget)} aria-label="Open profile menu" aria-haspopup="menu">
-          {avatar ? <img src={avatar} alt="" referrerPolicy="no-referrer" /> : name ? name.slice(0, 1).toUpperCase() : <Icon name="user" size={18} />}
+          {avatar ? <img src={avatar} alt="" referrerPolicy="no-referrer" /> : name && (account.status === "signedIn" || account.status === "disabled") ? name.slice(0, 1).toUpperCase() : <Icon name="user" size={18} />}
         </button>
       </div>
     </div>

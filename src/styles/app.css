@@ -768,10 +768,13 @@ button.th:not(:disabled):hover { color: var(--text); }
 .quick-art .art { width: 100%; height: 100%; border-radius: 0; }
 .quick-link { flex: 1; min-width: 0; font-weight: 700; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .quick-link::after { content: ""; position: absolute; inset: 0; }
-.quick-fab { position: relative; z-index: 1; opacity: 0; transform: scale(0.85); transition: opacity 200ms, transform 300ms var(--ease-spring); }
+/* The play button sits over the tile's right end, so a hidden one takes no room and the
+   playing bars line up at the end instead of floating where the button would be. */
+.quick-fab { position: absolute; right: 12px; top: 0; bottom: 0; margin: auto 0; z-index: 1; opacity: 0; transform: scale(0.85); transition: opacity 200ms, transform 300ms var(--ease-spring); }
 .quick-tile:hover .quick-fab, .quick-fab:focus-visible, .quick-fab.is-playing { opacity: 1; transform: none; }
-.quick-tile .eq { flex: none; }
-.quick-tile:hover .eq { display: none; }
+.quick-tile .eq { flex: none; margin-right: 6px; }
+.quick-tile:hover .eq, .quick-tile:has(.quick-fab:focus-visible, .quick-fab.is-playing) .eq { display: none; }
+.quick-tile:hover .quick-link, .quick-tile:has(.quick-fab:focus-visible, .quick-fab.is-playing) .quick-link { margin-right: 44px; }
 
 /* ───────────────────────── Library / artist / search ───────────────────────── */
 
@@ -1577,9 +1580,18 @@ button.th:not(:disabled):hover { color: var(--text); }
 .artist-bio { white-space: pre-line; line-height: 1.65; max-width: 80ch; max-height: 320px; overflow-y: auto; }
 .artist-about a { display: inline-block; margin-top: 12px; }
 .playlist-suggestions { margin-top: 40px; }
-.suggestion-row { display: flex; gap: 14px; align-items: center; padding: 10px; border-radius: 8px; }
+.suggestion-row { display: flex; gap: 14px; align-items: center; padding: 8px 10px; border-radius: 8px; }
 .suggestion-row:hover { background: var(--hover); }
-.suggestion-row > .art { width: 48px; height: 48px; flex: none; border-radius: 6px; }
+/* Like a song row: the play button sits on the cover, and shows on hover (always while it's the song playing). */
+.suggestion-art { position: relative; width: 48px; height: 48px; flex: none; border-radius: 6px; overflow: hidden; }
+.suggestion-art > .art { width: 100%; height: 100%; }
+.suggestion-play { position: absolute; inset: 0; display: grid; place-items: center; background: rgb(0 0 0 / 0.5); color: #fff; opacity: 0; transition: opacity 120ms; }
+.suggestion-row:hover .suggestion-play, .suggestion-row.current .suggestion-play, .suggestion-play:focus-visible { opacity: 1; }
+.suggestion-row.current .suggestion-title strong { color: var(--accent); }
+.suggestion-row > .btn { flex: none; gap: 4px; }
+.suggestion-hide { flex: none; opacity: 0; transition: opacity 120ms; }
+.suggestion-row:hover .suggestion-hide, .suggestion-hide:focus-visible { opacity: 1; }
+@media (hover: none) { .suggestion-play, .suggestion-hide { opacity: 1; } }
 .suggestion-title { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 4px; }
 .suggestion-title strong, .suggestion-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mix-empty { padding: 24px; }
@@ -1587,7 +1599,7 @@ button.th:not(:disabled):hover { color: var(--text); }
   .artist-about { flex-direction: column; padding: 18px; }
   .artist-about > img { width: 100px; height: 100px; }
   .suggestion-row { gap: 8px; padding: 8px 0; }
-  .suggestion-row > .art { width: 36px; height: 36px; }
+  .suggestion-art { width: 40px; height: 40px; }
 }
 
 /* ───────────────────────── Desktop app window ───────────────────────── */
@@ -1644,3 +1656,44 @@ button.th:not(:disabled):hover { color: var(--text); }
 .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .empty-actions.start { justify-content: flex-start; margin-top: 10px; }
 
+
+/* Friends and shared playlists (views/Friends.tsx, modals/ShareModal.tsx) */
+.friends-top { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 28px; }
+.friends-top .room-card p { margin: 8px 0 0; }
+.add-friend { display: flex; flex-direction: column; gap: 10px; padding: 18px; border-radius: var(--r-lg); background: var(--raised); border: 1px solid var(--line); }
+.add-friend p { margin: 0; }
+.friends-view section { margin-bottom: 28px; }
+.friends-view .people li { gap: 10px; }
+.friend-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.friend { border-radius: var(--r-md); animation: row-in 400ms var(--ease-out) both; animation-delay: calc(var(--i, 0) * 50ms); }
+.friend:hover { background: var(--hover); }
+.friend-main { display: flex; align-items: center; gap: 12px; padding: 8px 10px; }
+.friend-main .btn .icon { margin-left: 2px; }
+.friend-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.friend-copy strong { font-weight: 650; }
+.friend-copy small { color: var(--text-2); font-size: 12.5px; display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.friend-copy small.accent { color: var(--accent-ink); }
+.friend-main .live-dot { margin-right: 6px; }
+.friend-playlists { padding: 0 10px 12px 56px; container-type: inline-size; }
+.friend-playlists > p { margin: 0; display: flex; align-items: center; gap: 8px; }
+.shared-card-wrap { position: relative; scroll-snap-align: start; min-width: 0; }
+.shared-dismiss { position: absolute; top: 14px; right: 14px; z-index: 3; background: rgb(0 0 0 / 0.55); color: #fff; opacity: 0; transition: opacity 160ms; }
+.shared-card-wrap:hover .shared-dismiss, .shared-dismiss:focus-visible { opacity: 1; }
+@media (hover: none) { .shared-dismiss { opacity: 1; } }
+.shared-note { margin: -6px 0 14px; }
+.share-points { margin: 0 0 4px; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.share-link { display: flex; gap: 8px; align-items: center; }
+.share-link .input { flex: 1; min-width: 0; }
+.share-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 6px 0 4px; }
+.share-row span { display: flex; flex-direction: column; gap: 2px; }
+.share-friends { list-style: none; margin: 0 0 10px; padding: 0; max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.share-friends label { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-radius: var(--r-md); cursor: pointer; }
+.share-friends label:hover { background: var(--hover); }
+@media (max-width: 680px) {
+  .friend-main { flex-wrap: wrap; }
+  .friend-playlists { padding-left: 10px; }
+}
+.username-field { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); font-weight: 650; }
+.username-field .input { min-width: 140px; }
+.username-field .input[aria-invalid="true"] { border-color: var(--danger); }
+.handle { font-weight: 500; font-size: 0.9em; }

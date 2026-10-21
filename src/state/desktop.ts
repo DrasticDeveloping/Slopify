@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { engine } from "../audio/engine";
-import { dismissToast, next as nextSong, previous, toast, togglePlay } from "./actions";
+import { dismissToast, navigate, next as nextSong, previous, toast, togglePlay } from "./actions";
 import { flushPersist, getState, subscribe as subscribeApp } from "./store";
 
 /*
@@ -40,6 +40,7 @@ interface Bridge {
   settings: { get(): Promise<DesktopSettings>; set(patch: Partial<DesktopSettings>): Promise<DesktopSettings> };
   nowPlaying(now: NowPlaying | null): void;
   onCommand(listener: (name: string) => void): () => void;
+  onLink?(listener: (link: { type: "shared"; id: string }) => void): () => void;
   updates: {
     get(): Promise<DesktopUpdates>;
     check(): Promise<DesktopUpdates>;
@@ -88,6 +89,10 @@ export function startDesktopUpdates() {
   void bridge.updates.get().then((s) => (state ? undefined : set(s)));
   void bridge.settings.get().then(setSettings);
   startNowPlaying(bridge);
+  // A shared playlist's link (slopify://p/<id>) opens the playlist.
+  bridge.onLink?.((link) => {
+    if (link.type === "shared" && /^[a-z0-9]{16}$/.test(link.id)) navigate({ name: "shared", id: link.id });
+  });
 }
 
 /* ───────────────────────── tray and Discord ───────────────────────── */

@@ -12,6 +12,28 @@ import { Bars, Icon } from "./Icon";
 import { PlatformBadge } from "./TrackList";
 import { VideoSurface } from "./VideoSurface";
 import { useSlippedIn } from "../state/slipins";
+import { useArtistMetadata } from "../recommend/artist";
+import type { Artist } from "../data/types";
+
+/**
+ * The artist of the song playing, with their picture. The picture is looked up
+ * online the first time (as on the artist page, and kept from there on).
+ */
+function ArtistCard({ artist, detail }: { artist: Artist; detail: string }) {
+  const metadata = useArtistMetadata(artist.id, artist.name, artist.musicBrainzId);
+  const profile = !metadata.result?.collaboration && metadata.result?.profiles.length === 1 ? metadata.result.profiles[0] : undefined;
+  const image = profile?.image || artist.image;
+  return (
+    <button type="button" className="artist-card" style={{ "--a": artist.palette.a, "--b": artist.palette.b, "--c": artist.palette.c } as CSSProperties} onClick={() => navigate({ name: "artist", id: artist.id })}>
+      <span className="artist-card-bg"><Art palette={artist.palette} glyph={4} image={image} /></span>
+      <span className="artist-card-label">About the artist</span>
+      <span className="artist-card-body">
+        <strong>{artist.name}</strong>
+        <small>{detail}</small>
+      </span>
+    </button>
+  );
+}
 
 function QueueRow({ id, onPlay, onRemove, current, index }: { id: string; onPlay: () => void; onRemove?: () => void; current?: boolean; index?: number }) {
   const track = useStore((s) => s.tracks[id]);
@@ -169,14 +191,7 @@ function DetailsView() {
         </dl>
       </div>
 
-      <button type="button" className="artist-card" style={{ "--a": artist.palette.a, "--b": artist.palette.b, "--c": artist.palette.c } as CSSProperties} onClick={() => navigate({ name: "artist", id: artist.id })}>
-        <span className="artist-card-bg"><Art palette={artist.palette} glyph={4} /></span>
-        <span className="artist-card-label">About the artist</span>
-        <span className="artist-card-body">
-          <strong>{artist.name}</strong>
-          <small>{plural(albumCount, "song")} on “{album.title}”</small>
-        </span>
-      </button>
+      <ArtistCard key={artist.id} artist={artist} detail={`${plural(albumCount, "song")} on “${album.title}”`} />
 
       <div className="info-card">
         <h3>

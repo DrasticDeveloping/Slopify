@@ -10,7 +10,7 @@ import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { themes } from "./components/modals/SettingsModal";
 import {
-  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume,
+  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume, takeScrollRestore, trackScroll,
   toggleLike, toggleMute, togglePlay, toggleShuffle, wireEngine,
 } from "./state/actions";
 import { prepareMixes } from "./recommend/mixes";
@@ -30,6 +30,8 @@ import "./state/slipins";
 import { ReleaseView } from "./views/Release";
 import { SearchView } from "./views/Search";
 import { ServerView } from "./views/Server";
+import { FriendsView, SharedView } from "./views/Friends";
+import { watchSocial } from "./state/social";
 import { StorageView } from "./views/Storage";
 
 function View({ route }: { route: Route }) {
@@ -58,6 +60,10 @@ function View({ route }: { route: Route }) {
       return <ServerView />;
     case "history":
       return <HistoryView />;
+    case "friends":
+      return <FriendsView />;
+    case "shared":
+      return <SharedView id={route.id} />;
   }
 }
 
@@ -288,6 +294,7 @@ export function App() {
     wireEngine();
     watchLibraryData();
     watchPlaybackSpot();
+    watchSocial();
     // Once the library is known: the song you were playing is put back, and today's mixes are made (then kept up to date each minute).
     void startMusicServer(() => syncLibraryData().catch(() => undefined).then(() => {
       restorePlaybackSpot();
@@ -298,9 +305,33 @@ export function App() {
   }, []);
 
   const key = routeKey(route);
+  useEffect(() => trackScroll(() => scroller.current?.scrollTop ?? 0), []);
   useEffect(() => {
-    scroller.current?.scrollTo({ top: 0 });
+    const el = scroller.current;
+    if (!el) return;
+    const top = takeScrollRestore();
+    el.scrollTo({ top: 0, behavior: "instant" });
     setScrolled(false);
+    if (!top) return;
+    // A page you went back to scrolls to where you were. It fills in as its data loads,
+    // so this keeps trying until it's tall enough (for up to 3 seconds), unless you scroll first.
+    let frame = 0;
+    let gaveUp = false;
+    const until = performance.now() + 3000;
+    const stop = () => { gaveUp = true; };
+    const inputs = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    inputs.forEach((type) => el.addEventListener(type, stop, { passive: true }));
+    const step = () => {
+      if (gaveUp) return;
+      el.scrollTo({ top, behavior: "instant" });
+      if (Math.abs(el.scrollTop - top) < 2 || performance.now() > until) return void setScrolled(el.scrollTop > 8);
+      frame = requestAnimationFrame(step);
+    };
+    step();
+    return () => {
+      cancelAnimationFrame(frame);
+      inputs.forEach((type) => el.removeEventListener(type, stop));
+    };
   }, [key]);
 
   return (
@@ -330,7 +361,7 @@ export function App() {
         ))}
         <button
           type="button"
-          className={["storage", "server", "history"].includes(route.name) ? "on" : ""}
+          className={["storage", "server", "history", "friends", "shared"].includes(route.name) ? "on" : ""}
           aria-haspopup="menu"
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
@@ -344,7 +375,8 @@ export function App() {
                 { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
                 { separator: true },
                 { label: "Find music", icon: "search", run: () => findMusic() },
-                { label: "Listen along", icon: "users", run: () => openModal({ type: "listenAlong" }) },
+                { label: "Friends", icon: "users", run: () => navigate({ name: "friends" }) },
+                { label: "Listen along", icon: "radio", run: () => openModal({ type: "listenAlong" }) },
                 { label: "Settings", icon: "settings", run: () => openModal({ type: "settings" }) },
               ],
             });

@@ -11,6 +11,7 @@ import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
 import { findMusic, libraryIds, navigate, openModal, startCollectionRadio, toggleShuffle } from "../state/actions";
 import { downloadTracks } from "../state/server";
+import { shareOf, useSocial } from "../state/social";
 import { useStore, type Route } from "../state/store";
 
 function ShuffleToggle() {
@@ -70,6 +71,7 @@ export function PlaylistView({ id }: { id: string }) {
   const playlist = useStore((s) => s.playlists.find((p) => p.id === id));
   const tracks = useStore((s) => s.tracks);
   const libraryCount = useStore((s) => libraryIds(s).length);
+  const social = useSocial();
   const [q, setQ] = useState("");
   const ids = useMemo(() => playlist?.trackIds.filter((t) => tracks[t]) ?? [], [playlist, tracks]);
   const shown = useFiltered(ids, q);
@@ -78,6 +80,7 @@ export function PlaylistView({ id }: { id: string }) {
   const total = ids.reduce((sum, t) => sum + (tracks[t]?.duration ?? 0), 0);
   const serverOnly = ids.filter((t) => tracks[t]?.storage === "server");
   const editable = !playlist.system;
+  const shared = Boolean(shareOf(id, social));
 
   return (
     <div className="view">
@@ -102,6 +105,11 @@ export function PlaylistView({ id }: { id: string }) {
         {serverOnly.length ? (
           <button type="button" className="icon-btn lg" onClick={() => downloadTracks(serverOnly)} aria-label={`Download ${serverOnly.length} songs`} title={`Download ${plural(serverOnly.length, "song")}`}>
             <Icon name="download" size={24} />
+          </button>
+        ) : null}
+        {editable ? (
+          <button type="button" className={`icon-btn lg${shared ? " on" : ""}`} onClick={() => openModal({ type: "sharePlaylist", id })} aria-label={shared ? "Sharing" : "Share"} title={shared ? "Shared: manage sharing" : "Share"}>
+            <Icon name="link" size={24} />
           </button>
         ) : null}
         <button type="button" className="icon-btn lg" onClick={(e) => openPlaylistMenu(e.currentTarget, id)} aria-label="More playlist options">

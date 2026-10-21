@@ -1,8 +1,10 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, hideRecommendation, isLiked, isPlayable, likeMany, navigate,
-  openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toggleLike, unhideRecommendation,
+  addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, hideRecommendation, isPlayable, navigate,
+  openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toast, unhideRecommendation,
 } from "../state/actions";
+import { streamLink } from "../state/importer";
+import { shareOf } from "../state/social";
 import type { Track } from "../data/types";
 import type { ReasonKind } from "../recommend/taste";
 import { getState, type MenuItem, type Route } from "../state/store";
@@ -35,22 +37,55 @@ function playlistSubmenu(ids: string[]): MenuItem[] {
   ];
 }
 
-/** A streamed recommendation: it plays like any song, and can be added to the library (playlists need it there first). */
-function streamMenu(t: Track, context?: { label: string; route?: Route; ids: string[] }): MenuItem[] {
-  const liked = isLiked(t.id);
-  return [
-    { label: "Play", icon: "play", run: () => (context ? playList(context.ids, t.id, context) : playList([t.id], t.id, { label: "Recommended for you" })) },
-    { label: "Play next", icon: "queue", run: () => playNext([t.id]) },
-    { label: "Add to queue", icon: "list", run: () => addToQueue([t.id]) },
-    { separator: true },
-    { label: "Add to library", icon: "download", run: () => saveStream(t.id) },
-    slipItem([t.id]),
-    { label: liked ? "Remove from Liked Songs" : "Add to Liked Songs", icon: liked ? "heartFill" : "heart", run: () => toggleLike(t.id) },
-    { separator: true },
-    { label: "Start song radio", icon: "radio", run: () => startRadio(t.id) },
-    { label: "Not interested", icon: "close", run: () => dismissStream(t.id) },
-    { label: "Go to artist", icon: "user", run: () => navigate({ name: "artist", id: t.artistId }) },
-  ];
+/** The page a song came from (YouTube, SoundCloud, Spotify…), when known. */
+const songLink = (t: Track, source?: string) => source || t.sourceUrl || t.playableUrl || (t.stream ? streamLink(t.id) : null) || undefined;
+
+async function copyLink(url: string) {
+  try {
+    await navigator.clipboard.writeText(url);
+    toast("Link copied", { tone: "success" });
+  } catch {
+    toast("Couldn't copy the link");
+  }
+}
+
+/** Copy the song's page on its platform. */
+function linkItems(url: string | undefined): MenuItem[] {
+  return url ? [{ label: "Copy link", icon: "copy", run: () => void copyLink(url) }] : [];
+}
+
+/** Menu groups with a separator between each; empty groups are left out. */
+function grouped(...groups: MenuItem[][]): MenuItem[] {
+  return groups.filter((g) => g.length).flatMap((g, i) => (i ? [{ separator: true }, ...g] : g));
+}
+
+export interface StreamMenuOptions {
+  /** Saves the song to the library its own way (a search result saves as found, video or audio); null when it can't be saved now. */
+  save?: (() => void) | null;
+  /** The song's page on its platform. */
+  source?: string;
+  /** A search result rather than a recommendation, so there's nothing to be "not interested" in. */
+  searchResult?: boolean;
+}
+
+/** A streamed song: it plays like any song, and can be added to the library (playlists add it there first). */
+function streamMenu(t: Track, opts: StreamMenuOptions = {}): MenuItem[] {
+  return grouped(
+    [
+      { label: "Play next", icon: "queue", run: () => playNext([t.id]) },
+      { label: "Add to queue", icon: "list", run: () => addToQueue([t.id]) },
+    ],
+    [
+      { label: "Add to library", icon: "download", disabled: opts.save === null, run: opts.save ?? (() => saveStream(t.id)) },
+      { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu([t.id]) },
+    ],
+    [
+      { label: "Start song radio", icon: "radio", run: () => startRadio(t.id) },
+      slipItem([t.id]),
+      ...(opts.searchResult ? [] : [{ label: "Not interested", icon: "close", run: () => dismissStream(t.id) }]),
+    ],
+    linkItems(songLink(t, opts.source)),
+  );
 }
 
 /** In a mix, a song can be hidden from that mix alone. New songs are hidden by song key, library songs by id. */
@@ -61,52 +96,49 @@ function mixItems(track: Track, route: Route | undefined): MenuItem[] {
 }
 
 /** `why`: the reason a recommendation was shown, so hiding it teaches the recommender. */
-export function trackMenu(ids: string[], opts: { playlistId?: string; context?: { label: string; route?: Route; ids: string[] }; why?: ReasonKind } = {}): MenuItem[] {
+export function trackMenu(ids: string[], opts: { playlistId?: string; context?: { label: string; route?: Route; ids: string[] }; why?: ReasonKind; stream?: StreamMenuOptions } = {}): MenuItem[] {
   const s = getState();
   const tracks = ids.map((id) => s.tracks[id]).filter(Boolean);
   const single = tracks.length === 1 ? tracks[0] : null;
   const mixHide = single ? mixItems(single, opts.context?.route) : [];
-  if (single?.stream) return [...streamMenu(single, opts.context), ...mixHide];
+  if (single?.stream) return grouped(streamMenu(single, opts.stream), mixHide);
   const playlist = opts.playlistId ? s.playlists.find((p) => p.id === opts.playlistId) : undefined;
   const anyPlayable = tracks.some((t) => isPlayable(t, s));
+  const singlePlayable = single ? isPlayable(single, s) : false;
   const serverOnly = tracks.filter((t) => t.storage === "server");
   // Removing a device copy keeps the song on the music server; songs only on this device are just deleted.
   const downloaded = tracks.filter((t) => t.storage === "downloads");
-  const items: MenuItem[] = [
-    ...mixHide,
-    {
-      label: single ? "Play" : `Play ${tracks.length} songs`, icon: "play", disabled: !anyPlayable,
-      run: () => (single && opts.context ? playList(opts.context.ids, single.id, opts.context) : playList(ids, ids[0], { label: "Selection" })),
-    },
-    { label: "Play next", icon: "queue", disabled: !anyPlayable, run: () => playNext(ids) },
-    { label: "Add to queue", icon: "list", disabled: !anyPlayable, run: () => addToQueue(ids) },
-    { separator: true },
-    { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu(ids) },
-    single
-      ? { label: isLiked(single.id, s) ? "Remove from Liked Songs" : "Add to Liked Songs", icon: isLiked(single.id, s) ? "heartFill" : "heart", run: () => toggleLike(single.id) }
-      : { label: "Add to Liked Songs", icon: "heart", run: () => likeMany(ids) },
-    slipItem(ids),
-  ];
-  if (playlist && !playlist.system) items.push({ label: "Remove from this playlist", icon: "close", run: () => removeFromPlaylist(playlist.id, ids) });
-  if (playlist?.id === "liked" && !single) items.push({ label: "Remove from Liked Songs", icon: "close", run: () => removeFromPlaylist("liked", ids) });
-  if (single) {
-    items.push(
-      { separator: true },
-      { label: "Start song radio", icon: "radio", disabled: !isPlayable(single, s), run: () => startRadio(single.id) },
-      s.taste.hidden[single.id]
-        ? { label: "Show in recommendations", icon: "sparkle", run: () => unhideRecommendation(single.id) }
-        : { label: "Hide from recommendations", icon: "close", run: () => hideRecommendation(single.id, opts.why) },
-      { label: "Go to artist", icon: "user", run: () => navigate({ name: "artist", id: single.artistId }) },
-      { label: "Go to album", icon: "music", run: () => navigate({ name: "album", id: single.albumId }) },
-      { label: "Edit clip…", icon: "scissors", disabled: !isPlayable(single, s), run: () => openModal({ type: "clipEditor", trackId: single.id }) },
-    );
-  }
-  if (serverOnly.length || downloaded.length) items.push({ separator: true });
-  if (serverOnly.length) items.push({ label: serverOnly.length === 1 ? "Download to device" : `Download ${serverOnly.length} songs`, icon: "download", run: () => downloadTracks(serverOnly.map((t) => t.id)) });
-  if (downloaded.length) items.push({ label: downloaded.length === 1 ? "Remove from device" : `Remove ${downloaded.length} from device`, icon: "close", run: () => deleteFromDevice(downloaded.map((t) => t.id)) });
-  items.push({ separator: true });
-  items.push({ label: single ? "Delete from library" : `Delete ${tracks.length} songs from library`, icon: "trash", danger: true, run: () => deleteFromLibrary(ids) });
-  return items;
+  const removeFromPlaylistItem: MenuItem[] =
+    playlist && !playlist.system ? [{ label: "Remove from this playlist", icon: "close", run: () => removeFromPlaylist(playlist.id, ids) }]
+    : playlist?.id === "liked" ? [{ label: "Remove from Liked Songs", icon: "close", run: () => removeFromPlaylist("liked", ids) }]
+    : [];
+  return grouped(
+    [
+      { label: "Play next", icon: "queue", disabled: !anyPlayable, run: () => playNext(ids) },
+      { label: "Add to queue", icon: "list", disabled: !anyPlayable, run: () => addToQueue(ids) },
+    ],
+    [
+      { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu(ids) },
+      ...removeFromPlaylistItem,
+    ],
+    [
+      ...(single ? [{ label: "Start song radio", icon: "radio", disabled: !singlePlayable, run: () => startRadio(single.id) }] : []),
+      slipItem(ids),
+      ...(single
+        ? [s.taste.hidden[single.id]
+          ? { label: "Show in recommendations", icon: "sparkle", run: () => unhideRecommendation(single.id) }
+          : { label: "Hide from recommendations", icon: "close", run: () => hideRecommendation(single.id, opts.why) }]
+        : []),
+      ...mixHide,
+    ],
+    single ? linkItems(songLink(single)) : [],
+    [
+      ...(single ? [{ label: "Edit clip…", icon: "scissors", disabled: !singlePlayable, run: () => openModal({ type: "clipEditor", trackId: single.id }) }] : []),
+      ...(serverOnly.length ? [{ label: serverOnly.length === 1 ? "Download to device" : `Download ${serverOnly.length} songs`, icon: "download", run: () => downloadTracks(serverOnly.map((t) => t.id)) }] : []),
+      ...(downloaded.length ? [{ label: downloaded.length === 1 ? "Remove from device" : `Remove ${downloaded.length} from device`, icon: "downloaded", run: () => deleteFromDevice(downloaded.map((t) => t.id)) }] : []),
+      { label: single ? "Delete from library" : `Delete ${tracks.length} songs from library`, icon: "trash", danger: true, run: () => deleteFromLibrary(ids) },
+    ],
+  );
 }
 
 export function openTrackMenu(e: ReactMouseEvent | HTMLElement, ids: string[], opts: Parameters<typeof trackMenu>[1] = {}) {
@@ -119,6 +151,17 @@ export function openTrackMenu(e: ReactMouseEvent | HTMLElement, ids: string[], o
     subtitle: single ? s.artists[single.artistId]?.name : "Selected",
     items: trackMenu(ids, opts),
   });
+}
+
+/** A search result that can't be streamed: it can still be saved, and its link copied. */
+export function openSearchResultMenu(e: ReactMouseEvent, title: string, artist: string, opts: Pick<StreamMenuOptions, "save" | "source">) {
+  const items = grouped(
+    opts.save !== undefined ? [{ label: "Add to library", icon: "download", disabled: opts.save === null, run: opts.save ?? undefined }] : [],
+    linkItems(opts.source),
+  );
+  if (!items.length) return;
+  e.preventDefault();
+  openMenu({ ...menuPosition(e), title, subtitle: artist, items });
 }
 
 export function openPlaylistMenu(e: ReactMouseEvent | HTMLElement, playlistId: string) {
@@ -135,6 +178,7 @@ export function openPlaylistMenu(e: ReactMouseEvent | HTMLElement, playlistId: s
       { label: "Play", icon: "play", disabled: !p.trackIds.length, run: () => playList(p.trackIds, undefined, { label: p.name, route }) },
       { label: "Add to queue", icon: "list", disabled: !p.trackIds.length, run: () => addToQueue(p.trackIds) },
       { label: "Open", icon: "external", run: () => navigate(route) },
+      ...(p.system ? [] : [{ label: shareOf(p.id) ? "Sharing…" : "Share…", icon: "link", run: () => openModal({ type: "sharePlaylist", id: p.id }) }]),
       ...(p.system ? [] : [
         { separator: true },
         { label: "Edit details…", icon: "edit", run: () => openModal({ type: "editPlaylist", id: p.id }) },

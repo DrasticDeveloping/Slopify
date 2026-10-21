@@ -24,10 +24,23 @@ const setStatus = (status: "connected" | "connecting" | "offline") => setState((
 async function reachable() {
   try {
     const res = await fetch("/api/health", { cache: "no-store", signal: AbortSignal.timeout(5000) });
-    return res.ok && Boolean((await res.json())?.ok);
+    const health = res.ok ? ((await res.json()) as { ok?: boolean; presence?: boolean } | null) : null;
+    if (health?.presence) stayPresent();
+    return Boolean(health?.ok);
   } catch {
     return false;
   }
+}
+
+/**
+ * Tells a server that stops when its last window closes (`npm start` on this
+ * computer) that this window is open: it holds a WebSocket, which the browser
+ * closes when the window goes. Reopened by the next health check if it drops.
+ */
+let presence: WebSocket | null = null;
+function stayPresent() {
+  if (presence && presence.readyState <= WebSocket.OPEN) return;
+  presence = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/presence`);
 }
 
 /** Checks the server now; while it can't be reached, keeps checking every 15 seconds. */

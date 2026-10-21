@@ -9,6 +9,7 @@ import { TrackList } from "../components/TrackList";
 import { plural } from "../lib/format";
 import { isPlayable, navigate } from "../state/actions";
 import { ChooseFiles } from "../components/ChooseFiles";
+import { openTrackMenu } from "../lib/menus";
 import { useStore } from "../state/store";
 
 function score(text: string, q: string) {
@@ -115,7 +116,7 @@ export function SearchView({ q }: { q: string }) {
         <section>
           <h2 className="section-title">Top result</h2>
           {top || topSong ? (
-            <div className="top-result">
+            <div className="top-result" onContextMenu={topSong ? (e) => openTrackMenu(e, [topSong.id], { context: { label: searchLabel(q), route: { name: "search", q }, ids: results.songs } }) : undefined}>
               {top ? <Art palette={top.palette} glyph={4} round className="top-art" image={top.image} /> : <TrackArt trackId={topSong!.id} className="top-art" />}
               <button type="button" className="card-link" onClick={() => navigate(top ? { name: "artist", id: top.id } : { name: "album", id: topSong!.albumId })}>
                 <strong>{top ? top.name : topSong!.title}</strong>

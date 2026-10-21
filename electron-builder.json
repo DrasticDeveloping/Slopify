@@ -18,6 +18,7 @@
     { "from": "node_modules/ffmpeg-static/ffmpeg.exe.README", "to": "licenses/FFmpeg-build-and-source.txt" }
   ],
   "npmRebuild": false,
+  "protocols": [{ "name": "Slopify", "schemes": ["slopify"] }],
   "win": {
     "target": [{ "target": "portable", "arch": ["x64"] }, { "target": "nsis", "arch": ["x64"] }],
     "icon": "build/desktop/icon.ico",

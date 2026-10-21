@@ -25,7 +25,17 @@ export const cloudConfig = {
 export const devToken = import.meta.env.DEV ? localStorage.getItem("slopify.dev.cloud-token") : null;
 export const cloudEnabled = Boolean(cloudConfig.url && (devToken || /^pk_(test|live)_/.test(cloudConfig.clerkPublishableKey)));
 
-export interface CloudProfile { id: string; displayName: string; avatarUrl: string | null }
+export interface CloudProfile {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+  /** What friends add you with (an older online service has none). */
+  friendCode?: string | null;
+  /** Unique and changeable, shown as @name; friends can add you by it. */
+  username?: string | null;
+  /** Whether friends see what you're playing. */
+  shareActivity?: boolean;
+}
 export interface CloudAccount {
   status: "disabled" | "loading" | "signedOut" | "signedIn";
   userId: string | null;
@@ -46,6 +56,18 @@ export const subscribeAccount = (listener: () => void) => {
   return () => void listeners.delete(listener);
 };
 export const useAccount = () => useSyncExternalStore(subscribeAccount, () => account);
+
+/**
+ * If sign-in hasn't loaded after this long (offline, or Clerk unreachable), the
+ * app says you're not signed in rather than waiting forever. Clerk still reports
+ * a sign-in if it loads later.
+ */
+const SIGN_IN_WAIT = 15_000;
+if (cloudEnabled) {
+  window.setTimeout(() => {
+    if (account.status === "loading" && !account.userId) set({ status: "signedOut", error: "Couldn't reach Slopify's sign-in. Check your connection." });
+  }, SIGN_IN_WAIT);
+}
 
 /* ───────────────────────── Clerk, through CloudAccount.tsx ───────────────────────── */
 
@@ -69,6 +91,10 @@ export async function deleteSignIn() {
   await clerk?.deleteUser();
 }
 
+/** Whether `username` is free: { username (as it would be saved), available, reason }. */
+export const checkUsername = (username: string, signal?: AbortSignal) =>
+  cloudCall<{ username: string; available: boolean; reason: string | null }>(`/v1/usernames/${encodeURIComponent(username.trim().replace(/^@/, "") || "-")}`, { signal });
+
 /** A fresh session token for the online service (Clerk refreshes them as needed), or null when signed out. */
 export async function sessionToken() {
   if (account.status !== "signedIn" || !clerk) return null;
@@ -85,7 +111,7 @@ export function connectClerk(bridge: ClerkBridge) {
  * loaded (or created from the Clerk user's name and picture the first time),
  * and its name and picture become this app's.
  */
-export async function clerkChanged(user: { id: string; name: string | null; email: string | null; imageUrl: string | null } | null) {
+export async function clerkChanged(user: { id: string; name: string | null; username?: string | null; email: string | null; imageUrl: string | null } | null) {
   if (!user) {
     const was = account.status;
     set({ status: "signedOut", userId: null, email: null, profile: null, error: null });
@@ -98,7 +124,8 @@ export async function clerkChanged(user: { id: string; name: string | null; emai
     let profile = await cloudCall<CloudProfile | null>("/v1/me");
     if (!profile) {
       const name = (user.name || user.email?.split("@")[0] || getState().settings.profileName || "Listener").slice(0, 40);
-      profile = await cloudCall<CloudProfile>("/v1/me", { method: "PUT", body: { displayName: name, avatarUrl: user.imageUrl } });
+      // The first username comes from the sign-in's own, or the email address; it can be changed in Settings.
+      profile = await cloudCall<CloudProfile>("/v1/me", { method: "PUT", body: { displayName: name, avatarUrl: user.imageUrl, suggestedUsername: user.username || user.email?.split("@")[0] || null } });
     }
     set({ status: "signedIn", profile });
     adoptProfile(profile);
@@ -119,7 +146,7 @@ function adoptProfile(profile: CloudProfile) {
 }
 
 /** Saves the profile's display name or picture. */
-export async function saveProfile(patch: Partial<Pick<CloudProfile, "displayName" | "avatarUrl">>) {
+export async function saveProfile(patch: Partial<Pick<CloudProfile, "displayName" | "avatarUrl" | "shareActivity" | "username">>) {
   const profile = await cloudCall<CloudProfile>("/v1/me", { method: "PUT", body: patch });
   set({ profile });
   adoptProfile(profile);

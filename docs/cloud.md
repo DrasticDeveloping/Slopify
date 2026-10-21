@@ -4,18 +4,21 @@
 
 | Part | Where | What it holds |
 | --- | --- | --- |
-| Accounts | Clerk (sign-in) + D1 table `users` | Display name and picture, by Clerk user id |
+| Accounts | Clerk (sign-in) + D1 table `users` | Display name, username, friend code and picture, by Clerk user id |
 | Library | D1 tables `songs`, `library_state` | Saved songs as links and details (never audio), and one document of playlists, likes, history and settings |
 | Listen Along | One Durable Object per room (`ListenAlongRoom`) | Who's in the room and what the host is playing; WebSockets, so changes arrive live |
+| Friends and sharing | D1 tables `friends`, `friend_requests`, `activity`, `shared_playlists`, `playlist_follows`, `playlist_inbox` (`src/social.ts`) | Friend codes and friendships, what friends are playing, and shared playlists (songs as links) |
 
 The service checks each request's Clerk session token against the Clerk app's public signing keys. It needs only the Clerk **Publishable Key**, never the secret key.
 
 ## How the app uses it
 
-- **Signing in.** Profile menu → **Sign in**, or Settings → General → Account. The first sign-in creates the Slopify profile from the Clerk account's name and picture; the name can be changed there. Without a configured service, Slopify works as before, entirely on your computer.
+- **Signing in.** Profile menu → **Sign in**, or Settings → Account. The first sign-in creates the Slopify profile from the Clerk account's name and picture, with a username from the Clerk username or email address. Settings → Account changes the display name (anything) and the username (unique: 3 to 20 letters, numbers, `_` or `.`; `GET /v1/usernames/:name` checks it). Without a configured service, Slopify works as before, entirely on your computer.
 - **Library sync.** The first account to sync links this computer's library to that account. Signing in to another account keeps its library sync off; Settings offers **Use with this account**, with confirmation before copying this library to that account. Linked accounts merge through `src/state/cloud-sync.ts` (songs) and `src/state/sync.ts` (playlists and preferences), using the same three-way merge as the music server. On another computer, songs from the account are added by link under the same ids, so playlists match; their audio is fetched when played. Songs added from files stay on their original computer.
-- **When it syncs.** Soon after a change on this computer, at startup, sign-in, **Sync now** and when the window comes back into focus, and every 30 seconds while the window has focus. A window that's open but not focused, hidden or in the tray never checks the account on its own, so it costs no requests.
-- **Deleting an account.** Settings → General → Account → **Delete account** deletes the profile and synced library (`DELETE /v1/me`), removes the account from its Listen Along rooms (ending the ones it hosts), unlinks this computer's library, and deletes the Clerk sign-in. For 15 minutes the service refuses writes for that account (D1 table `deleted_users`), so a sync another device had already started can't put the data back. The computer keeps its songs and playlists.
+- **When it syncs.** Soon after a change on this computer, at startup, sign-in and when the window comes back into focus, and every 30 seconds while the window has focus. A window that's open but not focused, hidden or in the tray never checks the account on its own, so it costs no requests.
+- **Deleting an account.** Settings → Account → **Delete account** deletes the profile and synced library (`DELETE /v1/me`), removes the account from its Listen Along rooms (ending the ones it hosts), unlinks this computer's library, and deletes the Clerk sign-in. For 15 minutes the service refuses writes for that account (D1 table `deleted_users`), so a sync another device had already started can't put the data back. The computer keeps its songs and playlists.
+- **Friends.** The Friends page (sidebar) shows your friend code; adding someone's code or @username sends them a request. Friends see each other's profile playlists, what each is playing (Settings → Account → "Friends see what I'm playing"), and can join each other's Listen Along room in one click. The app fetches all of it in one call (`GET /v1/social`) at sign-in, on focus and every 30 seconds while focused, and tells the service what you're playing when the song or pause state changes (and every 4 minutes while playing).
+- **Shared playlists.** A playlist's Share button publishes it (its songs as links, like Listen Along) and gives a link, `<service>/p/<id>`. Pasting the link into the search bar opens it; opened in a browser it only explains that. Anyone signed in can play, follow (it shows in their library) or save a copy; only the owner changes it. The owner's app republishes it a few seconds after each change, so it stays live. Songs that are only files on the owner's computer aren't shared.
 - **Listen Along.** Start a room and share its code. Guests play the host's song from its link on their own device (or their own copy if they have it), at the host's position, and follow pause, play and skips. Each guest's volume is their own. Songs that are only a file on the host's computer can't be shared.
 
 ## Set it up
@@ -44,7 +47,7 @@ npm.cmd run db:migrate      # creates the tables in the remote database
 npm.cmd run deploy          # prints the service's address, e.g. https://slopify-cloud.<you>.workers.dev
 ```
 
-When updating the service later, run `npm.cmd run db:migrate` again before `npm.cmd run deploy`: a new version may need tables the old one didn't have. The first deploy with migration `v2` (`wrangler.jsonc`) ends every Listen Along room open at the time: rooms from before it are removed, and people start a new one.
+When updating the service later, run `npm.cmd run db:migrate` again before `npm.cmd run deploy`: a new version may need tables the old one didn't have. Migration `v3` (`wrangler.jsonc`) ended every Listen Along room open at the time: rooms from before it are removed, and people start a new one.
 
 ### 3. The app
 
@@ -66,7 +69,8 @@ npm.cmd run dev             # http://127.0.0.1:8787
 - Each account may make 300 calls a minute, and each address 600 (wrangler.jsonc `ratelimits`); past that, calls get 429 and the app retries a minute later. A first sync sends one call per song, so a very large library takes a few minutes to upload.
 - An account can keep up to 20,000 songs.
 - Rooms hold 20 people. A room ends a minute after its host leaves, five minutes after everyone has, or a day after it started.
-- Once a day (a cron trigger in `wrangler.jsonc`), the service removes deletion records older than 15 minutes and room records older than two days.
+- Once a day (a cron trigger in `wrangler.jsonc`), the service removes deletion records older than 15 minutes, room records older than two days and listening activity older than a day.
+- A shared playlist can have up to 2,000 songs; an account up to 500 friends and 100 unanswered requests it sent.
 - The library document is limited to about 900 KB, which is many thousands of playlist entries.
 
 ## Backups

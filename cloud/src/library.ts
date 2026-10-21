@@ -6,6 +6,8 @@
  * the app merges first. The audio itself never comes here.
  */
 
+import { socialDeletions } from "./social";
+
 export interface LibraryEnv { DB: D1Database }
 
 export class HttpError extends Error {
@@ -36,10 +38,10 @@ export async function checkNotDeleted(env: LibraryEnv, userId: string) {
   if (!row?.ok) throw gone();
 }
 
-const bytes = (s: string) => new TextEncoder().encode(s).length;
-const record = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
-const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
-const https = (v: unknown) => {
+export const bytes = (s: string) => new TextEncoder().encode(s).length;
+export const record = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
+export const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
+export const https = (v: unknown) => {
   if (typeof v !== "string" || v.length > 2048) return null;
   try {
     return new URL(v).protocol === "https:" ? v : null;
@@ -50,12 +52,46 @@ const https = (v: unknown) => {
 
 /* ───────────────────────── profile ───────────────────────── */
 
-export interface Profile { id: string; displayName: string; avatarUrl: string | null }
+export interface Profile {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+  /** What friends add you with (src/social.ts). */
+  friendCode: string | null;
+  /** Unique and changeable, shown as @name; friends can add you by it too. */
+  username: string | null;
+  /** Whether friends see what you're playing. */
+  shareActivity: boolean;
+}
 
-const toProfile = (row: { id: string; display_name: string; avatar_url: string | null }): Profile => ({ id: row.id, displayName: row.display_name, avatarUrl: row.avatar_url });
+interface ProfileRow { id: string; display_name: string; avatar_url: string | null; friend_code: string | null; username: string | null; share_activity: number }
+const toProfile = (row: ProfileRow): Profile => ({
+  id: row.id, displayName: row.display_name, avatarUrl: row.avatar_url, friendCode: row.friend_code, username: row.username, shareActivity: row.share_activity !== 0,
+});
+
+/** 3 to 20 lowercase letters, digits, "_" and "." (not first or last). */
+export const USERNAME = /^[a-z0-9_][a-z0-9_.]{1,18}[a-z0-9_]$/;
+export const normalizeUsername = (v: string) => v.trim().replace(/^@/, "").toLowerCase();
+
+/** Whether `username` is free (or already the caller's). */
+export async function usernameAvailable(env: LibraryEnv, userId: string, username: string) {
+  const name = normalizeUsername(username);
+  if (!USERNAME.test(name)) return { username: name, available: false, reason: "3 to 20 letters, numbers, _ or ." };
+  const row = await env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(name).first<{ id: string }>();
+  return { username: name, available: !row || row.id === userId, reason: row && row.id !== userId ? "That username is taken." : null };
+}
+
+/** A username the caller asked for, normalised: 400 if it isn't shaped like one, 409 if someone has it. */
+async function checkNewUsername(env: LibraryEnv, userId: string, value: unknown) {
+  if (typeof value !== "string") throw new HttpError(400, "Choose a username.");
+  const { username, available, reason } = await usernameAvailable(env, userId, value);
+  if (!USERNAME.test(username)) throw new HttpError(400, "A username is 3 to 20 letters, numbers, _ or . (not first or last).");
+  if (!available) throw new HttpError(409, reason ?? "That username is taken.");
+  return username;
+}
 
 export async function getProfile(env: LibraryEnv, userId: string): Promise<Profile | null> {
-  const row = await env.DB.prepare("SELECT id, display_name, avatar_url FROM users WHERE id = ?").bind(userId).first<{ id: string; display_name: string; avatar_url: string | null }>();
+  const row = await env.DB.prepare("SELECT id, display_name, avatar_url, friend_code, username, share_activity FROM users WHERE id = ?").bind(userId).first<ProfileRow>();
   return row ? toProfile(row) : null;
 }
 
@@ -67,13 +103,26 @@ export async function saveProfile(env: LibraryEnv, userId: string, body: unknown
   const displayName = "displayName" in input ? text(input.displayName, 40) : current?.displayName ?? null;
   if (!displayName) throw new HttpError(400, "Choose a display name.");
   const avatarUrl = "avatarUrl" in input ? (input.avatarUrl === null ? null : https(input.avatarUrl)) : current?.avatarUrl ?? null;
+  const shareActivity = typeof input.shareActivity === "boolean" ? input.shareActivity : current?.shareActivity ?? true;
+  // A new username is checked first, so a taken one changes nothing (not even the rest of this update).
+  let username = current?.username ?? null;
+  if ("username" in input && input.username !== username) username = await checkNewUsername(env, userId, input.username);
   const now = Date.now();
-  const result = await env.DB.prepare(
-    `INSERT INTO users (id, display_name, avatar_url, created_at, updated_at) SELECT ?1, ?2, ?3, ?4, ?4 WHERE ${notDeleted(5)} ` +
-      "ON CONFLICT(id) DO UPDATE SET display_name = ?2, avatar_url = ?3, updated_at = ?4",
-  ).bind(userId, displayName, avatarUrl, now, deletedSince()).run();
+  let result: D1Result;
+  try {
+    result = await env.DB.prepare(
+      `INSERT INTO users (id, display_name, avatar_url, share_activity, username, created_at, updated_at) SELECT ?1, ?2, ?3, ?6, ?7, ?4, ?4 WHERE ${notDeleted(5)} ` +
+        "ON CONFLICT(id) DO UPDATE SET display_name = ?2, avatar_url = ?3, share_activity = ?6, username = ?7, updated_at = ?4",
+    ).bind(userId, displayName, avatarUrl, now, deletedSince(), shareActivity ? 1 : 0, username).run();
+  } catch (error) {
+    // Taken a moment ago, between the check and the write (the unique index).
+    if (String(error).includes("UNIQUE") && String(error).includes("username")) throw new HttpError(409, "That username is taken.");
+    throw error;
+  }
   if (!result.meta.changes) throw gone();
-  return { id: userId, displayName, avatarUrl };
+  // Friends stop seeing what you play as soon as you turn it off.
+  if (!shareActivity) await env.DB.prepare("DELETE FROM activity WHERE user_id = ?").bind(userId).run();
+  return (await getProfile(env, userId))!;
 }
 
 /** Room records older than this are removed: rooms never last that long (MAX_ROOM_MS in src/room.ts). */
@@ -95,6 +144,7 @@ export async function deleteAccount(env: LibraryEnv, userId: string) {
     env.DB.prepare("DELETE FROM songs WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM library_state WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId),
+    ...socialDeletions(env, userId),
   ]);
   const { results } = await env.DB.prepare("SELECT code FROM room_members WHERE user_id = ?").bind(userId).all<{ code: string }>();
   return { rooms: results.map((r) => r.code) };
@@ -118,12 +168,14 @@ export async function noteRoom(env: LibraryEnv, userId: string, code: string) {
   if (!result.meta.changes) throw gone();
 }
 
-/** Removes deletion and room records that are no longer needed. Run daily (`scheduled` in src/index.ts). */
+/** Removes deletion, room and listening-activity records that are no longer needed. Run daily (`scheduled` in src/index.ts). */
 export async function tidy(env: LibraryEnv) {
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare("DELETE FROM deleted_users WHERE deleted_at <= ?").bind(now - DELETED_FOR_MS),
     env.DB.prepare("DELETE FROM room_members WHERE at < ?").bind(now - ROOM_RECORD_MS),
+    // What someone was playing is only shown for minutes; a day later it's gone.
+    env.DB.prepare("DELETE FROM activity WHERE updated_at < ?").bind(now - 24 * 60 * 60_000),
   ]);
 }
 

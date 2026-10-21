@@ -1,6 +1,6 @@
 # Slopify privacy policy
 
-Effective 14 October 2026. Slopify is made by DrasticDeveloping. Questions and requests go through [GitHub issues](https://github.com/DrasticDeveloping/Slopify/issues).
+Effective 21 October 2026. Slopify is made by DrasticDeveloping. Questions and requests go through [GitHub issues](https://github.com/DrasticDeveloping/Slopify/issues).
 
 ## The short version
 
@@ -26,19 +26,23 @@ Those services see your computer's network address, as with any website, and fol
 
 Signing in uses [Clerk](https://clerk.com), which keeps your email address, password (hashed) and sign-in sessions. Slopify's online service (on Cloudflare) keeps:
 
-- **Your profile:** the display name and picture you chose.
+- **Your profile:** the display name, username and picture you chose.
 - **Your library:** each song saved from a link (its link and details, such as title, artist, album, artwork link and clip), and one document of your playlists, likes, listening history, recommendation feedback and settings.
+- **Friends:** your friend code, your friends, and friend requests you sent or received.
+- **What you're playing**, if "Friends see what I'm playing" is on (Settings → Account; it's on by default): the current song's title, artist, link and artwork, whether it's paused, and the code of a Listen Along room you host. Only your friends see it, for 10 minutes after it last changed. Only the latest is kept, deleted when you turn the setting off and a day after it last changed.
+- **Shared playlists:** a playlist you share is kept as its name, description and songs (links and details), with your display name and picture. Anyone signed in to Slopify with its link can see it, and your friends can see it on your profile if you leave that on. Which shared playlists people follow, and which friends sent them one, is kept too. Stopping sharing deletes it.
 - **Listen Along rooms**, while they're open: who's in the room and what the host is playing. A room ends a minute after its host leaves, five minutes after everyone has, or a day after it started, and is then deleted. Which rooms your account started or joined is kept for up to three days (removed daily once it's two days old), so deleting your account can remove you from them.
 
 Songs added from files on your computer, and the audio of any song, never leave your computer.
 
-This data is used only to sync your library between your devices and to run Listen Along. Cloudflare and Clerk process it on Slopify's behalf. Cloudflare keeps database recovery points for a limited time (up to 30 days) after any change, including a deletion.
+This data is used only to sync your library between your devices, to run Listen Along, and to show your friends and the playlists you share. Cloudflare and Clerk process it on Slopify's behalf. Cloudflare keeps database recovery points for a limited time (up to 30 days) after any change, including a deletion.
 
 ## Your choices
 
 - **See your data:** everything synced is in the app (Library, Playlists, History, Settings).
 - **Stop syncing:** sign out. Your library stays on your computer.
-- **Delete your account:** Settings → General → Account → Delete account. This deletes your profile and synced library from Slopify's service, removes you from Listen Along rooms (ending the ones you host), and deletes your sign-in from Clerk. For 15 minutes afterwards the service uses your account's ID only to refuse anything your other devices try to save to it, and removes it within a day after that. Your computer keeps its own songs and playlists.
+- **Stop sharing:** turn off "Friends see what I'm playing", stop sharing a playlist from its Share dialog, or remove friends on the Friends page.
+- **Delete your account:** Settings → Account → Delete account. This deletes your profile, synced library, friends, friend requests and shared playlists from Slopify's service, removes you from Listen Along rooms (ending the ones you host), and deletes your sign-in from Clerk. For 15 minutes afterwards the service uses your account's ID only to refuse anything your other devices try to save to it, and removes it within a day after that. Your computer keeps its own songs and playlists.
 - **Delete local data:** Settings → General → Reset app data clears playlists, settings and recommendations on this device; deleting Slopify's library folder removes its songs too.
 
 ## Children

@@ -12,8 +12,10 @@
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ListenRoom"] },
+    { "tag": "v2", "new_sqlite_classes": ["ListenAlongRoom"] },
     // Ends every room made before rooms had a longest lifetime and a record of their members (src/room.ts).
-    { "tag": "v2", "new_sqlite_classes": ["ListenAlongRoom"], "deleted_classes": ["ListenRoom"] }
+    // Separate from v2: Cloudflare won't delete a class in the deploy that moves its binding to another.
+    { "tag": "v3", "deleted_classes": ["ListenRoom"] }
   ],
   // Daily: removes deletion and room records that are no longer needed (`tidy` in src/library.ts).
   "triggers": { "crons": ["17 4 * * *"] },

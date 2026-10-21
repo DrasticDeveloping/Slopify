@@ -1,6 +1,10 @@
 import { AuthError, verifySession, type AuthEnv } from "./auth";
-import { checkNotDeleted, deleteAccount, deleteSong, getProfile, getState, HttpError, leftRooms, listSongs, noteLeftRoom, noteRoom, putSong, putState, saveProfile, tidy, type LibraryEnv } from "./library";
+import { checkNotDeleted, deleteAccount, usernameAvailable, deleteSong, getProfile, getState, HttpError, leftRooms, listSongs, noteLeftRoom, noteRoom, putSong, putState, saveProfile, tidy, type LibraryEnv } from "./library";
 import { ListenAlongRoom } from "./room";
+import {
+  acceptFriend, dismissInbox, dropRequest, followShared, friendPlaylists, getShared, getSocial, profileWithCode, requestFriend, sendShared, setActivity,
+  SHARE_ID, sharePlaylist, unfriend, unsharePlaylist,
+} from "./social";
 
 /*
  * Slopify's online service (Cloudflare Worker): accounts and profiles, each
@@ -14,8 +18,23 @@ import { ListenAlongRoom } from "./room";
  * limited number of calls a minute; past it, calls get 429 until the minute is up.
  *
  *   GET    /v1/health
- *   GET    /v1/me                      the caller's profile (null until saved)
- *   PUT    /v1/me                      { displayName, avatarUrl }
+ *   GET    /p/:shareId                 a shared playlist's link opened in a browser: how to open it in Slopify (no sign-in)
+ *   GET    /v1/me                      the caller's profile (null until saved), with their friend code
+ *   PUT    /v1/me                      { displayName, avatarUrl, shareActivity, username } (409 if the username is taken)
+ *   GET    /v1/usernames/:name         { username, available, reason }
+ *   PUT    /v1/me/activity             { song, playing, roomCode }: what friends see you playing
+ *   GET    /v1/social                  friends (and what they play), requests, inbox, your shares, playlists you follow
+ *   POST   /v1/friends/requests        { code }: ask someone to be friends (or accept, if they asked you)
+ *   POST   /v1/friends/requests/:id    accept their request
+ *   DELETE /v1/friends/requests/:id    decline theirs, or cancel yours
+ *   DELETE /v1/friends/:id             stop being friends
+ *   GET    /v1/friends/:id/playlists   a friend's profile playlists
+ *   PUT    /v1/shares/:playlistId      { name, description, tracks, onProfile }: share your playlist, or update it → { shareId }
+ *   DELETE /v1/shares/:playlistId      stop sharing it
+ *   GET    /v1/shared/:shareId         a shared playlist
+ *   PUT    /v1/shared/:shareId/follow  follow it (DELETE: unfollow)
+ *   POST   /v1/shared/:shareId/send    { friendIds }: send it to friends
+ *   DELETE /v1/inbox/:shareId          dismiss a playlist a friend sent
  *   DELETE /v1/me                      delete the caller's profile and library
  *   GET    /v1/library/songs?since=t   songs changed after t, and `until` for next time
  *   PUT    /v1/library/songs/:id       save a song (a link and its details)
@@ -104,11 +123,30 @@ function newCode() {
   return `${chars.slice(0, 4)}-${chars.slice(4)}`;
 }
 
+/**
+ * A shared playlist's link, opened in a browser. Slopify runs on your own
+ * computer, so the page hands the link to the desktop app (slopify://p/<id>,
+ * which desktop/main.cjs registers) straight away, with a button in case the
+ * browser asks first. It shows nothing about the playlist (that needs an account).
+ */
+function sharePage(shareId: string) {
+  const valid = SHARE_ID.test(shareId);
+  const app = `slopify://p/${shareId}`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A playlist on Slopify</title><meta name="robots" content="noindex">
+<style>body{font:16px/1.5 system-ui,sans-serif;background:#0b0b10;color:#eee;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center}main{max-width:30rem;padding:2rem}h1{font-size:1.5rem;margin:0 0 .5rem}p{color:#b8b8c4}a.btn{display:inline-block;margin:1rem 0;padding:.7rem 1.4rem;border-radius:999px;background:#a78bfa;color:#0b0b10;font-weight:700;text-decoration:none}small{color:#8a8a98}</style></head>
+<body><main>${valid
+    ? `<h1>Opening the playlist in Slopify…</h1><p>Someone shared a Slopify playlist with you.</p><a class="btn" href="${app}">Open in Slopify</a><p><small>Nothing happened? Open Slopify, sign in, and paste this page's address into the search bar.</small></p><script>location.href=${JSON.stringify(app)}</script>`
+    : "<h1>This playlist link doesn't look right</h1><p>Ask for the link again.</p>"}</main></body></html>`;
+  return new Response(html, { status: valid ? 200 : 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" } });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     const parts = url.pathname.split("/").filter(Boolean);
+    if (parts[0] === "p" && parts.length === 2 && request.method === "GET") return sharePage(parts[1]);
     if (parts[0] !== "v1") return fail(404, "Not found.");
     try {
       if (parts[1] === "health" && parts.length === 2) return ok({ service: "slopify-cloud" });
@@ -119,9 +157,16 @@ export default {
       await limit(env.USER_LIMIT, userId);
       const method = request.method;
 
+      if (parts[1] === "me" && parts[2] === "activity" && parts.length === 3 && method === "PUT") return ok(await setActivity(env, userId, await body(request)));
       if (parts[1] === "me" && parts.length === 2) {
-        if (method === "GET") return ok(await getProfile(env, userId));
-        if (method === "PUT") return ok(await saveProfile(env, userId, await body(request)));
+        if (method === "GET") return ok(await profileWithCode(env, userId));
+        if (method === "PUT") {
+          const input = await body(request);
+          await saveProfile(env, userId, input);
+          // A new profile's first username can come from the sign-in's own (Clerk) username.
+          const suggested = input && typeof input === "object" ? (input as Record<string, unknown>).suggestedUsername : null;
+          return ok(await profileWithCode(env, userId, typeof suggested === "string" ? suggested : null));
+        }
         if (method === "DELETE") {
           const { rooms } = await deleteAccount(env, userId);
           // Their Listen Along rooms: ended where they host, left where they're a guest.
@@ -147,6 +192,30 @@ export default {
           }
         }
       }
+
+      if (parts[1] === "social" && parts.length === 2 && method === "GET") return ok(await getSocial(env, userId));
+      if (parts[1] === "usernames" && parts.length === 3 && method === "GET") return ok(await usernameAvailable(env, userId, decodeURIComponent(parts[2])));
+      if (parts[1] === "friends") {
+        const id = parts[3] ? decodeURIComponent(parts[3]) : "";
+        if (parts[2] === "requests" && parts.length === 3 && method === "POST") return ok(await requestFriend(env, userId, await body(request)));
+        if (parts[2] === "requests" && parts.length === 4 && method === "POST") return ok(await acceptFriend(env, userId, id));
+        if (parts[2] === "requests" && parts.length === 4 && method === "DELETE") return ok(await dropRequest(env, userId, id));
+        const friendId = parts[2] ? decodeURIComponent(parts[2]) : "";
+        if (parts.length === 3 && parts[2] !== "requests" && method === "DELETE") return ok(await unfriend(env, userId, friendId));
+        if (parts.length === 4 && parts[3] === "playlists" && method === "GET") return ok(await friendPlaylists(env, userId, friendId));
+      }
+      if (parts[1] === "shares" && parts.length === 3) {
+        const playlistId = decodeURIComponent(parts[2]);
+        if (method === "PUT") return ok(await sharePlaylist(env, userId, playlistId, await body(request)));
+        if (method === "DELETE") return ok(await unsharePlaylist(env, userId, playlistId));
+      }
+      if (parts[1] === "shared" && parts[2]) {
+        if (!SHARE_ID.test(parts[2])) throw new HttpError(404, "That playlist link doesn't look right.");
+        if (parts.length === 3 && method === "GET") return ok(await getShared(env, userId, parts[2]));
+        if (parts.length === 4 && parts[3] === "follow" && (method === "PUT" || method === "DELETE")) return ok(await followShared(env, userId, parts[2], method === "PUT"));
+        if (parts.length === 4 && parts[3] === "send" && method === "POST") return ok(await sendShared(env, userId, parts[2], await body(request)));
+      }
+      if (parts[1] === "inbox" && parts.length === 3 && method === "DELETE") return ok(await dismissInbox(env, userId, parts[2]));
 
       if (parts[1] === "rooms") {
         if (parts.length === 2 && method === "POST") {
