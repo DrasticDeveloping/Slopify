@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell, utilityProcess } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell, utilityProcess } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { startUpdates } = require("./updates.cjs");
@@ -108,9 +108,48 @@ async function startBackend() {
   ready = true;
 }
 
+/*
+ * Slopify links (slopify://p/<share id>): a shared playlist's web page opens
+ * them, and Windows starts Slopify with the link (or hands it to the Slopify
+ * already running). Whichever copy ran last answers them: an installed one, or
+ * a checkout run with `npm run desktop`.
+ */
+const LINK = /^slopify:\/\/p\/([a-z0-9]{16})\/?$/i;
+if (fromCheckout) app.setAsDefaultProtocolClient("slopify", process.execPath, [path.resolve(app.getAppPath())]);
+else app.setAsDefaultProtocolClient("slopify");
+/** A link that came before the page was ready for it. */
+let pendingLink = null;
+let linksReady = false;
+const linkIn = (argv) => argv.find((arg) => typeof arg === "string" && arg.toLowerCase().startsWith("slopify://"));
+function openLink(url) {
+  const match = LINK.exec(url || "");
+  if (!match) return;
+  const link = { type: "shared", id: match[1].toLowerCase() };
+  if (linksReady && window && !window.isDestroyed()) {
+    window.webContents.send("desktop:link", link);
+    showWindow();
+  } else {
+    pendingLink = link;
+  }
+}
+ipcMain.handle("desktop:links-ready", (event) => {
+  linksReady = true;
+  if (pendingLink) event.sender.send("desktop:link", pendingLink);
+  pendingLink = null;
+});
+// macOS hands links over this way, even before the app is ready.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  openLink(url);
+});
+openLink(linkIn(process.argv));
+
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on("second-instance", showWindow);
+  app.on("second-instance", (_event, argv) => {
+    showWindow();
+    openLink(linkIn(argv));
+  });
   app.on("activate", showWindow);
   app.whenReady().then(async () => {
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid SLOPIFY_DESKTOP_PORT.");

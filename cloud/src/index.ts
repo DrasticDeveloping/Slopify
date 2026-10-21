@@ -125,16 +125,18 @@ function newCode() {
 
 /**
  * A shared playlist's link, opened in a browser. Slopify runs on your own
- * computer, so the page says how to open it there; it shows nothing about the
- * playlist (that needs a Slopify account).
+ * computer, so the page hands the link to the desktop app (slopify://p/<id>,
+ * which desktop/main.cjs registers) straight away, with a button in case the
+ * browser asks first. It shows nothing about the playlist (that needs an account).
  */
 function sharePage(shareId: string) {
   const valid = SHARE_ID.test(shareId);
+  const app = `slopify://p/${shareId}`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>A playlist on Slopify</title><meta name="robots" content="noindex">
-<style>body{font:16px/1.5 system-ui,sans-serif;background:#0b0b10;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0}main{max-width:30rem;padding:2rem}h1{font-size:1.5rem}code{background:#222;padding:.15rem .4rem;border-radius:.3rem}</style></head>
+<style>body{font:16px/1.5 system-ui,sans-serif;background:#0b0b10;color:#eee;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center}main{max-width:30rem;padding:2rem}h1{font-size:1.5rem;margin:0 0 .5rem}p{color:#b8b8c4}a.btn{display:inline-block;margin:1rem 0;padding:.7rem 1.4rem;border-radius:999px;background:#a78bfa;color:#0b0b10;font-weight:700;text-decoration:none}small{color:#8a8a98}</style></head>
 <body><main>${valid
-    ? "<h1>Someone shared a Slopify playlist with you</h1><p>Open Slopify, sign in, and paste this page's address into the search bar to open the playlist.</p>"
+    ? `<h1>Opening the playlist in Slopify…</h1><p>Someone shared a Slopify playlist with you.</p><a class="btn" href="${app}">Open in Slopify</a><p><small>Nothing happened? Open Slopify, sign in, and paste this page's address into the search bar.</small></p><script>location.href=${JSON.stringify(app)}</script>`
     : "<h1>This playlist link doesn't look right</h1><p>Ask for the link again.</p>"}</main></body></html>`;
   return new Response(html, { status: valid ? 200 : 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" } });
 }

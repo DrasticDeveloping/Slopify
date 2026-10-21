@@ -17,6 +17,13 @@ contextBridge.exposeInMainWorld("slopifyDesktop", {
     ipcRenderer.on("player:command", handler);
     return () => ipcRenderer.removeListener("player:command", handler);
   },
+  /** Slopify links the app was opened with (a shared playlist's page): one now if one is waiting, then each as it comes. */
+  onLink(listener) {
+    const handler = (_event, link) => listener(link);
+    ipcRenderer.on("desktop:link", handler);
+    void ipcRenderer.invoke("desktop:links-ready");
+    return () => ipcRenderer.removeListener("desktop:link", handler);
+  },
   updates: {
     get: () => ipcRenderer.invoke("updates:get"),
     check: () => ipcRenderer.invoke("updates:check"),
