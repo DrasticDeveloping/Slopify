@@ -768,10 +768,13 @@ button.th:not(:disabled):hover { color: var(--text); }
 .quick-art .art { width: 100%; height: 100%; border-radius: 0; }
 .quick-link { flex: 1; min-width: 0; font-weight: 700; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .quick-link::after { content: ""; position: absolute; inset: 0; }
-.quick-fab { position: relative; z-index: 1; opacity: 0; transform: scale(0.85); transition: opacity 200ms, transform 300ms var(--ease-spring); }
+/* The play button sits over the tile's right end, so a hidden one takes no room and the
+   playing bars line up at the end instead of floating where the button would be. */
+.quick-fab { position: absolute; right: 12px; top: 0; bottom: 0; margin: auto 0; z-index: 1; opacity: 0; transform: scale(0.85); transition: opacity 200ms, transform 300ms var(--ease-spring); }
 .quick-tile:hover .quick-fab, .quick-fab:focus-visible, .quick-fab.is-playing { opacity: 1; transform: none; }
-.quick-tile .eq { flex: none; }
-.quick-tile:hover .eq { display: none; }
+.quick-tile .eq { flex: none; margin-right: 6px; }
+.quick-tile:hover .eq, .quick-tile:has(.quick-fab:focus-visible, .quick-fab.is-playing) .eq { display: none; }
+.quick-tile:hover .quick-link, .quick-tile:has(.quick-fab:focus-visible, .quick-fab.is-playing) .quick-link { margin-right: 44px; }
 
 /* ───────────────────────── Library / artist / search ───────────────────────── */
 
