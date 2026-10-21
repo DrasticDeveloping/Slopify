@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, hideRecommendation, isLiked, isPlayable, likeMany, navigate,
-  openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toast, toggleLike, unhideRecommendation,
+  addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, hideRecommendation, isPlayable, navigate,
+  openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toast, unhideRecommendation,
 } from "../state/actions";
 import { streamLink } from "../state/importer";
 import { shareOf } from "../state/social";
@@ -37,21 +37,6 @@ function playlistSubmenu(ids: string[]): MenuItem[] {
   ];
 }
 
-/** Like or unlike one song, or like several. */
-function likeItem(ids: string[], single: Track | null): MenuItem {
-  if (!single) return { label: "Add to Liked Songs", icon: "heart", run: () => likeMany(ids) };
-  const liked = isLiked(single.id);
-  return { label: liked ? "Remove from Liked Songs" : "Add to Liked Songs", icon: liked ? "heartFill" : "heart", run: () => toggleLike(single.id) };
-}
-
-/** Where a song came from: its artist and album. */
-function goToItems(t: Track): MenuItem[] {
-  return [
-    { label: "Go to artist", icon: "user", run: () => navigate({ name: "artist", id: t.artistId }) },
-    ...(t.stream ? [] : [{ label: "Go to album", icon: "music", run: () => navigate({ name: "album", id: t.albumId }) }]),
-  ];
-}
-
 /** The page a song came from (YouTube, SoundCloud, Spotify…), when known. */
 const songLink = (t: Track, source?: string) => source || t.sourceUrl || t.playableUrl || (t.stream ? streamLink(t.id) : null) || undefined;
 
@@ -84,24 +69,22 @@ export interface StreamMenuOptions {
 }
 
 /** A streamed song: it plays like any song, and can be added to the library (playlists add it there first). */
-function streamMenu(t: Track, context?: { label: string; route?: Route; ids: string[] }, opts: StreamMenuOptions = {}): MenuItem[] {
+function streamMenu(t: Track, opts: StreamMenuOptions = {}): MenuItem[] {
   return grouped(
     [
-      { label: "Play", icon: "play", run: () => (context ? playList(context.ids, t.id, context) : playList([t.id], t.id, { label: "Recommended for you" })) },
       { label: "Play next", icon: "queue", run: () => playNext([t.id]) },
       { label: "Add to queue", icon: "list", run: () => addToQueue([t.id]) },
     ],
     [
       { label: "Add to library", icon: "download", disabled: opts.save === null, run: opts.save ?? (() => saveStream(t.id)) },
       { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu([t.id]) },
-      likeItem([t.id], t),
     ],
     [
       { label: "Start song radio", icon: "radio", run: () => startRadio(t.id) },
       slipItem([t.id]),
       ...(opts.searchResult ? [] : [{ label: "Not interested", icon: "close", run: () => dismissStream(t.id) }]),
     ],
-    [...goToItems(t), ...linkItems(songLink(t, opts.source))],
+    linkItems(songLink(t, opts.source)),
   );
 }
 
@@ -118,7 +101,7 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
   const tracks = ids.map((id) => s.tracks[id]).filter(Boolean);
   const single = tracks.length === 1 ? tracks[0] : null;
   const mixHide = single ? mixItems(single, opts.context?.route) : [];
-  if (single?.stream) return grouped(streamMenu(single, opts.context, opts.stream), mixHide);
+  if (single?.stream) return grouped(streamMenu(single, opts.stream), mixHide);
   const playlist = opts.playlistId ? s.playlists.find((p) => p.id === opts.playlistId) : undefined;
   const anyPlayable = tracks.some((t) => isPlayable(t, s));
   const singlePlayable = single ? isPlayable(single, s) : false;
@@ -127,20 +110,15 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
   const downloaded = tracks.filter((t) => t.storage === "downloads");
   const removeFromPlaylistItem: MenuItem[] =
     playlist && !playlist.system ? [{ label: "Remove from this playlist", icon: "close", run: () => removeFromPlaylist(playlist.id, ids) }]
-    : playlist?.id === "liked" && !single ? [{ label: "Remove from Liked Songs", icon: "close", run: () => removeFromPlaylist("liked", ids) }]
+    : playlist?.id === "liked" ? [{ label: "Remove from Liked Songs", icon: "close", run: () => removeFromPlaylist("liked", ids) }]
     : [];
   return grouped(
     [
-      {
-        label: single ? "Play" : `Play ${tracks.length} songs`, icon: "play", disabled: !anyPlayable,
-        run: () => (single && opts.context ? playList(opts.context.ids, single.id, opts.context) : playList(ids, ids[0], { label: "Selection" })),
-      },
       { label: "Play next", icon: "queue", disabled: !anyPlayable, run: () => playNext(ids) },
       { label: "Add to queue", icon: "list", disabled: !anyPlayable, run: () => addToQueue(ids) },
     ],
     [
       { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu(ids) },
-      likeItem(ids, single),
       ...removeFromPlaylistItem,
     ],
     [
@@ -153,7 +131,7 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
         : []),
       ...mixHide,
     ],
-    single ? [...goToItems(single), ...linkItems(songLink(single))] : [],
+    single ? linkItems(songLink(single)) : [],
     [
       ...(single ? [{ label: "Edit clip…", icon: "scissors", disabled: !singlePlayable, run: () => openModal({ type: "clipEditor", trackId: single.id }) }] : []),
       ...(serverOnly.length ? [{ label: serverOnly.length === 1 ? "Download to device" : `Download ${serverOnly.length} songs`, icon: "download", run: () => downloadTracks(serverOnly.map((t) => t.id)) }] : []),
