@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { openSearchResultMenu, openTrackMenu } from "../lib/menus";
 import { formatTime } from "../lib/format";
 import { playList, togglePlay } from "../state/actions";
 import { getState, useStore } from "../state/store";
@@ -165,19 +166,32 @@ export function ExternalSearch({ query }: { query: string }) {
     setSelected(first && isPlaylist(first) ? downloadable(first) : []);
   }, [first]);
 
-  const play = (c: Candidate) => {
-    // A result you've saved plays your copy (a saved video plays as a video), not a second stream of it.
+  const context = { label: `Search: ${query}`, route: { name: "search", q: query } as const };
+  /** The track a result plays as: your saved copy if you have one (a saved video plays as a video), else a stream of it. */
+  const trackFor = (c: Candidate) => {
     const mine = ownedIndex(getState()).find({ sources: candidateSources(c) })[0];
-    if (mine) {
-      if (getState().currentId === mine) return togglePlay();
-      return playList([mine], mine, { label: `Search: ${query}`, route: { name: "search", q: query } });
-    }
+    if (mine) return mine;
     const key = keyFor(c, kind);
-    const id = streamTrackId(key);
-    if (getState().currentId === id) return togglePlay();
     const { title, artist } = describe(c);
     registerStreams([{ key, candidate: c, title, artist, artwork: c.importMetadata?.artworkURL || c.thumbnailURL || undefined, kind: "discover-search", ...(kind === "video" ? { video: platformFor(c) === "youtube" } : {}) }]);
-    playList([id], id, { label: `Search: ${query}`, route: { name: "search", q: query } });
+    return streamTrackId(key);
+  };
+  const play = (c: Candidate) => {
+    const id = trackFor(c);
+    if (getState().currentId === id) return togglePlay();
+    playList([id], id, context);
+  };
+  const menu = (e: MouseEvent, c: Candidate, index: number) => {
+    const source = c.importMetadata?.sourceURL || c.sourcePageURL || c.sourceURL;
+    const save = isDownloadable(c) && !busy ? () => void saveSearchResults(query, r!, [index]) : null;
+    const mine = ownedIndex(getState()).find({ sources: candidateSources(c) })[0];
+    if (!mine && !canStream(c)) {
+      const { title, artist } = describe(c);
+      return openSearchResultMenu(e, title, artist, { source, save: playlist ? undefined : save });
+    }
+    const id = trackFor(c);
+    if (!getState().tracks[id]) return;
+    openTrackMenu(e, [id], { context: { ...context, ids: [id] }, stream: { searchResult: true, source, save } });
   };
 
   // A single song's sources all describe that one song.
@@ -196,6 +210,7 @@ export function ExternalSearch({ query }: { query: string }) {
       selected={selected.includes(index)}
       onSelect={() => setSelected(selected.includes(index) ? selected.filter((n) => n !== index) : [...selected, index])}
       onPlay={() => play(c)}
+      onMenu={(e) => menu(e, c, index)}
       onSave={() => void saveSearchResults(query, r!, [index])}
     />
   );
@@ -299,11 +314,12 @@ interface ResultProps {
   selected: boolean;
   onSelect: () => void;
   onPlay: () => void;
+  onMenu: (e: MouseEvent) => void;
   onSave: () => void;
 }
 
 /** One search result. YouTube shows video thumbnails and channels; SoundCloud leads with the uploader. */
-function OnlineResult({ candidate: c, kind, playlist, featured, busy, selected, onSelect, onPlay, onSave }: ResultProps) {
+function OnlineResult({ candidate: c, kind, playlist, featured, busy, selected, onSelect, onPlay, onMenu, onSave }: ResultProps) {
   // Your saved copy, when you have this result (it's what plays).
   const mine = useStore((s) => ownedIndex(s).find({ sources: candidateSources(c) })[0]);
   const id = mine ?? streamTrackId(keyFor(c, kind));
@@ -322,7 +338,7 @@ function OnlineResult({ candidate: c, kind, playlist, featured, busy, selected, 
   const playable = canStream(c);
 
   return (
-    <article className={`online-song ${playlist ? "playlist-song" : platform}${featured ? " featured" : ""}${active ? " current" : ""}`}>
+    <article className={`online-song ${playlist ? "playlist-song" : platform}${featured ? " featured" : ""}${active ? " current" : ""}`} onContextMenu={onMenu}>
       {featured ? <span className="online-top-label">Top result</span> : null}
       {playlist ? <input type="checkbox" aria-label={`Select ${title}`} checked={selected} disabled={busy || !isDownloadable(c)} onChange={onSelect} /> : null}
       <button type="button" className="online-play" aria-label={label} disabled={!playable} onClick={onPlay}>

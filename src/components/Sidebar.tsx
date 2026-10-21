@@ -4,11 +4,14 @@ import { plural } from "../lib/format";
 import { openPlaylistMenu } from "../lib/menus";
 import { addToPlaylist, navigate, openModal } from "../state/actions";
 import { setState, useStore, type Route } from "../state/store";
+import { cloudEnabled } from "../state/cloud";
+import { useSocial } from "../state/social";
+import { hashString, paletteFromSeed } from "../data/library";
 import { Art, PlaylistArt } from "./Artwork";
 import { Icon } from "./Icon";
 import { DRAG_MIME } from "./TrackList";
 
-type EntryType = "playlist" | "album" | "artist";
+type EntryType = "playlist" | "album" | "artist" | "shared";
 type Filter = "all" | EntryType;
 
 interface Entry {
@@ -28,6 +31,7 @@ const nav: Array<{ route: Route; label: string; icon: string; match: Route["name
   { route: { name: "search", q: "" }, label: "Search", icon: "search", match: ["search"] },
   { route: { name: "library" }, label: "Library", icon: "library", match: ["library", "album", "artist"] },
   { route: { name: "playlists" }, label: "Playlists", icon: "playlists", match: ["playlists"] },
+  ...(cloudEnabled ? [{ route: { name: "friends" } as Route, label: "Friends", icon: "users", match: ["friends"] as Route["name"][] }] : []),
 ];
 
 const FILTERS: Array<[EntryType, string]> = [["playlist", "Playlists"], ["album", "Albums"], ["artist", "Artists"]];
@@ -80,15 +84,26 @@ export function Sidebar() {
   const listen = useStore((s) => s.listen);
   const [dropId, setDropId] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const social = useSocial();
+  // New friend requests and playlists friends sent.
+  const news = (social?.incoming.length ?? 0) + (social?.inbox.length ?? 0);
 
   const entries = useMemo(() => {
     // Streamed suggestions are not in the library.
     const library = trackIds.map((id) => tracks[id]).filter((t) => t && !t.stream);
-    return libraryEntries(library, playlists, albums, artists);
-  }, [trackIds, tracks, artists, albums, playlists]);
+    const followed: Entry[] = (social?.following ?? []).map((p) => ({
+      id: p.shareId,
+      type: "shared",
+      name: p.name,
+      subtitle: `Playlist · ${p.owner.displayName}`,
+      at: p.followedAt,
+      art: <Art palette={paletteFromSeed(hashString(p.shareId))} image={p.artworkUrl ?? undefined} icon="playlists" className="side-art" />,
+    }));
+    return [...libraryEntries(library, playlists, albums, artists), ...followed].sort((a, b) => b.at - a.at || a.name.localeCompare(b.name));
+  }, [trackIds, tracks, artists, albums, playlists, social?.following]);
   // Most saved songs are singles; listing each as an album as well as under its artist
-  // would double the list. The Albums filter still shows them.
-  const shown = filter === "all" ? entries.filter((e) => !e.single) : entries.filter((e) => e.type === filter);
+  // would double the list. The Albums filter still shows them. Playlists you follow count as playlists.
+  const shown = filter === "all" ? entries.filter((e) => !e.single) : entries.filter((e) => e.type === filter || (filter === "playlist" && e.type === "shared"));
 
   const dragOver = (e: DragEvent, id: string) => {
     if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
@@ -142,7 +157,7 @@ export function Sidebar() {
               type="button"
               className={`nav-item${active ? " active" : ""}`}
               aria-current={active ? "page" : undefined}
-              aria-label={item.label}
+              aria-label={item.route.name === "friends" && news ? `${item.label}, ${news} new` : item.label}
               title={item.label}
               onClick={() => {
                 if (item.route.name === "search") setState((s) => ({ searchFocusNonce: s.searchFocusNonce + 1 }));
@@ -151,6 +166,7 @@ export function Sidebar() {
             >
               <Icon name={item.icon} size={21} />
               <span>{item.label}</span>
+              {item.route.name === "friends" && news ? <span className="nav-count" aria-hidden="true">{news}</span> : null}
             </button>
           );
         })}

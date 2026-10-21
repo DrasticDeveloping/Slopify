@@ -22,6 +22,9 @@ npm run dev      # development server with hot reload, also on :5199
 | `--host` | `HOST` | `127.0.0.1` | `0.0.0.0` shares Slopify on your local network |
 | `--data` | `SLOPIFY_DATA_DIR` | the shared library (below) | where your library is kept |
 | `--isolated` | `SLOPIFY_ISOLATED_DATA=1` | off | use this checkout's own `data/` folder instead |
+| `--keep-running` | `SLOPIFY_KEEP_RUNNING=1` | off | keep running after the last Slopify window closes |
+
+Run for this computer only, the server stops about 20 seconds after you close the last Slopify window (a reload doesn't count), so it never holds your library after you're done. Each window checks in every 20 seconds; one that stops checking in without closing (a crashed browser) counts as closed after 3 minutes. Shared on your network (`--host 0.0.0.0`), or with `--keep-running`, it runs until you stop it.
 
 For example: `npm start -- --port 5253`.
 
@@ -55,7 +58,7 @@ Use the search bar or **Find music** to search Spotify, SoundCloud, and YouTube,
 - **Storage:** `data/songs.json` stores source links and metadata, including audio/video mode, clips, and extensible `extra` fields. `data/library-state.json` stores playlists, likes, listening history, recommendation feedback, and listener settings. Here `data/` means the library folder: the shared library from a checkout, or `library/` in an installed copy's profile. `SLOPIFY_DATA_DIR` overrides this location.
 - **Media:** audio/video files are prepared temporarily outside `data/`, with bounded cache limits and idle expiry. The server releases them once a device verifies its copy. Artwork may be kept as a small image file.
 - **Device copies:** Settings → Server → Keep songs on this device controls browser Cache Storage. Kept songs play without the server; removing a device copy preserves the server link. Deleting from the library removes the shared song after the Undo window.
-- **Sync:** connection status uses the backend health check. Library data merges automatically and **Sync library** refreshes it immediately. Clip edits made offline retry on reconnect. Device download preferences stay on the device.
+- **Sync:** connection status uses the backend health check. Library data merges automatically: after each change, at startup, when the window comes back into focus and every 30 seconds while it has focus. A sync that fails says so once. Clip edits made offline retry on reconnect. Device download preferences stay on the device.
 - **Existing libraries:** the first run migrates `library.json` into link records and keeps a backup. Old media is retained until a device verifies its copy; records without a source link retain their old file to avoid losing existing songs.
 - **Spotify:** Spotify songs are matched to a YouTube audio source. Spotify search goes through the same third-party search API (`debridvault.elfhosted.com`) that Resonance used.
 - **Static builds:** use `npm start` for the backend and production app together. A static `dist/` deployment alone cannot save links or sync; files already kept on the device still play.

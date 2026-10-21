@@ -76,7 +76,7 @@ function checkSong(value: unknown): PlaybackSong | null {
 /*
  * Called ListenRoom before rooms had a longest lifetime and a record of who was in
  * them. Rooms of that class were removed when this one replaced it (wrangler.jsonc
- * migration v2), so every room left follows the rules here.
+ * migrations v2 and v3), so every room left follows the rules here.
  */
 export class ListenAlongRoom extends DurableObject {
   /** Called by the Worker once, when the room is made. */

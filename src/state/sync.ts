@@ -3,7 +3,7 @@ import { ThisDevice, thisDevice } from "../lib/native";
 import { likedPlaylist } from "../data/library";
 import type { Listen } from "../recommend/taste";
 import { adoptMixes, currentMixes, onMixes, type Mix } from "../recommend/mixes";
-import { applyEngineSettings, setSpeed, toast, toggleShuffle, updateToast } from "./actions";
+import { applyEngineSettings, setSpeed, toast, toggleShuffle } from "./actions";
 import { connectLibrarySync, defaultSettings, flushPersist, getState, initialLibrarySync, setState, subscribe, type AppState, type Settings } from "./store";
 import { adoptPlaybackSpot, device, onPlaybackSpot, playbackSpot, type PlaybackSpot } from "./resume";
 import { adoptSlipIns, allSlipIns, onSlipIns, type SlipIn } from "./slipins";
@@ -694,6 +694,9 @@ async function retryPendingUnlink() {
   if (userId) await unlinkComputer(userId);
 }
 
+/** The account sync failure last told (see syncWithAccount). */
+let toldAccountError = "";
+
 /** The account's songs, then its playlists, likes and settings. A failure here never stops this computer's own sync. */
 async function syncWithAccount() {
   const { status, userId } = getAccount();
@@ -719,8 +722,15 @@ async function syncWithAccount() {
       } catch { /* Kept for this session. */ }
     });
     setState((s) => ({ server: { ...s.server, cloudSyncedAt: Date.now(), cloudError: undefined } }));
+    toldAccountError = "";
   } catch (error) {
-    setState((s) => ({ server: { ...s.server, cloudError: error instanceof Error ? error.message : "Couldn't sync with your account." } }));
+    const message = error instanceof Error ? error.message : "Couldn't sync with your account.";
+    setState((s) => ({ server: { ...s.server, cloudError: message } }));
+    // Said once per problem; a sync with the account that works lets it be said again.
+    if (message !== toldAccountError) {
+      toldAccountError = message;
+      toast("Couldn't sync with your account", { tone: "error", detail: `${message} Your library is safe on ${thisDevice}; Slopify keeps trying.`, duration: 8000 });
+    }
   }
 }
 
@@ -748,6 +758,14 @@ onSignedIn(() => {
 
 let running: Promise<void> | null = null;
 let again = false;
+/** The sync failure last told, so each problem is said once rather than on every try. Cleared by a sync that works. */
+let toldError = "";
+function syncFailed(error: unknown) {
+  const message = error instanceof Error ? error.message : "Couldn't reach your music server.";
+  if (message === toldError) return;
+  toldError = message;
+  toast("Couldn't sync your library", { tone: "error", detail: message, duration: 8000 });
+}
 
 /** Brings this browser and the server into step: fetch, merge, save, and save again if someone else saved meanwhile. */
 export function syncLibraryData(): Promise<void> {
@@ -764,13 +782,18 @@ export function syncLibraryData(): Promise<void> {
       request({ method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseRev, data }) });
     await mergeWith(await request(), save, () => agreedBase, writeBase);
     setState((s) => ({ server: { ...s.server, syncedAt: Date.now() } }));
+    toldError = "";
     if (getAccount().status === "signedIn" && accountWanted()) {
       accountDue = Infinity;
       accountCheckedAt = Date.now();
       await syncWithAccount();
       if (getState().server.cloudError) wantAccount(CLOUD_RETRY);
     }
-  })().finally(() => {
+  })().catch((error: unknown) => {
+    // Syncing happens on its own, so a failure is told here (once), not left to whoever asked.
+    syncFailed(error);
+    throw error;
+  }).finally(() => {
     running = null;
     if (again) {
       again = false;
@@ -778,32 +801,6 @@ export function syncLibraryData(): Promise<void> {
     }
   });
   return running;
-}
-
-/** "Sync now", with the outcome shown. */
-export async function syncNow() {
-  if (getState().server.status !== "connected") {
-    toast("The music server is offline", { tone: "error", detail: "Reconnect in Settings → Server." });
-    return;
-  }
-  const id = toast("Syncing your library…", { sticky: true, progress: 0.3 });
-  try {
-    wantAccount(0);
-    await syncLibraryData();
-    // This computer synced; say so plainly if the account didn't.
-    const { cloudError, linkedElsewhere } = getState().server;
-    if (getAccount().status === "signedIn" && (cloudError || linkedElsewhere)) {
-      updateToast(id, {
-        message: `Synced ${thisDevice}, but not your account`,
-        detail: linkedElsewhere ? `${ThisDevice}'s library belongs to ${linkedElsewhere}. See Settings → Account.` : cloudError,
-        tone: "error", progress: undefined, sticky: false,
-      }, 6000);
-      return;
-    }
-    updateToast(id, { message: "Library synced", detail: "Playlists, likes and history are up to date.", tone: "success", progress: undefined, sticky: false }, 2400);
-  } catch (error) {
-    updateToast(id, { message: "Couldn't sync your library", detail: error instanceof Error ? error.message : undefined, tone: "error", progress: undefined, sticky: false }, 6000);
-  }
 }
 
 let timer = 0;

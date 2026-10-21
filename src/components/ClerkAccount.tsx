@@ -56,6 +56,7 @@ function ClerkBridge() {
     void clerkChanged(isSignedIn && user ? {
       id: user.id,
       name: user.fullName || user.username || null,
+      username: user.username ?? null,
       email: user.primaryEmailAddress?.emailAddress ?? null,
       imageUrl: user.hasImage ? user.imageUrl : null,
     } : null);

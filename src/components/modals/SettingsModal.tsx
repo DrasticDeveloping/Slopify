@@ -1,11 +1,11 @@
-import { useId, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
 import { isNativeApp, ThisDevice, thisDevice } from "../../lib/native";
 import { plural } from "../../lib/format";
 import { rovingKey } from "../../lib/roving";
 import { qualified, reasonWeight, type ReasonKind, type TasteState } from "../../recommend/taste";
 import { resetRecommendations, showHiddenRecommendations, updateSettings } from "../../state/actions";
 import { checkForUpdates, installUpdate, isDesktopApp, setDesktopSetting, setUpdateChannel, useDesktopSettings, useDesktopUpdates, type DesktopUpdates, type UpdateChannel } from "../../state/desktop";
-import { cloudEnabled, manageAccount, saveProfile, signIn, signOut, useAccount } from "../../state/cloud";
+import { checkUsername, cloudEnabled, manageAccount, saveProfile, signIn, signOut, useAccount } from "../../state/cloud";
 import { toast } from "../../state/actions";
 import { connect, disconnect } from "../../state/server";
 import { deleteAccount, linkComputer } from "../../state/sync";
@@ -17,7 +17,9 @@ import { Shell, Toggle } from "./Shell";
 
 const tabs: Array<[SettingsTab, string, string]> = [
   ["general", "General", "settings"],
+  ["account", "Account", "user"],
   ["playback", "Playback", "wave"],
+  ["recommendations", "Recommendations", "sparkle"],
   ["appearance", "Appearance", "palette"],
   ["server", "Server", "server"],
   ["shortcuts", "Shortcuts", "keyboard"],
@@ -205,6 +207,68 @@ function DesktopBehaviourRows() {
 }
 
 /** Your Slopify account (when this build has the online service): sign in, and the name everyone sees. */
+/** Your unique @username: checked as you type, saved with Enter or Save. */
+function UsernameRow({ current }: { current: string | null }) {
+  const [draft, setDraft] = useState(current ?? "");
+  const [check, setCheck] = useState<{ value: string; ok: boolean; note: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const value = draft.trim().replace(/^@/, "").toLowerCase();
+  const changed = value !== (current ?? "");
+  const shaped = /^[a-z0-9_][a-z0-9_.]{1,18}[a-z0-9_]$/.test(value);
+
+  useEffect(() => setDraft(current ?? ""), [current]);
+  useEffect(() => {
+    if (!changed || !shaped) {
+      setCheck(null);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      checkUsername(value, controller.signal).then(
+        (r) => setCheck({ value, ok: r.available, note: r.available ? "Available" : r.reason ?? "Taken" }),
+        () => setCheck(null),
+      );
+    }, 400);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [value, changed, shaped]);
+
+  const save = async () => {
+    if (!changed || !shaped || saving) return;
+    setSaving(true);
+    try {
+      await saveProfile({ username: value });
+      toast(`Your username is now @${value}`, { tone: "success" });
+    } catch (error) {
+      toast("Couldn't change your username", { tone: "error", detail: error instanceof Error ? error.message : undefined });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const note = !changed ? "Unique to you. Friends can add you with it." : !shaped ? "3 to 20 letters, numbers, _ or . (not first or last)." : check?.value === value ? check.note : "Checking…";
+  return (
+    <Row icon="user" title="Username" desc={note}>
+      <span className="username-field">
+        <span aria-hidden="true">@</span>
+        <input
+          className="input sm"
+          value={draft}
+          maxLength={21}
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && void save()}
+          aria-label="Username"
+          aria-invalid={changed && (!shaped || check?.ok === false) ? true : undefined}
+        />
+      </span>
+      <button type="button" className="btn sm" disabled={!changed || !shaped || saving || check?.ok === false} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
+    </Row>
+  );
+}
+
 function AccountRows() {
   const account = useAccount();
   const name = useStore((s) => s.settings.profileName);
@@ -256,7 +320,7 @@ function AccountRows() {
           </button>
         </Row>
       ) : null}
-      <Row icon="users" title="Display name" desc="What friends see in Listen Along.">
+      <Row icon="user" title="Display name" desc="Your name as friends see it. Anything you like.">
         <input
           className="input sm"
           value={draft ?? account.profile?.displayName ?? name}
@@ -266,6 +330,17 @@ function AccountRows() {
           onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
           aria-label="Display name"
         />
+      </Row>
+      <UsernameRow current={account.profile?.username ?? null} />
+      <Row icon="users" title="Friends see what I'm playing" desc="Your friends see the song you're playing, and can join your Listen Along room in one click.">
+        <Toggle
+          checked={account.profile?.shareActivity !== false}
+          label="Friends see what I'm playing"
+          onChange={(on) => void saveProfile({ shareActivity: on }).catch((error: unknown) => toast("Couldn't change that", { tone: "error", detail: error instanceof Error ? error.message : undefined }))}
+        />
+      </Row>
+      <Row icon="users" title="Your friend code" desc="Friends can add you with this or your username, on the Friends page.">
+        <code className="mono">{account.profile?.friendCode ?? "—"}</code>
       </Row>
       <Row icon="trash" title="Delete account" desc={`Deletes your profile and the copy of your library kept with your account, then your sign-in. Songs and playlists on ${thisDevice} stay.`}>
         <button
@@ -342,26 +417,30 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                   </Row>
                 ) : null}
               </div>
-              <h3 className="set-section">Listening</h3>
+              <h3 className="set-section">Data & privacy</h3>
               <div className="set-group">
-                <Row icon="sparkle" title="Autoplay" desc="When your queue ends, keep playing similar music.">
-                  <Toggle checked={settings.autoplay} onChange={set("autoplay")} label="Autoplay" />
+                <Row icon="sync" title="Reset app data" desc="Clears playlists, settings and recommendations on this device. Songs you imported from the web stay and come back.">
+                  <button type="button" className="btn danger sm" onClick={resetAppData} aria-label="Reset app data">Reset</button>
                 </Row>
-                <Row icon="shuffle" title="Slip-ins" desc="Songs you mark with “Slip into my listening” play now and then between your songs, when they fit what's playing. Your playlist carries on afterwards. Skip them as often as you like.">
-                  <label className="select">
-                    <select value={settings.slipIns} onChange={(e) => updateSettings({ slipIns: e.target.value as typeof settings.slipIns })} aria-label="How often to slip songs in">
-                      <option value="often">Often</option>
-                      <option value="sometimes">Sometimes</option>
-                      <option value="rare">Rarely</option>
-                      <option value="off">Off</option>
-                    </select>
-                  </label>
+                <Row icon="help" title="Privacy and terms" desc="What Slopify keeps, where, and how to delete it.">
+                  <a className="btn sm" href={`${DOCS}/PRIVACY.md`} target="_blank" rel="noreferrer">Privacy</a>
+                  <a className="btn sm" href={`${DOCS}/TERMS.md`} target="_blank" rel="noreferrer">Terms</a>
                 </Row>
               </div>
+            </>
+          ) : null}
+
+          {tab === "account" ? (
+            <>
               <h3 className="set-section">{cloudEnabled ? "Account" : "Profile"}</h3>
               <div className="set-group">
                 <AccountRows />
               </div>
+            </>
+          ) : null}
+
+          {tab === "recommendations" ? (
+            <>
               <h3 className="set-section">Recommendations</h3>
               <div className="set-group">
                 <Row icon="library" title="Include songs from your library" desc="Recommended for you shows only new songs by default. Turn this on to also get suggestions from songs you already have.">
@@ -379,21 +458,27 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                   <button type="button" className="btn sm" onClick={resetRecommendations} aria-label="Reset recommendations">Reset</button>
                 </Row>
               </div>
-              <h3 className="set-section">Data</h3>
-              <div className="set-group">
-                <Row icon="sync" title="Reset app data" desc="Clears playlists, settings and recommendations on this device. Songs you imported from the web stay and come back.">
-                  <button type="button" className="btn danger sm" onClick={resetAppData} aria-label="Reset app data">Reset</button>
-                </Row>
-                <Row icon="help" title="Privacy and terms" desc="What Slopify keeps, where, and how to delete it.">
-                  <a className="btn sm" href={`${DOCS}/PRIVACY.md`} target="_blank" rel="noreferrer">Privacy</a>
-                  <a className="btn sm" href={`${DOCS}/TERMS.md`} target="_blank" rel="noreferrer">Terms</a>
-                </Row>
-              </div>
             </>
           ) : null}
 
           {tab === "playback" ? (
             <>
+              <h3 className="set-section">Listening</h3>
+              <div className="set-group">
+                <Row icon="sparkle" title="Autoplay" desc="When your queue ends, keep playing similar music.">
+                  <Toggle checked={settings.autoplay} onChange={set("autoplay")} label="Autoplay" />
+                </Row>
+                <Row icon="shuffle" title="Slip-ins" desc="Songs you mark with “Slip into my listening” play now and then between your songs, when they fit what's playing. Your playlist carries on afterwards. Skip them as often as you like.">
+                  <label className="select">
+                    <select value={settings.slipIns} onChange={(e) => updateSettings({ slipIns: e.target.value as typeof settings.slipIns })} aria-label="How often to slip songs in">
+                      <option value="often">Often</option>
+                      <option value="sometimes">Sometimes</option>
+                      <option value="rare">Rarely</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>
+                </Row>
+              </div>
               <h3 className="set-section">Transitions</h3>
               <div className="set-group">
                 <Row icon="wave" title="Crossfade" desc={settings.crossfade ? `Songs overlap by ${settings.crossfadeSeconds} seconds.` : "Blend the end of a song into the next one."}>
@@ -472,11 +557,12 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
               </div>
               <h3 className="set-section">This device</h3>
               <div className="set-group">
-                <Row icon="download" title="Keep songs on this device" desc="Saved songs are kept here as files so they play without the server. Off: they stream through the server each time.">
-                  <select className="input sm" value={settings.downloadMode} onChange={(e) => updateSettings({ downloadMode: e.target.value as Settings["downloadMode"] })} aria-label="Keep songs on this device">
-                    <option value="verified_file_cache">Keep a copy</option>
-                    <option value="stream_only">Stream only</option>
-                  </select>
+                <Row icon="download" title="Download songs to this device" desc={settings.downloadMode === "stream_only" ? "Off: songs stream from your music server each time you play them." : "Songs you add are downloaded here, so they play even when the music server is off. Turn off to stream them from the server each time."}>
+                  <Toggle
+                    checked={settings.downloadMode !== "stream_only"}
+                    onChange={(on) => updateSettings({ downloadMode: on ? "verified_file_cache" : "stream_only" })}
+                    label="Download songs to this device"
+                  />
                 </Row>
               </div>
             </>

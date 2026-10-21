@@ -14,6 +14,7 @@ import { createRecommendations } from "./recommendations.mjs";
 import { createArtists } from "./artists.mjs";
 import { createCatalog } from "./catalog.mjs";
 import { createStateStore, readLargeJSON } from "./library-state.mjs";
+import { readDurably, removeDurably, writeDurably } from "./durable-file.mjs";
 import { runFolder, sweepOldTemp, sweepRunFolders } from "./run-folders.mjs";
 import { SongFiles } from "./song-files.mjs";
 import { SongStore } from "./songs.mjs";
@@ -332,7 +333,11 @@ async function prepareSongFile(song, dir, signal) {
 }
 
 /** `owned`: whether this server still has the library (see library-lock.mjs); changes are refused once it hasn't. */
-export function createImportApi({ dataDir, owned = () => true }) {
+/**
+ * `presence` (optional): told which Slopify pages are open, so the
+ * standalone server can stop once its last window closes (see main.mjs).
+ */
+export function createImportApi({ dataDir, owned = () => true, presence = null }) {
   // Checked again just before each save: a request that started before a takeover mustn't finish it.
   const stillOwned = () => {
     if (!owned()) throw Object.assign(new Error("Another Slopify took over this library. Restart this one to use it again."), { status: 409 });
@@ -556,7 +561,16 @@ export function createImportApi({ dataDir, owned = () => true }) {
     }
     try {
       if (parts[0] === "health" && method === "GET") {
-        return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()) });
+        return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()), presence: Boolean(presence) });
+      }
+      // Each open Slopify page checks in now and then, and says when it closes.
+      if (parts[0] === "presence" && parts.length === 1 && method === "POST") {
+        if (!presence) return sendJSON(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "Not needed here." } });
+        const { page, closing } = await readJSON(req);
+        if (typeof page !== "string" || !page || page.length > 100) return sendJSON(res, 400, { ok: false, error: { code: "BAD_REQUEST", message: "Which page?" } });
+        if (closing) presence.closed(page);
+        else presence.open(page);
+        return sendJSON(res, 200, { ok: true });
       }
       if (parts[0] === "metadata" && parts[1] === "artist" && parts.length === 2 && method === "POST") {
         const result = await artists.profile(await readJSON(req));
@@ -675,32 +689,37 @@ export function createImportApi({ dataDir, owned = () => true }) {
       }
       if (parts[0] === "cloud-link" && parts.length === 1) {
         const file = path.join(dataDir, "cloud-link.json");
+        // Whose library this is decides what may sync into it, so a damaged record refuses (it never reads as "nobody's"),
+        // and a replacement interrupted after its backup was made still reads the backup.
+        const readLink = async () => (await readDurably(file, {
+          valid: (v) => v && typeof v === "object" && typeof v.userId === "string",
+          damaged: () => Object.assign(new Error(`Slopify can't tell which account this library belongs to: ${file} is damaged. Repair or move it, then try again.`), { status: 500 }),
+        }))?.value ?? null;
         if (method === "GET") {
-          const link = await fs.readFile(file, "utf8").then(JSON.parse).catch(() => null);
+          const link = await readLink();
           return sendJSON(res, 200, { ok: true, link: link?.userId ? link : null });
         }
         if (method === "PUT") {
           const body = await readJSON(req);
           const userId = typeof body?.userId === "string" && body.userId.length <= 200 ? body.userId : null;
           if (!userId) return sendJSON(res, 400, { ok: false, error: { code: "BAD_LINK", message: "Send the account's userId." } });
-          const current = await fs.readFile(file, "utf8").then(JSON.parse).catch(() => null);
+          const current = await readLink();
           // Linking to another account must be asked for explicitly.
           if (current?.userId && current.userId !== userId && body.replace !== true) {
             return sendJSON(res, 409, { ok: false, link: current, error: { code: "LINKED_ELSEWHERE", message: "This computer's library belongs to another account." } });
           }
           const link = { userId, name: typeof body.name === "string" ? body.name.slice(0, 100) : null, email: typeof body.email === "string" ? body.email.slice(0, 200) : null, linkedAt: Date.now() };
           await fs.mkdir(dataDir, { recursive: true });
-          stillOwned();
-          await fs.writeFile(file, JSON.stringify(link, null, 2));
+          await writeDurably(file, JSON.stringify(link, null, 2), stillOwned);
           return sendJSON(res, 200, { ok: true, link });
         }
         // The account was deleted: this library belongs to no account (only that account can let it go).
         if (method === "DELETE") {
           const userId = url.searchParams.get("userId");
-          const current = await fs.readFile(file, "utf8").then(JSON.parse).catch(() => null);
+          const current = await readLink();
           if (current?.userId && current.userId === userId) {
             stillOwned();
-            await fs.rm(file, { force: true });
+            await removeDurably(file);
           }
           return sendJSON(res, 200, { ok: true, link: null });
         }

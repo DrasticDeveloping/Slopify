@@ -457,6 +457,23 @@ export function trackPlatform(t: Track): Provider | null {
   return null;
 }
 
+/** What registered a streamed song, to register it again in a later session (slip-ins keep streamed songs). */
+export function streamSong(id: string): StreamSong | null {
+  const source = streamSources.get(id);
+  const t = getState().tracks[id];
+  if (!source || !t) return null;
+  const s = getState();
+  return {
+    key: source.key,
+    candidate: source.candidate,
+    kind: source.kind,
+    title: t.title,
+    artist: s.artists[t.artistId]?.name ?? source.candidate.artist ?? "Unknown artist",
+    artwork: s.albums[t.albumId]?.artworkUrl,
+    video: source.saveVideo ? true : source.video ? undefined : false,
+  };
+}
+
 /** Where a streamed song's audio comes from, for sharing it (Listen Along). */
 export const streamLink = (id: string) => streamSources.get(id)?.candidate.sourceURL ?? null;
 

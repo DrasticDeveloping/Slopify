@@ -15,7 +15,7 @@ By using Slopify or a Slopify account, you agree to these terms.
 - Keep your sign-in safe; you're responsible for what's done with your account.
 - Your display name is shown to people in Listen Along rooms with you. Don't use a name that impersonates someone or is abusive.
 - The online service has limits, such as the number of songs per account and requests per minute, to keep it running for everyone.
-- Accounts that break these terms may be suspended or deleted. You can delete yours at any time in Settings → General → Account.
+- Accounts that break these terms may be suspended or deleted. You can delete yours at any time in Settings → Account.
 
 ## Your data
 

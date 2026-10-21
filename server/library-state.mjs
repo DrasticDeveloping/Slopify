@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readDurably, writeDurably } from "./durable-file.mjs";
 
 /*
  * The listener's library data on the music server: playlists, likes, listening
@@ -23,15 +24,14 @@ export function createStateStore(dataDir, beforeSave = () => {}) {
 
   async function read() {
     if (current) return current;
-    try {
-      const parsed = JSON.parse(await fs.readFile(file, "utf8"));
-      if (!Number.isSafeInteger(parsed?.rev) || typeof parsed.data !== "object") throw new Error("damaged");
-      current = { rev: parsed.rev, updatedAt: parsed.updatedAt ?? 0, data: parsed.data };
-    } catch (error) {
-      // Only a missing file is a fresh start; anything else must not be overwritten.
-      if (error?.code !== "ENOENT") throw new Error(`Slopify's library data file is damaged (${file}). Repair or move it, then try again.`);
-      current = { rev: 0, updatedAt: 0, data: null };
-    }
+    // A damaged file falls back on its backup. Only a missing (or blank: nothing to lose) file is a
+    // fresh start, which browsers fill again from their own copies; anything else is never overwritten.
+    const found = await readDurably(file, {
+      valid: (parsed) => Number.isSafeInteger(parsed?.rev) && typeof parsed.data === "object",
+      damaged: () => new Error(`Slopify's library data file is damaged (${file}). Repair or move it, then try again.`),
+      blankIsEmpty: true,
+    });
+    current = found ? { rev: found.value.rev, updatedAt: found.value.updatedAt ?? 0, data: found.value.data } : { rev: 0, updatedAt: 0, data: null };
     return current;
   }
 
@@ -46,10 +46,7 @@ export function createStateStore(dataDir, beforeSave = () => {}) {
         const text = JSON.stringify(saved);
         if (text.length > MAX_STATE_BYTES) throw tooLarge("Library data is too large to sync.");
         await fs.mkdir(dataDir, { recursive: true });
-        const temp = `${file}.${process.pid}.tmp`;
-        await fs.writeFile(temp, text);
-        beforeSave();
-        await fs.rename(temp, file);
+        await writeDurably(file, text, beforeSave);
         current = saved;
         return { conflict: false, doc: saved };
       });

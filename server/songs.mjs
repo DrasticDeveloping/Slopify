@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readDurably, writeDurably } from "./durable-file.mjs";
 
 /*
  * The music server's song library. A song is a record of where it comes from
@@ -150,30 +151,17 @@ export class SongStore {
     return this.songs;
   }
 
-  /** The parsed file, or null if it does not exist. Any other failure stops the load, so a real library is never overwritten. */
+  /** The parsed file (or its backup, if the file is damaged), or null if neither exists. Any other failure stops the load, so a real library is never overwritten. */
   async readJSON(file) {
-    let text;
-    try {
-      text = await fs.readFile(file, "utf8");
-    } catch (error) {
-      if (error?.code === "ENOENT") return null;
-      throw error;
-    }
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new Error(`Slopify's library file is damaged (${file}). Repair or move it, then try again.`);
-    }
+    const found = await readDurably(file, { damaged: () => new Error(`Slopify's library file is damaged (${file}). Repair or move it, then try again.`) });
+    return found ? found.value : null;
   }
 
   save() {
-    // Serialize writes and replace atomically so a crash never leaves half a file.
+    // Serialize writes, flushed to the disk and replaced atomically, so a crash or a full disk never leaves a damaged file.
     const write = this.writing.catch(() => undefined).then(async () => {
       await fs.mkdir(this.dir, { recursive: true });
-      const temp = `${this.file}.${process.pid}.tmp`;
-      await fs.writeFile(temp, JSON.stringify({ version: 2, songs: this.songs }, null, 2));
-      this.beforeSave();
-      await fs.rename(temp, this.file);
+      await writeDurably(this.file, JSON.stringify({ version: 2, songs: this.songs }, null, 2), this.beforeSave);
     });
     this.writing = write;
     return write;

@@ -163,7 +163,7 @@ export function HomeView() {
               </div>
             );
           })}
-          {!forYou.length ? <p className="muted shelf-empty">Nothing to suggest yet. Add songs, or bring back hidden ones in Settings → General.</p> : null}
+          {!forYou.length ? <p className="muted shelf-empty">Nothing to suggest yet. Add songs, or bring back hidden ones in Settings → Recommendations.</p> : null}
         </Shelf>
       ) : (
         <DiscoveryShelf title="Recommended for you" subtitle="New songs picked from what you play, none of them in your library yet. Play any of them in full, or add it to your library." />

@@ -2,3 +2,4 @@
 .wrangler/
 node_modules/
 backups/
+.dev-key.pem

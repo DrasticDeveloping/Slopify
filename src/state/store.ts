@@ -17,7 +17,10 @@ export type Route =
   | { name: "mix"; id: string }
   | { name: "storage" }
   | { name: "server" }
-  | { name: "history" };
+  | { name: "history" }
+  | { name: "friends" }
+  /** A playlist someone shared (src/state/social.ts), by share id. */
+  | { name: "shared"; id: string };
 
 export type Modal =
   | { type: "createPlaylist"; addIds?: string[] }
@@ -25,11 +28,12 @@ export type Modal =
   | { type: "addSongs"; playlistId: string }
   | { type: "settings"; tab?: SettingsTab }
   | { type: "listenAlong" }
-  | { type: "clipEditor"; trackId?: string };
+  | { type: "clipEditor"; trackId?: string }
+  | { type: "sharePlaylist"; id: string };
 
 export interface RoomMember { userId: string; name: string; avatarUrl: string | null; host: boolean }
 
-export type SettingsTab = "general" | "playback" | "appearance" | "server" | "shortcuts";
+export type SettingsTab = "general" | "account" | "playback" | "recommendations" | "appearance" | "server" | "shortcuts";
 
 export interface MenuItem {
   label?: string;
@@ -371,8 +375,9 @@ export function resetAppData() {
   persistenceStopped = true;
   clearTimeout(persistTimer);
   localStorage.removeItem(STORAGE_KEY);
-  // Mix editions (recommend/mixes.ts keeps its own key; importing it here would be circular).
+  // Mix editions and recommended songs (recommend/ keeps its own keys; importing them here would be circular).
   localStorage.removeItem("slopify.mix-editions.v1");
+  localStorage.removeItem("slopify.discovery.v1");
   location.reload();
 }
 

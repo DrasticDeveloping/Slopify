@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { PlaylistArt } from "../components/Artwork";
 import { ChooseFiles } from "../components/ChooseFiles";
 import { Icon } from "../components/Icon";
@@ -7,9 +7,8 @@ import { TrackList } from "../components/TrackList";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu } from "../lib/menus";
 import { findMusic, isPlayable, libraryIds, likedIds, navigate, openModal, toggleShuffle } from "../state/actions";
-import { useSlipIns } from "../state/slipins";
+import { registerStreamed, useSlipIns } from "../state/slipins";
 import { downloadTracks } from "../state/server";
-import { syncNow } from "../state/sync";
 import { getState, setState, useStore, type Route } from "../state/store";
 import { Empty } from "./Collection";
 
@@ -48,8 +47,14 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
       if (filter === "slipins") return Boolean(slipIns[id]);
       return true;
     });
+    // Streamed slip-ins aren't in the library, but are slip-ins all the same.
+    if (filter === "slipins") list.push(...Object.keys(slipIns).filter((id) => tracks[id]?.stream));
     return filter === "recent" ? list.sort((a, b) => tracks[b].addedAt - tracks[a].addedAt) : list;
   }, [all, filter, tracks, playlists, slipIns]);
+
+  useEffect(() => {
+    if (filter === "slipins") registerStreamed();
+  }, [filter, slipIns]);
 
   const route: Route = filter === "all" ? { name: "library" } : { name: "library", filter };
   const total = ids.reduce((sum, id) => sum + tracks[id].duration, 0);
@@ -72,7 +77,8 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
           </button>
         </div>
       </header>
-      {all.length ? (<>
+      {/* The filters show once there's anything to filter, including streamed slip-ins, which aren't in the library. */}
+      {all.length || Object.keys(slipIns).length ? (<>
       <div className="chips" role="group" aria-label="Filter songs">
         {filters.map(([f, name]) => (
           <button key={f} type="button" className={`chip${filter === f ? " on" : ""}`} aria-pressed={filter === f} onClick={() => setFilter(f)}>
@@ -110,10 +116,6 @@ export function PlaylistsView() {
           <p className="muted">Organize your music into collections shared across your Slopify devices.</p>
         </div>
         <div className="page-actions">
-          <button type="button" className="btn" onClick={() => void syncNow()}>
-            <Icon name="sync" size={18} />
-            Sync
-          </button>
           <button type="button" className="btn primary" onClick={() => openModal({ type: "createPlaylist" })}>
             <Icon name="plus" size={18} />
             New playlist

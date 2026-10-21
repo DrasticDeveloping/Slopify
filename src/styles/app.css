@@ -1644,3 +1644,45 @@ button.th:not(:disabled):hover { color: var(--text); }
 .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .empty-actions.start { justify-content: flex-start; margin-top: 10px; }
 
+
+/* Friends and shared playlists (views/Friends.tsx, modals/ShareModal.tsx) */
+.nav-count { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); font-size: 11.5px; font-weight: 750; }
+.friends-top { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 28px; }
+.friends-top .room-card p { margin: 8px 0 0; }
+.add-friend { display: flex; flex-direction: column; gap: 10px; padding: 18px; border-radius: var(--r-lg); background: var(--raised); border: 1px solid var(--line); }
+.add-friend p { margin: 0; }
+.friends-view section { margin-bottom: 28px; }
+.friends-view .people li { gap: 10px; }
+.friend-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.friend { border-radius: var(--r-md); animation: row-in 400ms var(--ease-out) both; animation-delay: calc(var(--i, 0) * 50ms); }
+.friend:hover { background: var(--hover); }
+.friend-main { display: flex; align-items: center; gap: 12px; padding: 8px 10px; }
+.friend-main .btn .icon { margin-left: 2px; }
+.friend-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.friend-copy strong { font-weight: 650; }
+.friend-copy small { color: var(--text-2); font-size: 12.5px; display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.friend-copy small.accent { color: var(--accent-ink); }
+.friend-main .live-dot { margin-right: 6px; }
+.friend-playlists { padding: 0 10px 12px 56px; container-type: inline-size; }
+.friend-playlists > p { margin: 0; display: flex; align-items: center; gap: 8px; }
+.shared-card-wrap { position: relative; scroll-snap-align: start; min-width: 0; }
+.shared-dismiss { position: absolute; top: 14px; right: 14px; z-index: 3; background: rgb(0 0 0 / 0.55); color: #fff; opacity: 0; transition: opacity 160ms; }
+.shared-card-wrap:hover .shared-dismiss, .shared-dismiss:focus-visible { opacity: 1; }
+@media (hover: none) { .shared-dismiss { opacity: 1; } }
+.shared-note { margin: -6px 0 14px; }
+.share-points { margin: 0 0 4px; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.share-link { display: flex; gap: 8px; align-items: center; }
+.share-link .input { flex: 1; min-width: 0; }
+.share-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 6px 0 4px; }
+.share-row span { display: flex; flex-direction: column; gap: 2px; }
+.share-friends { list-style: none; margin: 0 0 10px; padding: 0; max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.share-friends label { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-radius: var(--r-md); cursor: pointer; }
+.share-friends label:hover { background: var(--hover); }
+@media (max-width: 680px) {
+  .friend-main { flex-wrap: wrap; }
+  .friend-playlists { padding-left: 10px; }
+}
+.username-field { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); font-weight: 650; }
+.username-field .input { min-width: 140px; }
+.username-field .input[aria-invalid="true"] { border-color: var(--danger); }
+.handle { font-weight: 500; font-size: 0.9em; }

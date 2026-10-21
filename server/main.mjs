@@ -15,6 +15,9 @@
  *                            share (see data-dir.cjs), or data/ in an installed app folder
  *   --isolated, SLOPIFY_ISOLATED_DATA=1
  *                            use this checkout's own data/ folder (and desktop profile) instead
+ *   --keep-running, SLOPIFY_KEEP_RUNNING=1
+ *                            keep running after the last Slopify window on this computer closes
+ *                            (it stops then by default, unless it's shared on your network)
  */
 
 import { createReadStream } from "node:fs";
@@ -33,9 +36,9 @@ const dist = path.join(appDir, "dist");
 
 let flags;
 try {
-  ({ values: flags } = parseArgs({ options: { open: { type: "boolean" }, isolated: { type: "boolean" }, port: { type: "string" }, host: { type: "string" }, data: { type: "string" } } }));
+  ({ values: flags } = parseArgs({ options: { open: { type: "boolean" }, isolated: { type: "boolean" }, port: { type: "string" }, host: { type: "string" }, data: { type: "string" }, "keep-running": { type: "boolean" } } }));
 } catch (error) {
-  fail(`${error.message.replace(/\.?$/, ".")} The options are --open, --isolated, --port, --host and --data.`);
+  fail(`${error.message.replace(/\.?$/, ".")} The options are --open, --isolated, --port, --host, --data and --keep-running.`);
 }
 const port = Number(flags.port ?? (flags.open ? process.env.SLOPIFY_DESKTOP_PORT ?? 5197 : process.env.PORT ?? 5199));
 const host = flags.host ?? process.env.HOST ?? "127.0.0.1";
@@ -162,7 +165,52 @@ if (process.platform !== "ios") {
     throw error;
   }
 }
-const api = createImportApi({ dataDir, owned });
+/*
+ * Run for this computer only, the server stops once the last Slopify window
+ * closes, so it doesn't keep the library from the desktop app or another
+ * checkout. Not when it's shared on the network (phones use it), when the
+ * desktop app runs it (the app stops it), or with --keep-running.
+ */
+const loopback = ["127.0.0.1", "localhost", "::1"].includes(host);
+const stopsWhenClosed = loopback && process.platform !== "ios" && !process.env.SLOPIFY_DESKTOP_BACKEND
+  && !flags["keep-running"] && process.env.SLOPIFY_KEEP_RUNNING !== "1";
+/*
+ * Each page checks in every 20 seconds and says when it closes. A page that
+ * stops checking in (it crashed) counts as closed after PAGE_GONE, which is
+ * long enough for a browser that slows timers in background tabs to once a
+ * minute. No connection is held open, so tabs never use up the browser's
+ * connections to the server.
+ */
+const PAGE_GONE = 3 * 60_000;
+/** A reload, or a window opened again soon, doesn't stop it. */
+const CLOSED_FOR = 20_000;
+const pages = new Map();
+let stopTimer;
+function stopIfClosed() {
+  const now = Date.now();
+  for (const [page, at] of pages) if (now - at > PAGE_GONE) pages.delete(page);
+  if (pages.size || stopTimer) return;
+  stopTimer = setTimeout(() => {
+    stopTimer = undefined;
+    if (pages.size) return;
+    console.log("Every Slopify window is closed, so Slopify is stopping. (To keep it running, start it with --keep-running.)");
+    process.emit("SIGTERM");
+  }, CLOSED_FOR);
+}
+const presence = stopsWhenClosed ? {
+  open(page) {
+    pages.set(page, Date.now());
+    clearTimeout(stopTimer);
+    stopTimer = undefined;
+  },
+  closed(page) {
+    pages.delete(page);
+    stopIfClosed();
+  },
+} : null;
+// Only once a page has opened: started and not yet opened, it waits.
+if (presence) setInterval(() => pages.size && stopIfClosed(), 30_000).unref();
+const api = createImportApi({ dataDir, owned, presence });
 const server = http.createServer((req, res) => {
   api(req, res, () => serveApp(req, res)).catch((error) => {
     // The browser left (a reload, or a request it no longer needs): nothing went wrong.
@@ -181,6 +229,7 @@ server.on("error", (error) => {
 server.listen(port, host, () => {
   console.log(`Slopify is running at ${appUrl}`);
   console.log(`Library: ${dataDir}`);
+  if (stopsWhenClosed) console.log("It stops when you close the last Slopify window (--keep-running keeps it running).");
 });
 
 // Finish requests in progress on Ctrl+C or a service manager's stop, then exit.

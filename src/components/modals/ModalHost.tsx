@@ -3,6 +3,7 @@ import { useStore, type Modal } from "../../state/store";
 import { ClipEditorModal } from "./ClipEditor";
 import { SettingsModal } from "./SettingsModal";
 import { ClosingContext } from "./Shell";
+import { ShareModal } from "./ShareModal";
 import { AddSongsModal, ListenAlongModal, PlaylistFormModal } from "./SimpleModals";
 
 function render(modal: Modal) {
@@ -19,6 +20,8 @@ function render(modal: Modal) {
       return <ListenAlongModal />;
     case "clipEditor":
       return <ClipEditorModal trackId={modal.trackId} />;
+    case "sharePlaylist":
+      return <ShareModal id={modal.id} />;
   }
 }
 

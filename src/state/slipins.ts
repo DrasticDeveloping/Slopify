@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from "react";
+import { recommend } from "../recommend/rank";
 import type { Listen } from "../recommend/taste";
-import { connectSlipIns, isLiked, isPlayable, saveStream, toast, toggleLike } from "./actions";
+import { connectSlipIns, isLiked, isPlayable, toast, toggleLike } from "./actions";
+import { registerStreams, streamSong, streamTrackId, type StreamSong } from "./importer";
 import { getState, type AppState } from "./store";
 
 /*
@@ -10,8 +12,14 @@ import { getState, type AppState } from "./store";
  * often as you like. The playlist (or album, or shuffle) carries on from where
  * it was afterwards; nothing in it is skipped or moved.
  *
- * Kept per library song, here (localStorage) and, for music-server songs, with
- * your library and account (sync.ts), so they follow you to your other devices.
+ * A slip-in plays when the recommender expects you'll like it there: it has to
+ * fit what's playing (the same artists, playlists you keep them together in,
+ * songs listeners play together, what you usually play next).
+ *
+ * Kept per song, here (localStorage) and, for music-server songs, with your
+ * library and account (sync.ts), so they follow you to your other devices.
+ * A streamed song (a search result or suggestion) can be a slip-in without
+ * being saved: it keeps what's needed to stream it again in a later session.
  */
 
 export interface SlipIn {
@@ -28,6 +36,8 @@ export interface SlipIn {
   lastAt?: number;
   /** Whether "you've heard it a few times" was already said. */
   offered?: boolean;
+  /** A streamed song, not in the library: how to stream it again. */
+  stream?: StreamSong;
 }
 
 export type SlipFrequency = "off" | "rare" | "sometimes" | "often";
@@ -88,14 +98,22 @@ export const useSlippedIn = () => useSyncExternalStore((l) => (currentListeners.
 
 function add(ids: string[]) {
   const next = { ...songs };
-  for (const id of ids) next[id] ??= { addedAt: Date.now(), slipped: 0, finished: 0, skipped: 0, skipStreak: 0 };
+  for (const id of ids) {
+    const stream = getState().tracks[id]?.stream ? streamSong(id) : null;
+    next[id] ??= { addedAt: Date.now(), slipped: 0, finished: 0, skipped: 0, skipStreak: 0, ...(stream ? { stream } : {}) };
+  }
   publish(next);
 }
 
-/**
- * Marks songs to be slipped in (or, if they all are, stops it). A streamed
- * song is added to the library first, since slip-ins come from your library.
- */
+/** Streamed slip-ins become playable songs again (they aren't kept between sessions like library songs). */
+export function registerStreamed() {
+  const s = getState();
+  const missing = Object.values(songs).flatMap((r) => (r.stream && !s.tracks[streamId(r)] ? [r.stream] : []));
+  if (missing.length) registerStreams(missing);
+}
+const streamId = (r: SlipIn) => (r.stream ? streamTrackId(r.stream.key) : "");
+
+/** Marks songs to be slipped in (or, if they all are, stops it). Streamed songs stay streamed: nothing is downloaded. */
 export function toggleSlipIn(ids: string[]) {
   const s = getState();
   if (ids.length && ids.every(isSlipIn)) {
@@ -105,14 +123,11 @@ export function toggleSlipIn(ids: string[]) {
     toast(ids.length === 1 ? "Won't slip it in anymore" : `Won't slip in ${ids.length} songs anymore`);
     return;
   }
-  const library = ids.filter((id) => s.tracks[id] && !s.tracks[id].stream);
-  const streamed = ids.filter((id) => s.tracks[id]?.stream);
-  if (library.length) add(library);
-  for (const id of streamed) saveStream(id, (libraryId) => add([libraryId]));
+  add(ids.filter((id) => s.tracks[id]));
   const off = s.settings.slipIns === "off";
-  toast(ids.length === 1 ? "It'll slip into your listening now and then" : `${ids.length} songs will slip into your listening now and then`, {
+  toast(ids.length === 1 ? "It'll slip in when it fits what you're playing" : `${ids.length} songs will slip in when they fit what you're playing`, {
     tone: "success",
-    detail: off ? "Slip-ins are turned off in Settings → Listening." : streamed.length ? "Adding it to your library first." : "Skip it whenever you like.",
+    detail: off ? "Slip-ins are turned off in Settings → Playback." : "Skip it whenever you like.",
   });
 }
 
@@ -126,42 +141,46 @@ const nextGap = (f: Exclude<SlipFrequency, "off">) => {
   return lo + Math.floor(Math.random() * (hi - lo + 1));
 };
 
+/** How likely you are to enjoy a slip-in here, as the recommender scores it; below this, it waits for a better moment. */
+const LIKELY = 1;
+/** After this many gaps without a good moment, a slip-in that fits a little will do. */
+const PATIENCE = 3;
+const FAIR = 0.5;
+
 /**
- * How well a slip-in fits what's playing: by the same artists as the songs
- * around it, or in the same genre. A song that keeps getting skipped fits less.
+ * How much you'd enjoy each slip-in right after what's playing, from the
+ * recommender's autoplay ranking (the songs around it, playlists you keep
+ * together, what you usually play next, what listeners play together, your
+ * likes). A song that keeps getting skipped scores less.
  */
-function fit(s: AppState, id: string, around: string[]) {
-  const t = s.tracks[id];
-  const artists = new Set(around.map((x) => s.tracks[x]?.artistId).filter(Boolean));
-  const genres = new Set(around.map((x) => s.artists[s.tracks[x]?.artistId ?? ""]?.genre).filter(Boolean));
-  const near = [s.currentId, ...around.slice(0, 1)].map((x) => (x ? s.tracks[x]?.artistId : undefined));
-  let score = 0;
-  if (near.includes(t.artistId)) score += 3;
-  else if (artists.has(t.artistId)) score += 2;
-  if (genres.has(s.artists[t.artistId]?.genre)) score += 1;
-  return score / (1 + songs[id].skipStreak);
+function likelihood(s: AppState, ids: string[], seedId: string) {
+  const ranked = recommend(
+    { tracks: s.tracks, artists: s.artists, playlists: s.playlists, taste: s.taste, trackIds: ids, playable: (t) => isPlayable(t, s) },
+    { mode: "autoplay", seedId, limit: ids.length },
+  );
+  return ranked.map((r) => ({ id: r.id, score: r.score / (1 + songs[r.id].skipStreak) }));
 }
 
 /** A slip-in to play before `nextId`, or null to carry on with the list. */
-function pick(s: AppState, nextId: string): string | null {
-  const frequency = s.settings.slipIns;
-  if (frequency === "off" || s.listen.mode === "guest" || s.repeat === "one") return null;
+function pick(state: AppState, nextId: string): string | null {
+  const frequency = state.settings.slipIns;
+  if (frequency === "off" || state.listen.mode === "guest" || state.repeat === "one") return null;
   if (!gap) gap = nextGap(frequency);
   // Only the list's own songs count towards the gap, not the slip-in that's ending.
-  if (s.currentId !== current) sinceLast++;
+  if (state.currentId !== current) sinceLast++;
   if (sinceLast < gap) return null;
+  registerStreamed();
+  const s = getState();
   const listed = new Set([...(s.context?.ids ?? []), ...s.upNext, ...s.history.slice(0, 15), s.currentId, nextId]);
-  const around = [nextId, ...s.order.slice(Math.max(0, s.index - 4), s.index + 6)];
   const now = Date.now();
-  const candidates = Object.keys(songs)
-    .filter((id) => !listed.has(id) && isPlayable(s.tracks[id], s) && !(now - (songs[id].lastAt ?? 0) < REST))
-    .map((id) => ({ id, score: fit(s, id, around) }));
+  const ids = Object.keys(songs).filter((id) => !listed.has(id) && isPlayable(s.tracks[id], s) && !(now - (songs[id].lastAt ?? 0) < REST));
+  if (!ids.length) return null;
+  // It plays when you're likely to enjoy it after what's playing; otherwise it waits for a better moment.
+  const bar = sinceLast >= gap * PATIENCE ? FAIR : LIKELY;
+  const candidates = likelihood(s, ids, s.currentId ?? nextId).filter((c) => c.score >= bar);
   if (!candidates.length) return null;
-  // A fitting song comes in once the gap is up; one that fits nothing here waits a while longer.
-  const best = Math.max(...candidates.map((c) => c.score));
-  if (best < 1 && sinceLast < gap * 2) return null;
-  // A weighted draw, so the best fit is likeliest without always winning.
-  const weights = candidates.map((c) => 0.25 + c.score);
+  // A weighted draw, so the likeliest is likeliest without always winning.
+  const weights = candidates.map((c) => c.score);
   let r = Math.random() * weights.reduce((a, b) => a + b, 0);
   const chosen = candidates[weights.findIndex((w) => (r -= w) <= 0)] ?? candidates[0];
   sinceLast = 0;

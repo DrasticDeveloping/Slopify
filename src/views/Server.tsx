@@ -6,7 +6,6 @@ import { formatTime, plural } from "../lib/format";
 import { openTrackMenu } from "../lib/menus";
 import { findMusic, isOnServer, openModal, playList, togglePlay } from "../state/actions";
 import { cancelDownloads, connect, downloadTracks } from "../state/server";
-import { syncNow } from "../state/sync";
 import { useStore } from "../state/store";
 import { Empty } from "./Collection";
 
@@ -88,7 +87,6 @@ export function ServerView() {
           <div><dt>On device</dt><dd>{onDevice}</dd></div>
         </dl>
         <div className="server-actions">
-          <button type="button" className="btn" onClick={() => void syncNow()}><Icon name="sync" size={18} />Sync library</button>
           <button type="button" className="btn" onClick={() => findMusic()}>
             <Icon name="plus" size={18} />Save a song
           </button>

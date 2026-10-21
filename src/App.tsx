@@ -30,6 +30,8 @@ import "./state/slipins";
 import { ReleaseView } from "./views/Release";
 import { SearchView } from "./views/Search";
 import { ServerView } from "./views/Server";
+import { FriendsView, SharedView } from "./views/Friends";
+import { watchSocial } from "./state/social";
 import { StorageView } from "./views/Storage";
 
 function View({ route }: { route: Route }) {
@@ -58,6 +60,10 @@ function View({ route }: { route: Route }) {
       return <ServerView />;
     case "history":
       return <HistoryView />;
+    case "friends":
+      return <FriendsView />;
+    case "shared":
+      return <SharedView id={route.id} />;
   }
 }
 
@@ -288,6 +294,7 @@ export function App() {
     wireEngine();
     watchLibraryData();
     watchPlaybackSpot();
+    watchSocial();
     // Once the library is known: the song you were playing is put back, and today's mixes are made (then kept up to date each minute).
     void startMusicServer(() => syncLibraryData().catch(() => undefined).then(() => {
       restorePlaybackSpot();
@@ -330,7 +337,7 @@ export function App() {
         ))}
         <button
           type="button"
-          className={["storage", "server", "history"].includes(route.name) ? "on" : ""}
+          className={["storage", "server", "history", "friends", "shared"].includes(route.name) ? "on" : ""}
           aria-haspopup="menu"
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
@@ -344,7 +351,8 @@ export function App() {
                 { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
                 { separator: true },
                 { label: "Find music", icon: "search", run: () => findMusic() },
-                { label: "Listen along", icon: "users", run: () => openModal({ type: "listenAlong" }) },
+                { label: "Friends", icon: "users", run: () => navigate({ name: "friends" }) },
+                { label: "Listen along", icon: "radio", run: () => openModal({ type: "listenAlong" }) },
                 { label: "Settings", icon: "settings", run: () => openModal({ type: "settings" }) },
               ],
             });
