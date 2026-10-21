@@ -22,6 +22,7 @@
 
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -175,21 +176,23 @@ const loopback = ["127.0.0.1", "localhost", "::1"].includes(host);
 const stopsWhenClosed = loopback && process.platform !== "ios" && !process.env.SLOPIFY_DESKTOP_BACKEND
   && !flags["keep-running"] && process.env.SLOPIFY_KEEP_RUNNING !== "1";
 /*
- * Each page checks in every 20 seconds and says when it closes. A page that
- * stops checking in (it crashed) counts as closed after PAGE_GONE, which is
- * long enough for a browser that slows timers in background tabs to once a
- * minute. No connection is held open, so tabs never use up the browser's
- * connections to the server.
+ * Each open page holds a WebSocket to /api/presence. The browser closes it
+ * whenever the page goes, however it goes (closed, crashed, or an embedded
+ * browser that never says it's closing), so the server knows straight away.
+ * WebSockets don't count against the browser's few connections per server, so
+ * tabs never hold up the app's requests. The server sends nothing on them.
  */
-const PAGE_GONE = 3 * 60_000;
 /** A reload, or a window opened again soon, doesn't stop it. */
 const CLOSED_FOR = 20_000;
-const pages = new Map();
+const pages = new Set();
 let stopTimer;
-function stopIfClosed() {
-  const now = Date.now();
-  for (const [page, at] of pages) if (now - at > PAGE_GONE) pages.delete(page);
-  if (pages.size || stopTimer) return;
+function pageOpened(socket) {
+  pages.add(socket);
+  clearTimeout(stopTimer);
+  stopTimer = undefined;
+}
+function pageClosed(socket) {
+  if (!pages.delete(socket) || pages.size || stopTimer) return;
   stopTimer = setTimeout(() => {
     stopTimer = undefined;
     if (pages.size) return;
@@ -197,20 +200,29 @@ function stopIfClosed() {
     process.emit("SIGTERM");
   }, CLOSED_FOR);
 }
-const presence = stopsWhenClosed ? {
-  open(page) {
-    pages.set(page, Date.now());
-    clearTimeout(stopTimer);
-    stopTimer = undefined;
-  },
-  closed(page) {
-    pages.delete(page);
-    stopIfClosed();
-  },
-} : null;
-// Only once a page has opened: started and not yet opened, it waits.
-if (presence) setInterval(() => pages.size && stopIfClosed(), 30_000).unref();
-const api = createImportApi({ dataDir, owned, presence });
+/** Accepts a page's WebSocket (only from this server's own pages), and notices when it closes. */
+function acceptPresence(req, socket) {
+  const key = req.headers["sec-websocket-key"];
+  let sameSite = false;
+  try {
+    sameSite = new URL(req.headers.origin).host === req.headers.host;
+  } catch {
+    // No origin, or not a URL: not one of Slopify's pages.
+  }
+  if (!stopsWhenClosed || typeof key !== "string" || !sameSite) {
+    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    return;
+  }
+  const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  socket.setNoDelay(true);
+  pageOpened(socket);
+  // The page never sends anything but a close frame (opcode 8), answered by closing.
+  socket.on("data", (frame) => (frame[0] & 0x0f) === 8 && socket.end(Buffer.from([0x88, 0x00])));
+  socket.on("error", () => socket.destroy());
+  socket.on("close", () => pageClosed(socket));
+}
+const api = createImportApi({ dataDir, owned, stopsWhenClosed });
 const server = http.createServer((req, res) => {
   api(req, res, () => serveApp(req, res)).catch((error) => {
     // The browser left (a reload, or a request it no longer needs): nothing went wrong.
@@ -221,6 +233,10 @@ const server = http.createServer((req, res) => {
   });
 });
 
+server.on("upgrade", (req, socket) => {
+  if (new URL(req.url || "/", "http://localhost").pathname === "/api/presence") acceptPresence(req, socket);
+  else socket.destroy();
+});
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") fail(`Port ${port} is already in use. Choose another with --port.`);
   if (error.code === "EACCES") fail(`Not allowed to use port ${port}. Choose another with --port.`);

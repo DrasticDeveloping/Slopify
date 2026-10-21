@@ -32,25 +32,15 @@ async function reachable() {
   }
 }
 
-/*
+/**
  * Tells a server that stops when its last window closes (`npm start` on this
- * computer) that this window is open: it checks in every 20 seconds, and says
- * when it closes (or goes into the back/forward cache).
+ * computer) that this window is open: it holds a WebSocket, which the browser
+ * closes when the window goes. Reopened by the next health check if it drops.
  */
-const PAGE = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-let present = false;
-const checkIn = (closing = false) => {
-  const body = JSON.stringify({ page: PAGE, closing });
-  if (closing) navigator.sendBeacon("/api/presence", body);
-  else void fetch("/api/presence", { method: "POST", body, keepalive: true }).catch(() => undefined);
-};
+let presence: WebSocket | null = null;
 function stayPresent() {
-  if (present) return;
-  present = true;
-  checkIn();
-  window.setInterval(() => checkIn(), 20_000);
-  window.addEventListener("pagehide", () => checkIn(true));
-  window.addEventListener("pageshow", (event) => event.persisted && checkIn());
+  if (presence && presence.readyState <= WebSocket.OPEN) return;
+  presence = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/presence`);
 }
 
 /** Checks the server now; while it can't be reached, keeps checking every 15 seconds. */
