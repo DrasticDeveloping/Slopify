@@ -3,9 +3,9 @@ import { hashString, paletteFromSeed } from "../data/library";
 import type { DiscoveredSong } from "../recommend/discover";
 import { ownedCopies, ownedIndex } from "../recommend/owned";
 import { useDiscovery } from "../recommend/useDiscovery";
-import { addToPlaylist, hideDiscovery, playList } from "../state/actions";
+import { addToPlaylist, hideDiscovery, playList, togglePlay } from "../state/actions";
 import { addDiscoveredSong, canStream, registerStreams, streamTrackId } from "../state/importer";
-import { getState } from "../state/store";
+import { getState, useStore } from "../state/store";
 import { Art } from "./Artwork";
 import { Icon } from "./Icon";
 
@@ -22,8 +22,11 @@ export function PlaylistSuggestions({ id, name, seedIds }: { id: string; name: s
   const { songs, loading, note, refresh } = useDiscovery(`playlist-${id}`, { seedIds, limit: 5 });
   useEffect(() => registerStreams(songs), [songs]);
   const ids = songs.filter((song) => canStream(song.candidate)).map((song) => streamTrackId(song.key));
+  const currentId = useStore((s) => s.currentId);
+  const isPlaying = useStore((s) => s.isPlaying);
   const play = (song: DiscoveredSong) => {
-    if (canStream(song.candidate)) playList(ids, streamTrackId(song.key), { label: `Suggestions for ${name}`, route: { name: "playlist", id } });
+    if (currentId === streamTrackId(song.key)) togglePlay();
+    else if (canStream(song.candidate)) playList(ids, streamTrackId(song.key), { label: `Suggestions for ${name}`, route: { name: "playlist", id } });
     else void addDiscoveredSong(song.candidate, song.kind);
   };
   const status = loading ? "Finding songs for this playlist…" : note || (!songs.length ? "No more matching songs right now." : "");
@@ -37,22 +40,31 @@ export function PlaylistSuggestions({ id, name, seedIds }: { id: string; name: s
         </div>
         <button type="button" className="text-btn" disabled={loading} onClick={refresh}>Find more</button>
       </div>
-      {songs.map((song) => (
-        <div className="suggestion-row" key={song.key}>
-          <Art palette={paletteFromSeed(hashString(song.key))} image={song.artwork} glyph={3} />
-          <button type="button" className="icon-btn" aria-label={`Play ${song.title}`} onClick={() => play(song)}>
-            <Icon name="play" size={18} />
-          </button>
-          <div className="suggestion-title">
-            <strong>{song.title}</strong>
-            <span className="muted">{song.artist}</span>
+      {songs.map((song) => {
+        const current = currentId === streamTrackId(song.key);
+        const playing = current && isPlaying;
+        return (
+          <div className={`suggestion-row${current ? " current" : ""}`} key={song.key} onDoubleClick={() => play(song)}>
+            <div className="suggestion-art">
+              <Art palette={paletteFromSeed(hashString(song.key))} image={song.artwork} glyph={3} />
+              <button type="button" className="suggestion-play" aria-label={`${playing ? "Pause" : "Play"} ${song.title}`} onClick={() => play(song)}>
+                <Icon name={playing ? "pause" : "play"} size={18} />
+              </button>
+            </div>
+            <div className="suggestion-title">
+              <strong>{song.title}</strong>
+              <span className="muted">{song.artist}</span>
+            </div>
+            <button type="button" className="btn sm" onClick={() => addSuggestion(id, song)}>
+              <Icon name="plus" size={14} />
+              Add
+            </button>
+            <button type="button" className="icon-btn suggestion-hide" aria-label={`Hide ${song.title}`} title="Not interested" onClick={() => hideDiscovery(song.key, song.kind)}>
+              <Icon name="close" size={16} />
+            </button>
           </div>
-          <button type="button" className="btn" onClick={() => addSuggestion(id, song)}>Add</button>
-          <button type="button" className="icon-btn" aria-label={`Hide ${song.title}`} onClick={() => hideDiscovery(song.key, song.kind)}>
-            <Icon name="close" size={16} />
-          </button>
-        </div>
-      ))}
+        );
+      })}
       {status ? <p className="muted" role="status">{status}</p> : null}
     </section>
   );
