@@ -266,6 +266,26 @@ const sameRoute = (a: Route, b: Route) => JSON.stringify(a) === JSON.stringify(b
 /** Below 1240px the side panel floats over the page (full screen on phones), so going somewhere closes it. */
 const closeFloatingPanel = (): Partial<AppState> => (window.matchMedia("(max-width: 1240px)").matches ? { panel: null } : {});
 
+/*
+ * How far down each page in the back and forward history was scrolled, so Back
+ * and Forward return there. Kept beside `back` and `forward`, newest last and
+ * first; this session only.
+ */
+let readScroll: () => number = () => 0;
+const backScroll: number[] = [];
+let forwardScroll: number[] = [];
+let scrollToRestore: number | null = null;
+/** The page's scroll position, read when you leave it (App.tsx). */
+export function trackScroll(read: () => number) {
+  readScroll = read;
+}
+/** Where the page just opened should be scrolled to, if it's one you came back to. Read once. */
+export function takeScrollRestore() {
+  const top = scrollToRestore;
+  scrollToRestore = null;
+  return top;
+}
+
 export function navigate(route: Route) {
   const s = getState();
   if (sameRoute(s.route, route)) return;
@@ -274,6 +294,10 @@ export function navigate(route: Route) {
     setState({ route });
     return;
   }
+  backScroll.push(readScroll());
+  if (backScroll.length > 50) backScroll.shift();
+  forwardScroll = [];
+  scrollToRestore = null;
   setState({ route, back: [...s.back, s.route].slice(-50), forward: [], selection: [], menu: null, ...closeFloatingPanel() });
 }
 
@@ -281,6 +305,8 @@ export function goBack() {
   const s = getState();
   const prev = s.back[s.back.length - 1];
   if (!prev) return;
+  forwardScroll.unshift(readScroll());
+  scrollToRestore = backScroll.pop() ?? null;
   setState({ route: prev, back: s.back.slice(0, -1), forward: [s.route, ...s.forward], selection: [], ...closeFloatingPanel() });
 }
 
@@ -288,6 +314,8 @@ export function goForward() {
   const s = getState();
   const next = s.forward[0];
   if (!next) return;
+  backScroll.push(readScroll());
+  scrollToRestore = forwardScroll.shift() ?? null;
   setState({ route: next, forward: s.forward.slice(1), back: [...s.back, s.route], selection: [], ...closeFloatingPanel() });
 }
 

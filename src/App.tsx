@@ -10,7 +10,7 @@ import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
 import { themes } from "./components/modals/SettingsModal";
 import {
-  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume,
+  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume, takeScrollRestore, trackScroll,
   toggleLike, toggleMute, togglePlay, toggleShuffle, wireEngine,
 } from "./state/actions";
 import { prepareMixes } from "./recommend/mixes";
@@ -305,9 +305,33 @@ export function App() {
   }, []);
 
   const key = routeKey(route);
+  useEffect(() => trackScroll(() => scroller.current?.scrollTop ?? 0), []);
   useEffect(() => {
-    scroller.current?.scrollTo({ top: 0 });
+    const el = scroller.current;
+    if (!el) return;
+    const top = takeScrollRestore();
+    el.scrollTo({ top: 0, behavior: "instant" });
     setScrolled(false);
+    if (!top) return;
+    // A page you went back to scrolls to where you were. It fills in as its data loads,
+    // so this keeps trying until it's tall enough (for up to 3 seconds), unless you scroll first.
+    let frame = 0;
+    let gaveUp = false;
+    const until = performance.now() + 3000;
+    const stop = () => { gaveUp = true; };
+    const inputs = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    inputs.forEach((type) => el.addEventListener(type, stop, { passive: true }));
+    const step = () => {
+      if (gaveUp) return;
+      el.scrollTo({ top, behavior: "instant" });
+      if (Math.abs(el.scrollTop - top) < 2 || performance.now() > until) return void setScrolled(el.scrollTop > 8);
+      frame = requestAnimationFrame(step);
+    };
+    step();
+    return () => {
+      cancelAnimationFrame(frame);
+      inputs.forEach((type) => el.removeEventListener(type, stop));
+    };
   }, [key]);
 
   return (
