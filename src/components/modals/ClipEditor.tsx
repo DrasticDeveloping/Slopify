@@ -4,6 +4,7 @@ import { videoFrames, wavePeaks } from "../../audio/analysis";
 import { engine } from "../../audio/engine";
 import { rng } from "../../data/library";
 import { formatTime } from "../../lib/format";
+import { onLiveFrame } from "../../lib/live";
 import { closeModal, isPlayable, libraryIds, mediaUrlOf, previewClip, saveClip, seek, setClipDraft, toast, togglePlay } from "../../state/actions";
 import { getState, useStore } from "../../state/store";
 import { TrackArt } from "../Artwork";
@@ -108,19 +109,13 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
     if (id) setClipDraft(id, range);
   }, [id, range]);
 
-  useEffect(() => {
-    let raf = 0;
-    const loop = () => {
-      if (head.current) {
-        const live = engine.loadedTrackId === id && duration;
-        head.current.style.opacity = live ? "1" : "0";
-        if (live) head.current.style.left = `${(engine.position / duration) * 100}%`;
-      }
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [id, duration]);
+  useEffect(() => onLiveFrame(() => {
+    if (head.current) {
+      const live = engine.loadedTrackId === id && duration;
+      head.current.style.opacity = live ? "1" : "0";
+      if (live) head.current.style.left = `${(engine.position / duration) * 100}%`;
+    }
+  }), [id, duration]);
 
   const analysis = useAnalysis(id, track?.kind === "video");
   const levels = useMemo(() => {

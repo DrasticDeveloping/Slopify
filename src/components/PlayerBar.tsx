@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { engine } from "../audio/engine";
 import { formatTime } from "../lib/format";
 import { pollPosition, useCurrent, useLiveText } from "../lib/hooks";
+import { onLiveFrame } from "../lib/live";
 import { cycleRepeat, isLiked, navigate, next, openMenu, positionOf, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, toggleShuffle } from "../state/actions";
 import { setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
@@ -167,14 +168,8 @@ function MiniProgress() {
   const { track, range } = useCurrent();
   const ref = useRef<HTMLSpanElement>(null);
   const end = range.end || track?.duration || 1;
-  useEffect(() => {
-    let raf = 0;
-    const loop = () => {
-      if (ref.current) ref.current.style.transform = `scaleX(${track ? Math.min(1, positionOf(track.id) / end) : 0})`;
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [track, end]);
+  useEffect(() => onLiveFrame(() => {
+    if (ref.current) ref.current.style.transform = `scaleX(${track ? Math.min(1, positionOf(track.id) / end) : 0})`;
+  }), [track, end]);
   return <span className="mini-progress" aria-hidden="true"><span ref={ref} /></span>;
 }

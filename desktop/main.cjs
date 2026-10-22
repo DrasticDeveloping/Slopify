@@ -66,6 +66,12 @@ function createWindow() {
     window.hide();
     background.hidden();
   });
+  // The page always counts as visible (backgroundThrottling: false), so it's told when the window really is,
+  // and stops drawing while it's minimised or in the tray.
+  const tellShown = () => {
+    if (!window.isDestroyed()) window.webContents.send("desktop:window-shown", window.isVisible() && !window.isMinimized());
+  };
+  for (const event of ["show", "hide", "minimize", "restore"]) window.on(event, tellShown);
   window.setMenuBarVisibility(false);
   window.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: "deny" }; });
   window.webContents.on("will-navigate", (event, url) => {
@@ -132,6 +138,7 @@ function openLink(url) {
     pendingLink = link;
   }
 }
+ipcMain.handle("desktop:window-shown", () => Boolean(window && !window.isDestroyed() && window.isVisible() && !window.isMinimized()));
 ipcMain.handle("desktop:links-ready", (event) => {
   linksReady = true;
   if (pendingLink) event.sender.send("desktop:link", pendingLink);

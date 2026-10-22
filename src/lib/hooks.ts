@@ -2,25 +2,22 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { engine } from "../audio/engine";
 import { effectiveRange, positionOf } from "../state/actions";
 import { getState, useStore } from "../state/store";
+import { onLiveFrame } from "./live";
 
-/** Writes a live value into an element's text every frame without re-rendering React. */
+/** Writes a live value into an element's text as it changes (see live.ts) without re-rendering React. */
 export function useLiveText<T extends HTMLElement>(read: () => string): RefObject<T | null> {
   const ref = useRef<T>(null);
   const readRef = useRef(read);
   readRef.current = read;
   useEffect(() => {
-    let raf = 0;
     let last = "";
-    const loop = () => {
+    return onLiveFrame(() => {
       const text = readRef.current();
       if (text !== last && ref.current) {
         ref.current.textContent = text;
         last = text;
       }
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    });
   }, []);
   return ref;
 }
