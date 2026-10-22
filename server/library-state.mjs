@@ -27,7 +27,8 @@ export function createStateStore(dataDir, beforeSave = () => {}) {
     // A damaged file falls back on its backup. Only a missing (or blank: nothing to lose) file is a
     // fresh start, which browsers fill again from their own copies; anything else is never overwritten.
     const found = await readDurably(file, {
-      valid: (parsed) => Number.isSafeInteger(parsed?.rev) && typeof parsed.data === "object",
+      // Every saved revision holds a document: only an empty start (revision 0) has none.
+      valid: (parsed) => Number.isSafeInteger(parsed?.rev) && (parsed.data === null ? parsed.rev === 0 : typeof parsed.data === "object" && !Array.isArray(parsed.data)),
       damaged: () => new Error(`Slopify's library data file is damaged (${file}). Repair or move it, then try again.`),
       blankIsEmpty: true,
     });

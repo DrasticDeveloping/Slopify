@@ -22,6 +22,7 @@ npm run dev      # development server with hot reload, also on :5199
 | `--host` | `HOST` | `127.0.0.1` | `0.0.0.0` shares Slopify on your local network |
 | `--data` | `SLOPIFY_DATA_DIR` | the shared library (below) | where your library is kept |
 | `--isolated` | `SLOPIFY_ISOLATED_DATA=1` | off | use this checkout's own `data/` folder instead |
+| | `SLOPIFY_ALLOWED_HOSTS` | none | shared on your network, extra names it answers to (comma-separated), like a domain in front of it; it always answers to IP addresses and this computer's name |
 | `--keep-running` | `SLOPIFY_KEEP_RUNNING=1` | off | keep running after the last Slopify window closes |
 
 Run for this computer only, the server stops about 20 seconds after you close the last Slopify window (a reload doesn't count), so it never holds your library after you're done. Each window holds a connection to the server, which the browser closes when the window goes, so it works however the window closes. Shared on your network (`--host 0.0.0.0`), or with `--keep-running`, it runs until you stop it.
