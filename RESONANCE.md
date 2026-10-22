@@ -1,6 +1,6 @@
 # Slopify and Resonance
 
-Slopify continues [Resonance](https://github.com/Drastics-Experiments/resonance), the Spotify-inspired music player. It began as a remaster of Resonance's desktop interface and grew into the next version of the app. That's why the package is still called `resonance-remastered` and starts at version 2.0.0.
+Slopify continues [Resonance](https://github.com/Drastics-Experiments/resonance), the Spotify-inspired music player. It began as a remaster of Resonance's desktop interface and grew into the next version of the app. That's why the package is still called `resonance-remastered`. As its own app, it starts again at version 0.0.1.
 
 ## Where it came from
 

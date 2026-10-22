@@ -13,7 +13,7 @@ The second command builds the current interface and packages it with Electron, t
 
 ## What to send
 
-Each build goes in its own folder, `release/<version>/` (for example `release/2.0.0/` or `release/2.0.1-nightly.20261012.930/`):
+Each build goes in its own folder, `release/<version>/` (for example `release/0.0.1/` or `release/0.0.2-nightly.20261012.930/`):
 
 | File | Use |
 | --- | --- |
@@ -33,8 +33,8 @@ Your development library, saved songs, playlists, logs, environment files, and c
 
 Slopify updates work like T3 Code's nightly builds. There are two channels:
 
-- **Stable** follows normal releases, numbered from `package.json` (`2.0.0`).
-- **Nightly** also gets nightly builds, made as often as every night. A nightly is numbered from the next patch version plus the UTC date and time it was built, like `2.0.1-nightly.20261012.930`. The final numeric identifier records seconds and milliseconds, so builds within a minute also sort correctly. Every nightly sorts after the one before it and before the stable `2.0.1`. When `2.0.1` ships, nightly users move to it, then on to the `2.0.2` nightlies.
+- **Stable** follows normal releases, numbered from `package.json` (`0.0.1`).
+- **Nightly** also gets nightly builds, made as often as every night. A nightly is numbered from the next patch version plus the UTC date and time it was built, like `0.0.2-nightly.20261012.930`. The final numeric identifier records seconds and milliseconds, so builds within a minute also sort correctly. Every nightly sorts after the one before it and before the stable `0.0.2`. When `0.0.2` ships, nightly users move to it, then on to the `0.0.3` nightlies.
 
 People choose their channel in **Settings → General → Update channel**. A nightly build starts on Nightly, and a stable build starts on Stable. Moving from Nightly to Stable installs the newest stable release, even if its version is older than the nightly they're running.
 
@@ -57,7 +57,7 @@ Actions publishes with the built-in `GITHUB_TOKEN`. Only the workflow's separate
 
 ### Publish the first Stable and Nightly
 
-The initial Stable uses package.json's current version, `2.0.0`. Run these commands when ready to publish, waiting for the first run to finish before starting the second:
+The initial Stable uses package.json's current version, `0.0.1`. Run these commands when ready to publish, waiting for the first run to finish before starting the second:
 
 ```powershell
 gh workflow run release.yml --repo DrasticDeveloping/Slopify --ref master -f channel=stable -f publish=true
@@ -77,7 +77,7 @@ npm.cmd run release:nightly     # build a nightly and publish it as a pre-releas
 npm.cmd run release:stable   # build package.json's version and publish it as the latest release
 ```
 
-Each command builds first, then runs `node scripts/publish-release.mjs`, which uploads `release/last-build.json`'s files as a GitHub release named for its version (`v2.0.1-nightly.20261012.930`). Publishing refuses a version that's already released, and a build without an update repo. To publish a build you've already made and tested, run `node scripts/publish-release.mjs` on its own.
+Each command builds first, then runs `node scripts/publish-release.mjs`, which uploads `release/last-build.json`'s files as a GitHub release named for its version (`v0.0.2-nightly.20261012.930`). Publishing refuses a version that's already released, and a build without an update repo. To publish a build you've already made and tested, run `node scripts/publish-release.mjs` on its own.
 
 Before a stable release, raise the version: `npm.cmd version patch --no-git-tag-version`.
 

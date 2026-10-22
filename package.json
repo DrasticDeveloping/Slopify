@@ -1,7 +1,7 @@
 {
   "name": "resonance-remastered",
   "private": true,
-  "version": "2.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "Slopify music player with a built-in local music server",
   "author": "DrasticDeveloping",

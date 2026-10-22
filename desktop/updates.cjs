@@ -5,7 +5,7 @@ const path = require("node:path");
 /*
  * Updates for the desktop app, with two channels like T3 Code's nightly builds:
  * "stable" follows normal releases, "nightly" also takes the frequent nightly builds
- * (versions like 2.0.1-nightly.20261012.930). Builds come from GitHub Releases on
+ * (versions like 0.0.2-nightly.20261012.930). Builds come from GitHub Releases on
  * the repo set when the app was packaged (release.config.json); a build without
  * one has no app-update.yml and never checks.
  *

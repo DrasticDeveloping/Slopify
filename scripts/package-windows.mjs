@@ -20,7 +20,7 @@ await fs.access(path.join(root, "dist/index.html"));
 
 // Stable builds use package.json's version. Nightly builds are numbered like T3 Code's
 // nightlies: the next patch version, then the UTC date and time of the build, so each
-// sorts after the previous nightly and before that stable release (2.0.1-nightly.20261012.930).
+// sorts after the previous nightly and before that stable release (0.0.2-nightly.20261012.930).
 const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
 const [major, minor, patch] = pkg.version.replace(/[-+].*$/, "").split(".").map(Number);
 const now = new Date();
