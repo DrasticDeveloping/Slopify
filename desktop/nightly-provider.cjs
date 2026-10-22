@@ -4,7 +4,9 @@ const { GitHubProvider } = require("electron-updater/out/providers/GitHubProvide
 const { parseUpdateInfo } = require("electron-updater/out/providers/Provider");
 
 // electron-updater's GitHub provider excludes stable releases for custom channels.
-// Keep its download handling, but select both stable and nightly tags for Nightly.
+// Keep its download handling, but for Nightly take the newest release published on
+// GitHub, stable or nightly, whatever its version number. (The release feed lists
+// the newest first; updates.cjs allows Nightly to "downgrade" to it.)
 class NightlyGitHubProvider extends GitHubProvider {
   async getLatestVersion() {
     if (!this.updater.allowPrerelease) return super.getLatestVersion();
@@ -18,7 +20,7 @@ class NightlyGitHubProvider extends GitHubProvider {
       if (!tag || !semver.valid(tag)) return [];
       const prerelease = semver.prerelease(tag);
       return !prerelease || prerelease[0] === "nightly" ? [{ tag, entry }] : [];
-    }).sort((a, b) => semver.rcompare(a.tag, b.tag));
+    });
     const selected = candidates[0];
     if (!selected) throw newError("No published versions on GitHub", "ERR_UPDATER_NO_PUBLISHED_VERSIONS");
     // Stable builds carry both files; use latest directly to support generic

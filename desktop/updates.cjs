@@ -92,9 +92,10 @@ function startUpdates(getWindow, log) {
     // "latest" reads latest.yml from the newest stable release.
     autoUpdater.channel = channel === "nightly" ? "nightly" : "latest";
     autoUpdater.allowPrerelease = channel === "nightly";
-    // A nightly on Stable goes back to the newest stable release, even an older version,
-    // for as long as it's still a nightly (a failed check or a restart doesn't lose this).
-    autoUpdater.allowDowngrade = channel === "stable" && /-/.test(app.getVersion());
+    // Nightly follows the newest release, even one numbered lower. A nightly on Stable goes
+    // back to the newest stable release, even an older version, for as long as it's still
+    // a nightly (a failed check or a restart doesn't lose this).
+    autoUpdater.allowDowngrade = channel === "nightly" || /-/.test(app.getVersion());
   };
   if (testFeed) autoUpdater.setFeedURL({ provider: "generic", url: testFeed });
   else autoUpdater.setFeedURL({ provider: "custom", ...feed, updateProvider: require("./nightly-provider.cjs").NightlyGitHubProvider });

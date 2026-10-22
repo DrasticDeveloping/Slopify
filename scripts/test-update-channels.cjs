@@ -21,17 +21,22 @@ function provider(tags, allowPrerelease = true) {
 }
 
 test("Nightly receives a newer stable and resolves its installer", async () => {
-  const { instance, requested } = provider(["v2.0.1-nightly.20261013.930", "v2.0.1"]);
+  const { instance, requested } = provider(["v2.0.1", "v2.0.1-nightly.20261013.930"]);
   const info = await instance.getLatestVersion();
   assert.equal(info.version, "2.0.1");
   assert.ok(requested.some(path => path.endsWith("/v2.0.1/latest.yml")));
   assert.equal(instance.resolveFiles(info)[0].url.href, "https://github.com/test/releases/releases/download/v2.0.1/Setup.exe");
 });
 
-test("Nightly selects the highest nightly and ignores other prereleases", async () => {
-  const { instance, requested } = provider(["v3.0.0-alpha.1", "v2.0.1-nightly.20261013.930.1", "v2.0.1-nightly.20261013.930.2", "v2.0.0"]);
+test("Nightly selects the newest published nightly and ignores other prereleases", async () => {
+  const { instance, requested } = provider(["v3.0.0-alpha.1", "v2.0.1-nightly.20261013.930.2", "v2.0.1-nightly.20261013.930.1", "v2.0.0"]);
   assert.equal((await instance.getLatestVersion()).version, "2.0.1-nightly.20261013.930.2");
   assert.ok(requested.some(path => path.endsWith("nightly.yml")));
+});
+
+test("Nightly takes the newest release even when its version is lower", async () => {
+  const { instance } = provider(["v0.0.1", "v2.0.1-nightly.20261021.2223.40991"]);
+  assert.equal((await instance.getLatestVersion()).version, "0.0.1");
 });
 
 test("Stable ignores nightlies", async () => {
