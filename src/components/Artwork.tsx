@@ -72,9 +72,14 @@ export function PlaylistArt({ playlist, className }: { playlist: Playlist; class
     if (albumId && albums[albumId] && !covers.includes(albumId)) covers.push(albumId);
     if (covers.length === 4) break;
   }
-  if (covers.length < 4) return <Art palette={playlist.palette} glyph={playlist.name.length % 6} className={className} />;
+  if (!covers.length) return <Art palette={playlist.palette} glyph={playlist.name.length % 6} className={className} />;
+  if (covers.length === 1) {
+    const album = albums[covers[0]];
+    return <Art palette={album.palette} glyph={album.glyph} image={album.artworkUrl} className={className} />;
+  }
+  // 2 covers sit side by side, 3 put the first one tall on the left, 4 make a grid.
   return (
-    <div className={`art mosaic ${className ?? ""}`} aria-hidden="true">
+    <div className={`art mosaic mosaic-${covers.length} ${className ?? ""}`} aria-hidden="true">
       {covers.map((id) => <Art key={id} palette={albums[id].palette} glyph={albums[id].glyph} image={albums[id].artworkUrl} />)}
     </div>
   );
