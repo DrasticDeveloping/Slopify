@@ -369,17 +369,5 @@ export function useStore<T>(selector: (s: AppState) => T): T {
   return useSyncExternalStore(subscribe, () => selector(state));
 }
 
-/** Clears this device's saved app state. Songs imported from the web stay in the import service and come back on reload. */
-export function resetAppData() {
-  // A save on the way out (pagehide) would bring the old data back.
-  persistenceStopped = true;
-  clearTimeout(persistTimer);
-  localStorage.removeItem(STORAGE_KEY);
-  // Mix editions and recommended songs (recommend/ keeps its own keys; importing them here would be circular).
-  localStorage.removeItem("slopify.mix-editions.v1");
-  localStorage.removeItem("slopify.discovery.v1");
-  location.reload();
-}
-
 // Live audio and app state cannot be swapped in place: when this module (or anything it imports) changes, reload the page.
 if (import.meta.hot) import.meta.hot.accept(() => location.reload());

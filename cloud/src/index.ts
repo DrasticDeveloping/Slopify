@@ -246,10 +246,11 @@ export default {
             if (!profile) throw new HttpError(400, "Choose a display name before joining a room.");
             await noteRoom(env, userId, code);
             // Who this is, as the room sees them; set here, after the token was checked.
+            // Headers only carry Latin-1, so the name and picture travel URI-encoded (room.ts decodes them).
             const headers = new Headers(request.headers);
             headers.set("X-Slopify-User", userId);
-            headers.set("X-Slopify-Name", profile.displayName);
-            if (profile.avatarUrl) headers.set("X-Slopify-Avatar", profile.avatarUrl);
+            headers.set("X-Slopify-Name", encodeURIComponent(profile.displayName));
+            if (profile.avatarUrl) headers.set("X-Slopify-Avatar", encodeURIComponent(profile.avatarUrl));
             else headers.delete("X-Slopify-Avatar");
             const joined = await room.fetch(new Request(request.url, { method: "GET", headers }));
             if (joined.status === 101) await stillHere(env, userId, code, room);

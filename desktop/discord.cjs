@@ -12,6 +12,8 @@ const { randomUUID } = require("node:crypto");
 
 const OP = { HANDSHAKE: 0, FRAME: 1, CLOSE: 2, PING: 3, PONG: 4 };
 const RETRY = 20_000;
+/** The largest message accepted from Discord. */
+const MAX_FRAME = 1024 * 1024;
 
 function pipePath(n) {
   // Test override: one fixed pipe (a stand-in for Discord), never the real app's.
@@ -59,6 +61,14 @@ function createDiscordPresence(clientId, log = () => {}) {
     while (buffer.length >= 8) {
       const op = buffer.readInt32LE(0);
       const length = buffer.readInt32LE(4);
+      // Discord's messages are small: anything else isn't Discord, so hang up rather than wait on it forever.
+      if (length < 0 || length > MAX_FRAME) {
+        log(`[discord] malformed message (length ${length}); disconnecting
+`);
+        buffer = Buffer.alloc(0);
+        socket?.destroy();
+        return;
+      }
       if (buffer.length < 8 + length) return;
       let message = null;
       try { message = JSON.parse(buffer.subarray(8, 8 + length).toString("utf8")); } catch { /* Ignore a malformed frame. */ }

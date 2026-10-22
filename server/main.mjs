@@ -24,6 +24,8 @@ import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import http from "node:http";
+import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -150,6 +152,9 @@ async function serveApp(req, res) {
     "Content-Length": size,
     "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
     "X-Content-Type-Options": "nosniff",
+    // No plugins, no <base> pointing scripts elsewhere, and no other site framing Slopify.
+    // (Scripts aren't narrowed further: sign-in loads Clerk's from its own address.)
+    ...(file.endsWith(".html") ? { "Content-Security-Policy": "object-src 'none'; base-uri 'self'; frame-ancestors 'none'" } : {}),
   });
   if (req.method === "HEAD") return void res.end();
   await pipeline(createReadStream(file), res).catch(() => undefined);
@@ -222,8 +227,31 @@ function acceptPresence(req, socket) {
   socket.on("error", () => socket.destroy());
   socket.on("close", () => pageClosed(socket));
 }
+/*
+ * Requests must name this server by an address it really has. A website can't
+ * otherwise reach it, but one could point its own name at 127.0.0.1 (DNS
+ * rebinding) and then read and change the library as if it were Slopify's page.
+ * Run for this computer only, that's 127.0.0.1, localhost or ::1. Shared on the
+ * network, any IP address or this computer's own name, plus any names listed
+ * in SLOPIFY_ALLOWED_HOSTS (comma-separated, for a domain in front of it).
+ */
+const extraHosts = (process.env.SLOPIFY_ALLOWED_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+const computerName = os.hostname().toLowerCase();
+function knownHost(req) {
+  let name;
+  try {
+    name = new URL(`http://${req.headers.host}`).hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  } catch {
+    return false;
+  }
+  if (["127.0.0.1", "localhost", "::1"].includes(name) || extraHosts.includes(name)) return true;
+  if (loopback) return false;
+  return net.isIP(name) !== 0 || name === computerName || name === `${computerName}.local`;
+}
+
 const api = createImportApi({ dataDir, owned, stopsWhenClosed });
 const server = http.createServer((req, res) => {
+  if (!knownHost(req)) return void res.writeHead(421, { "Content-Type": "text/plain; charset=utf-8" }).end("Slopify doesn't answer to that address.");
   api(req, res, () => serveApp(req, res)).catch((error) => {
     // The browser left (a reload, or a request it no longer needs): nothing went wrong.
     if (error?.name === "AbortError" || res.destroyed) return void res.end();
@@ -234,6 +262,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.on("upgrade", (req, socket) => {
+  if (!knownHost(req)) return void socket.destroy();
   if (new URL(req.url || "/", "http://localhost").pathname === "/api/presence") acceptPresence(req, socket);
   else socket.destroy();
 });

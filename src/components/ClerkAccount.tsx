@@ -1,6 +1,6 @@
 import { ClerkProvider, useAuth, useClerk, useUser } from "@clerk/electron/react";
 import { useEffect } from "react";
-import { clerkChanged, cloudConfig, connectClerk } from "../state/cloud";
+import { clerkChanged, clerkUnavailable, cloudConfig, connectClerk } from "../state/cloud";
 
 /*
  * Slopify runs at http://127.0.0.1 or localhost, not on the Clerk app's own domain, so
@@ -65,7 +65,23 @@ function ClerkBridge() {
   return null;
 }
 
-/** Clerk, loaded only in builds with accounts set up. Its sign-in and account windows open over the app. */
+/** Whether a failed promise is Clerk failing to load (offline, or Clerk unreachable). */
+const clerkLoadFailure = (reason: unknown) => {
+  const { code, message } = (reason ?? {}) as { code?: unknown; message?: unknown };
+  return (typeof code === "string" && code.startsWith("failed_to_load_clerk")) || (typeof message === "string" && /^Clerk: Failed to load Clerk/.test(message));
+};
+// Listening from the start, before Clerk begins loading.
+window.addEventListener("unhandledrejection", (event) => {
+  if (!clerkLoadFailure(event.reason)) return;
+  event.preventDefault();
+  clerkUnavailable();
+});
+
+/**
+ * Clerk, loaded only in builds with accounts set up. Its sign-in and account windows open over the app.
+ * If Clerk can't load (offline), the app carries on without accounts, and signing in offers a reload
+ * (src/state/cloud.ts): Clerk keeps its failed load, so it can't simply be loaded again.
+ */
 export default function ClerkAccount() {
   return (
     <ClerkProvider publishableKey={cloudConfig.clerkPublishableKey} appearance={{ variables: { colorPrimary: "#a78bfa" } }}>

@@ -124,6 +124,17 @@ export class SongStore {
     this.songs = null;
     this.loading = null;
     this.writing = Promise.resolve();
+    this.editing = Promise.resolve();
+  }
+
+  /**
+   * Runs one change to the library and its save before the next change starts,
+   * so a change undone after a failed save never undoes (or keeps) another's.
+   */
+  exclusive(change) {
+    const run = this.editing.catch(() => undefined).then(change);
+    this.editing = run;
+    return run;
   }
 
   /** Reads the library once. Requests that arrive together share the read, so they all edit the same array. */
@@ -137,13 +148,13 @@ export class SongStore {
 
   async read() {
     await fs.mkdir(this.artworkDir, { recursive: true });
-    const parsed = await this.readJSON(this.file);
+    const parsed = await this.readJSON(this.file, (v) => Array.isArray(v?.songs));
     if (parsed) {
       if (!Array.isArray(parsed.songs)) throw new Error(`Slopify's song library is damaged (${this.file}). Repair or move it, then try again.`);
       return (this.songs = parsed.songs);
     }
     // First run with links: convert the old stored-audio library, keeping it as a backup.
-    const old = await this.readJSON(this.legacyLibrary);
+    const old = await this.readJSON(this.legacyLibrary, (v) => Array.isArray(v?.tracks));
     if (old && !Array.isArray(old.tracks)) throw new Error(`Slopify's library file is damaged (${this.legacyLibrary}). Repair or move it, then try again.`);
     this.songs = (old?.tracks ?? []).map(fromVersion1);
     await this.save();
@@ -151,9 +162,9 @@ export class SongStore {
     return this.songs;
   }
 
-  /** The parsed file (or its backup, if the file is damaged), or null if neither exists. Any other failure stops the load, so a real library is never overwritten. */
-  async readJSON(file) {
-    const found = await readDurably(file, { damaged: () => new Error(`Slopify's library file is damaged (${file}). Repair or move it, then try again.`) });
+  /** The parsed file (or its backup, if the file is damaged or isn't `valid`), or null if neither exists. Any other failure stops the load, so a real library is never overwritten. */
+  async readJSON(file, valid) {
+    const found = await readDurably(file, { valid, damaged: () => new Error(`Slopify's library file is damaged (${file}). Repair or move it, then try again.`) });
     return found ? found.value : null;
   }
 
@@ -176,7 +187,11 @@ export class SongStore {
     return this.songs?.find((s) => s.savedAs === savedAs && ((sourceIdentity && s.sourceIdentity === sourceIdentity) || (sourceURL && s.sourceURL === sourceURL))) ?? null;
   }
 
-  async add(song) {
+  add(song) {
+    return this.exclusive(() => this.addNow(song));
+  }
+
+  async addNow(song) {
     await this.load();
     this.songs.unshift(song);
     try {
@@ -193,7 +208,11 @@ export class SongStore {
    * its own id: a link and its details. `playableURL` is where its audio comes from
    * when the link itself has none (a Spotify page plays a YouTube match).
    */
-  async adopt(id, body) {
+  adopt(id, body) {
+    return this.exclusive(() => this.adoptNow(id, body));
+  }
+
+  async adoptNow(id, body) {
     await this.load();
     if (this.find(id)) throw Object.assign(new Error("That song is already here."), { status: 409 });
     const meta = checkMetadata(
@@ -211,7 +230,7 @@ export class SongStore {
     if (!sourceURL) throw Object.assign(new Error("Only songs with a link can be added this way."), { status: 400 });
     const playableURL = link(body?.playableURL);
     const now = Date.now();
-    return this.add({
+    return this.addNow({
       id,
       addedAt: Number.isFinite(body?.addedAt) && body.addedAt > 0 ? body.addedAt : now,
       updatedAt: now,
@@ -233,47 +252,55 @@ export class SongStore {
   }
 
   /** Updates a song's metadata (see SONG_FIELDS) and `extra`. */
-  async update(id, changes) {
-    await this.load();
-    const song = this.find(id);
-    if (!song) return null;
-    const before = { ...song };
-    Object.assign(song, checkMetadata(changes), { extra: mergeExtra(song.extra ?? {}, changes.extra), updatedAt: Date.now() });
-    try {
-      await this.save();
-    } catch (error) {
-      Object.assign(song, before);
-      throw error;
-    }
-    return song;
+  update(id, changes) {
+    return this.exclusive(async () => {
+      await this.load();
+      const song = this.find(id);
+      if (!song) return null;
+      const before = { ...song };
+      Object.assign(song, checkMetadata(changes), { extra: mergeExtra(song.extra ?? {}, changes.extra), updatedAt: Date.now() });
+      try {
+        await this.save();
+      } catch (error) {
+        Object.assign(song, before);
+        throw error;
+      }
+      return song;
+    });
   }
 
   async remove(id) {
-    await this.load();
-    const index = this.songs.findIndex((s) => s.id === id);
-    if (index < 0) return null;
-    const [song] = this.songs.splice(index, 1);
-    try {
-      await this.save();
-    } catch (error) {
-      // Keep memory in line with the file, so a retry finds the song again.
-      this.songs.splice(index, 0, song);
-      throw error;
-    }
+    const song = await this.exclusive(async () => {
+      await this.load();
+      const index = this.songs.findIndex((s) => s.id === id);
+      if (index < 0) return null;
+      const [song] = this.songs.splice(index, 1);
+      try {
+        await this.save();
+      } catch (error) {
+        // Keep memory in line with the file, so a retry finds the song again.
+        this.songs.splice(index, 0, song);
+        throw error;
+      }
+      return song;
+    });
+    if (!song) return null;
     await this.dropLegacyFile(song);
     if (song.artworkFile) await fs.rm(path.join(this.artworkDir, path.basename(song.artworkFile)), { force: true }).catch(() => undefined);
     return song;
   }
 
   /** Deletes a converted song's old stored audio once a device holds its own copy. Songs with no source link keep theirs. */
-  async release(id) {
-    await this.load();
-    const song = this.find(id);
-    if (!song?.legacyFile || !song.sourceURL) return false;
-    await this.dropLegacyFile(song);
-    song.legacyFile = null;
-    await this.save();
-    return true;
+  release(id) {
+    return this.exclusive(async () => {
+      await this.load();
+      const song = this.find(id);
+      if (!song?.legacyFile || !song.sourceURL) return false;
+      await this.dropLegacyFile(song);
+      song.legacyFile = null;
+      await this.save();
+      return true;
+    });
   }
 
   legacyPath(song) {

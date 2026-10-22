@@ -376,8 +376,10 @@ function mergeMixes(base: Record<string, Mix> = {}, mine: Record<string, Mix> = 
   const out: Record<string, Mix> = {};
   for (const id of new Set([...Object.keys(mine), ...Object.keys(theirs)])) {
     const [b, m, t] = [base[id], mine[id], theirs[id]];
+    // One side unchanged: the other's (which may be no edition at all, when it was cleared) stands.
+    const settled = same(m, b) || same(t, b);
     let chosen = same(m, b) ? t : same(t, b) ? m : undefined;
-    if (!chosen) {
+    if (!settled) {
       const [x, y] = [m, t].filter((e): e is Mix => Boolean(e)).sort((p, q) => q.expires - p.expires || Number(q.complete) - Number(p.complete) || (JSON.stringify(p) < JSON.stringify(q) ? -1 : 1));
       chosen = y && y.edition === x.edition ? { ...x, hidden: [...new Set([...x.hidden, ...y.hidden])] } : x;
     }
@@ -386,14 +388,45 @@ function mergeMixes(base: Record<string, Mix> = {}, mine: Record<string, Mix> = 
   return byId(out);
 }
 
+/**
+ * A playlist changed on two devices: each detail takes the side that changed
+ * it (this device's if both did), and songs added or removed on either side
+ * are added or removed. Songs added on the other side follow the song they
+ * came after there.
+ */
+function mergePlaylist(b: Playlist, m: Playlist, t: Playlist): Playlist {
+  const out = { ...m };
+  for (const key of Object.keys({ ...b, ...m, ...t }) as Array<keyof Playlist>) {
+    if (key !== "trackIds" && same(m[key], b[key])) (out as Record<string, unknown>)[key] = t[key];
+  }
+  // The order comes from the side that reordered (this device's if both did, or if neither did but
+  // it added or removed songs); songs removed on either side go, and the other's additions join it.
+  const was = new Set(b.trackIds);
+  const reordered = (ids: string[]) => {
+    const kept = ids.filter((id) => was.has(id));
+    return !same(kept, b.trackIds.filter((id) => kept.includes(id)));
+  };
+  const theirsLead = reordered(m.trackIds) ? false : reordered(t.trackIds) || same(m.trackIds, b.trackIds);
+  const [first, second] = theirsLead ? [t.trackIds, m.trackIds] : [m.trackIds, t.trackIds];
+  const removed = new Set(b.trackIds.filter((id) => !m.trackIds.includes(id) || !t.trackIds.includes(id)));
+  const ids = first.filter((id) => !removed.has(id));
+  second.forEach((id, i) => {
+    if (was.has(id) || ids.includes(id)) return;
+    const after = second.slice(0, i).reverse().find((x) => ids.includes(x));
+    ids.splice(after === undefined ? 0 : ids.indexOf(after) + 1, 0, id);
+  });
+  out.trackIds = ids;
+  return out;
+}
+
 const newestSpot = (...spots: Array<PlaybackSpot | null | undefined>) => spots.filter((x): x is PlaybackSpot => Boolean(x)).sort((a, b) => b.at - a.at)[0] ?? null;
 
 function merge(base: LibraryData | null, mine: LibraryData, theirs: LibraryData): LibraryData {
-  const playlists = mergeMap(base ? canonicalAll(base.playlists) : undefined, canonicalAll(mine.playlists), canonicalAll(theirs.playlists), (_b, m, t) => {
+  const playlists = mergeMap(base ? canonicalAll(base.playlists) : undefined, canonicalAll(mine.playlists), canonicalAll(theirs.playlists), (b, m, t) => {
     // A fresh browser creates an empty Liked Songs automatically; it isn't an edit
     // to the listener's server collection. Preserve both libraries on first sync.
     if (!base && m.id === "liked" && t.id === "liked") return { ...t, trackIds: [...new Set([...t.trackIds, ...m.trackIds])] };
-    return m;
+    return b ? mergePlaylist(b, m, t) : m;
   });
   // The order that changed (this browser's if both did), then playlists new from the other side.
   const [first, second] = base && same(mine.playlistOrder, base.playlistOrder) ? [theirs, mine] : [mine, theirs];
@@ -572,14 +605,14 @@ function cloudBase(userId: string): Base {
 }
 let cloudAgreed: { userId: string; base: Base } | null = null;
 
-async function cloudState(): Promise<Remote> {
-  const { rev, data } = await cloudCall<{ rev: number; data: LibraryData | null }>("/v1/library/state");
+async function cloudState(userId: string): Promise<Remote> {
+  const { rev, data } = await cloudCall<{ rev: number; data: LibraryData | null }>("/v1/library/state", { as: userId });
   return { conflict: false, rev, data: data?.version === 1 ? data : null };
 }
 
-async function saveCloudState(baseRev: number, data: LibraryData): Promise<Remote> {
+async function saveCloudState(userId: string, baseRev: number, data: LibraryData): Promise<Remote> {
   try {
-    const saved = await cloudCall<{ rev: number }>("/v1/library/state", { method: "PUT", body: { baseRev, data } });
+    const saved = await cloudCall<{ rev: number }>("/v1/library/state", { method: "PUT", body: { baseRev, data }, as: userId });
     return { conflict: false, rev: saved.rev, data };
   } catch (error) {
     if (error instanceof CloudError && error.status === 409) {
@@ -711,11 +744,13 @@ async function syncWithAccount() {
       return;
     }
     if (!link && !(await linkComputer())) return;
+    // Another account signed in while that was checked: its own sync starts afresh.
+    if (getAccount().userId !== userId) return;
     if (getState().server.linkedElsewhere) setState((s) => ({ server: { ...s.server, linkedElsewhere: undefined } }));
-    if (await syncCloudSongs()) await syncServerLibrary();
+    if (await syncCloudSongs(userId)) await syncServerLibrary();
     if (cloudAgreed?.userId !== userId) cloudAgreed = { userId, base: cloudBase(userId) };
     const mine = cloudAgreed;
-    await mergeWith(await cloudState(), saveCloudState, () => mine.base, (base) => {
+    await mergeWith(await cloudState(userId), (rev, data) => saveCloudState(userId, rev, data), () => mine.base, (base) => {
       mine.base = base;
       try {
         localStorage.setItem(cloudBaseKey(userId), JSON.stringify(base));
@@ -724,6 +759,8 @@ async function syncWithAccount() {
     setState((s) => ({ server: { ...s.server, cloudSyncedAt: Date.now(), cloudError: undefined } }));
     toldAccountError = "";
   } catch (error) {
+    // Another account signed in partway through: its own sync starts afresh.
+    if (getAccount().userId !== userId) return;
     const message = error instanceof Error ? error.message : "Couldn't sync with your account.";
     setState((s) => ({ server: { ...s.server, cloudError: message } }));
     // Said once per problem; a sync with the account that works lets it be said again.

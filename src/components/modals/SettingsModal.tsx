@@ -3,14 +3,14 @@ import { isNativeApp, ThisDevice, thisDevice } from "../../lib/native";
 import { plural } from "../../lib/format";
 import { rovingKey } from "../../lib/roving";
 import { qualified, reasonWeight, type ReasonKind, type TasteState } from "../../recommend/taste";
-import { resetRecommendations, showHiddenRecommendations, updateSettings } from "../../state/actions";
+import { resetAppData, resetRecommendations, showHiddenRecommendations, updateSettings } from "../../state/actions";
 import { checkForUpdates, installUpdate, isDesktopApp, setDesktopSetting, setUpdateChannel, useDesktopSettings, useDesktopUpdates, type DesktopUpdates, type UpdateChannel } from "../../state/desktop";
 import { checkUsername, cloudEnabled, manageAccount, saveProfile, signIn, signOut, useAccount } from "../../state/cloud";
 import { toast } from "../../state/actions";
 import { connect, disconnect } from "../../state/server";
 import { deleteAccount, linkComputer } from "../../state/sync";
 import { installApp, installationHelp, updateApp, usePwa } from "../../state/pwa";
-import { defaultSettings, resetAppData, useStore, type Settings, type SettingsTab, type Theme } from "../../state/store";
+import { defaultSettings, useStore, type Settings, type SettingsTab, type Theme } from "../../state/store";
 import { Icon } from "../Icon";
 import { Slider } from "../Slider";
 import { Shell, Toggle } from "./Shell";
@@ -286,7 +286,7 @@ function AccountRows() {
   }
   if (account.status !== "signedIn") {
     return (
-      <Row icon="user" title="Slopify account" desc={`Sign in to keep your library on every device and to listen along with friends. Without an account, everything stays on ${thisDevice}.`}>
+      <Row icon="user" title="Slopify account" desc={account.error ?? `Sign in to keep your library on every device and to listen along with friends. Without an account, everything stays on ${thisDevice}.`}>
         <button type="button" className="btn primary sm" disabled={account.status === "loading"} onClick={signIn}>{account.status === "loading" ? "Loading…" : "Sign in"}</button>
       </Row>
     );
@@ -419,8 +419,10 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
               </div>
               <h3 className="set-section">Data & privacy</h3>
               <div className="set-group">
-                <Row icon="sync" title="Reset app data" desc="Clears playlists, settings and recommendations on this device. Songs you imported from the web stay and come back.">
-                  <button type="button" className="btn danger sm" onClick={resetAppData} aria-label="Reset app data">Reset</button>
+                <Row icon="sync" title="Reset app data" desc="Clears your playlists, likes, recently played, settings and recommendations, wherever your library syncs. Your songs and play counts stay.">
+                  <button type="button" className="btn danger sm" onClick={() => {
+                    if (window.confirm("Reset app data? Your playlists, likes, recently played, settings and recommendations are cleared here and wherever your library syncs. Your songs and play counts stay. Slopify reloads afterwards.")) resetAppData();
+                  }} aria-label="Reset app data">Reset</button>
                 </Row>
                 <Row icon="help" title="Privacy and terms" desc="What Slopify keeps, where, and how to delete it.">
                   <a className="btn sm" href={`${DOCS}/PRIVACY.md`} target="_blank" rel="noreferrer">Privacy</a>

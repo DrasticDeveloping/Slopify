@@ -116,8 +116,8 @@ export class ListenAlongRoom extends DurableObject {
     const userId = request.headers.get("X-Slopify-User")!;
     const member: Member = {
       userId,
-      name: request.headers.get("X-Slopify-Name") || "Listener",
-      avatarUrl: request.headers.get("X-Slopify-Avatar") || null,
+      name: decodeHeader(request.headers.get("X-Slopify-Name")) || "Listener",
+      avatarUrl: decodeHeader(request.headers.get("X-Slopify-Avatar")) || null,
       host: userId === room.hostId,
     };
     // The same account joining again (a reload, a second device) replaces its old connection.
@@ -227,5 +227,15 @@ export class ListenAlongRoom extends DurableObject {
         // Closing; webSocketClose will update the others.
       }
     }
+  }
+}
+
+/** A header index.ts URI-encoded, since headers can't carry names like 山田 or emoji. */
+function decodeHeader(value: string | null) {
+  if (!value) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
   }
 }
