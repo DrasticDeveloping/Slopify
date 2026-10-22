@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { engine } from "../audio/engine";
 import { setWindowShown } from "../lib/live";
-import { dismissToast, navigate, next as nextSong, previous, toast, togglePlay } from "./actions";
+import { navigate, next as nextSong, previous, toast, togglePlay } from "./actions";
 import { flushPersist, getState, subscribe as subscribeApp } from "./store";
 
 /*
@@ -14,7 +14,8 @@ export type UpdateChannel = "stable" | "nightly";
 export interface DesktopUpdates {
   version: string;
   channel: UpdateChannel;
-  status: "unsupported" | "idle" | "checking" | "none" | "available" | "downloading" | "ready" | "error";
+  /** "installing": found at startup, so the app is about to close, install it and reopen. */
+  status: "unsupported" | "idle" | "checking" | "none" | "available" | "downloading" | "ready" | "installing" | "error";
   /** The portable EXE can't replace itself; its updates are downloaded by hand. */
   portable: boolean;
   /** The newer version found, if any. */
@@ -56,28 +57,13 @@ const bridge = (window as Window & { slopifyDesktop?: Bridge }).slopifyDesktop ?
 export const isDesktopApp = Boolean(bridge);
 
 let state: DesktopUpdates | null = null;
-/** The "update ready" toast on screen, if any. */
-let offerToast: number | null = null;
 const listeners = new Set<() => void>();
+// Updates show in the banner at the top right (UpdateBanner.tsx).
 function set(next: DesktopUpdates) {
-  const was = state;
+  // About to close and install: save playlists and settings first.
+  if (next.status === "installing" && state?.status !== "installing") flushPersist();
   state = next;
   listeners.forEach((l) => l());
-  // Say so once, when an update becomes ready (or found, for the portable copy), without interrupting what's playing.
-  const offer = (u: DesktopUpdates | null) => Boolean(u?.available && (u.status === "ready" || (u.portable && u.status === "available")));
-  // An offer that no longer stands (the channel changed, say) takes its toast with it.
-  if (!offer(next) && offerToast !== null) {
-    dismissToast(offerToast);
-    offerToast = null;
-  }
-  if (offer(next) && !(offer(was) && was?.available === next.available)) {
-    if (offerToast !== null) dismissToast(offerToast);
-    offerToast = toast(`Slopify ${next.available} is ready`, {
-      detail: next.portable ? "Download it to update this copy." : "Restart when you're ready to use it.",
-      sticky: true,
-      action: { label: next.portable ? "Download" : "Restart", run: installUpdate },
-    });
-  }
 }
 const subscribe = (listener: () => void) => {
   listeners.add(listener);

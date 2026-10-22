@@ -88,6 +88,8 @@ function startBackground({ getWindow, show, log }) {
   return {
     /** Whether closing the window should hide it to the tray instead of quitting. */
     keepInTray: () => settings.closeToTray,
+    /** Whether music is playing right now (an update waits rather than cut it off). */
+    isPlaying: () => Boolean(nowPlaying?.playing),
     hidden() {
       if (toldAboutTray || process.platform !== "win32") return;
       toldAboutTray = true;
