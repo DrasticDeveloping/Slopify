@@ -11,7 +11,8 @@ function provider(tags, allowPrerelease = true) {
   const instance = new NightlyGitHubProvider({ owner: "test", repo: "releases" }, updater, {
     platform: "win32", executor: { request: async (options) => {
       requested.push(options.path);
-      if (options.path.includes(".atom")) return `<feed>${tags.map(tag => `<entry><link href="https://github.com/test/releases/releases/tag/${tag}"/><title>${tag}</title><content>Notes</content></entry>`).join("")}</feed>`;
+      // `tags` are listed newest first; the API's order doesn't matter, so it's reversed here.
+      if (options.path.includes("/repos/test/releases/releases")) return JSON.stringify(tags.map((tag, i) => ({ tag_name: tag, name: tag, body: "Notes", draft: false, published_at: new Date(Date.UTC(2026, 9, 20) - i * 60_000).toISOString() })).reverse());
       if (options.path.endsWith("/latest")) return JSON.stringify({ tag_name: "v2.0.0" });
       const tag = /\/download\/(v[^/]+)\//.exec(options.path)?.[1];
       return `version: ${tag.slice(1)}\nfiles:\n  - url: Setup.exe\n    sha512: checksum\n`;
@@ -36,6 +37,17 @@ test("Nightly selects the newest published nightly and ignores other prereleases
 
 test("Nightly takes the newest release even when its version is lower", async () => {
   const { instance } = provider(["v0.0.1", "v2.0.1-nightly.20261021.2223.40991"]);
+  assert.equal((await instance.getLatestVersion()).version, "0.0.1");
+});
+
+test("Nightly skips drafts", async () => {
+  const { instance } = provider(["v0.0.2-nightly.20261022.100", "v0.0.1"]);
+  const request = instance.executor.request;
+  instance.executor.request = async (options) => {
+    const text = await request(options);
+    if (!options.path.includes("/repos/")) return text;
+    return JSON.stringify(JSON.parse(text).map((r) => (r.tag_name.includes("nightly") ? { ...r, draft: true, published_at: null } : r)));
+  };
   assert.equal((await instance.getLatestVersion()).version, "0.0.1");
 });
 
