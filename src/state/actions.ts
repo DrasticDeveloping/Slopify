@@ -10,7 +10,6 @@ import {
 } from "../recommend/taste";
 import { deviceUrl, dropFromDevice } from "./device";
 import { deleteSong, saveSongChanges } from "./song-api";
-import { streamHooks, type StreamHooks } from "./stream-hooks";
 import { defaultSettings, flushPersist, getState, setState, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast } from "./store";
 
 /* ───────────────────────── selectors ───────────────────────── */
@@ -61,17 +60,28 @@ const picksOf = (list: Array<{ id: string; kind: ReasonKind }>) => Object.fromEn
  * downloads the whole song once and serves it with seeking) and saving to the
  * library; these hooks keep this module free of an import cycle.
  */
-export type { StreamMedia } from "./stream-hooks";
-// Kept in stream-hooks.ts, so connecting them never depends on which module runs first.
+/** Where a streamed song plays from. A video can start on its audio, with `picture` (its video, or null if it has none) to follow. */
+export interface StreamMedia {
+  url: string;
+  picture?: Promise<string | null>;
+}
+interface StreamHooks {
+  /** The full song's audio, or its video. */
+  source(id: string): Promise<StreamMedia>;
+  /** Downloads the song into the library (one at a time, in order), then hands `then` its library id. */
+  save(id: string, then?: (libraryId: string) => void): void;
+  dismiss(id: string): void;
+}
+let streamHooks: StreamHooks | null = null;
 export function connectStreams(hooks: StreamHooks) {
-  streamHooks.current = hooks;
+  streamHooks = hooks;
 }
 /** Streamed songs already saved, and the library copy each became (so the heart stays filled). */
 const savedStreams = new Map<string, string>();
 export function linkSavedStream(streamId: string, libraryId: string) {
   savedStreams.set(streamId, libraryId);
 }
-export const saveStream = (id: string, then?: (libraryId: string) => void) => streamHooks.current?.save(id, then);
+export const saveStream = (id: string, then?: (libraryId: string) => void) => streamHooks?.save(id, then);
 const isStream = (id: string) => Boolean(getState().tracks[id]?.stream);
 /** Streamed songs join a playlist (or Liked Songs) once they are in the library, since playlists only keep library songs. */
 function addStreamsLater(playlistId: string, ids: string[]) {
@@ -81,7 +91,7 @@ function addStreamsLater(playlistId: string, ids: string[]) {
     else saveStream(id, (libraryId) => addToPlaylist(playlistId, [libraryId], { silent: true }));
   }
 }
-export const dismissStream = (id: string) => streamHooks.current?.dismiss(id);
+export const dismissStream = (id: string) => streamHooks?.dismiss(id);
 
 /**
  * Audio fetched for streamed songs. The server's cache turns over, so fetched
@@ -116,11 +126,10 @@ function protectStreams() {
 
 /** Fetches a streamed song's audio, sharing a fetch already under way. */
 function fetchStream(id: string) {
-  const hooks = streamHooks.current;
-  if (!hooks) return Promise.reject(new Error("Streaming is unavailable."));
+  if (!streamHooks) return Promise.reject(new Error("Streaming is unavailable."));
   const pending = fetchingStreams.get(id);
   if (pending) return pending;
-  const task = hooks
+  const task = streamHooks
     .source(id)
     .then(({ url, picture }) => {
       streamUrls.set(id, { url, at: Date.now(), usable: true });

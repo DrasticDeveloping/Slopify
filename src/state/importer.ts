@@ -588,14 +588,21 @@ function saveStreamToLibrary(id: string, then?: (libraryId: string) => void) {
     .finally(() => queuedSaves.delete(id));
 }
 
-connectStreams({
-  source: streamSource,
-  save: saveStreamToLibrary,
-  dismiss: (id) => {
-    const source = streamSources.get(id);
-    if (source) hideDiscovery(source.key, source.kind);
-  },
-});
+/**
+ * Lets the player stream songs. Called from main.tsx once every module has loaded:
+ * this module and actions.ts import each other, and a call made while they load
+ * can run before actions.ts sets up its hooks, which would then clear it.
+ */
+export function startStreaming() {
+  connectStreams({
+    source: streamSource,
+    save: saveStreamToLibrary,
+    dismiss: (id) => {
+      const source = streamSources.get(id);
+      if (source) hideDiscovery(source.key, source.kind);
+    },
+  });
+}
 
 export async function checkImportService() {
   try {
