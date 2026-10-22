@@ -1,6 +1,19 @@
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { readDurably, writeDurably } from "./durable-file.mjs";
+
+const { youtubeVideoID } = createRequire(import.meta.url)("./providers/local-import-core.cjs");
+
+/** A YouTube song's video thumbnail, for one saved without a cover link (or synced from a computer that kept its cover as a file). */
+function youtubeThumbnail(sourceURL) {
+  try {
+    const id = sourceURL ? youtubeVideoID(sourceURL) : null;
+    return id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : null;
+  } catch {
+    return null;
+  }
+}
 
 /*
  * The music server's song library. A song is a record of where it comes from
@@ -314,6 +327,7 @@ export class SongStore {
 
   /** What clients see of a song. */
   publicSong(s) {
+    const remoteArtwork = s.artworkUrl || youtubeThumbnail(s.sourceURL);
     return {
       id: s.id,
       title: s.title,
@@ -324,7 +338,9 @@ export class SongStore {
       addedAt: s.addedAt,
       updatedAt: s.updatedAt,
       sourceURL: s.sourceURL,
-      artworkUrl: s.artworkUrl || (s.artworkFile ? `/api/artwork/${s.id}` : null),
+      // A cover kept as a file is shown from here; other devices get its link.
+      artworkUrl: s.artworkFile ? `/api/artwork/${s.id}` : remoteArtwork,
+      remoteArtworkUrl: remoteArtwork,
       clip: s.clip ?? null,
       extra: s.extra ?? {},
       fileUrl: `/api/songs/${s.id}/file`,

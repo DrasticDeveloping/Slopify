@@ -7,6 +7,7 @@ import { PlayerBar } from "./components/PlayerBar";
 import { RightPanel, usePanel } from "./components/RightPanel";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { TopBar } from "./components/TopBar";
 import { themes } from "./components/modals/SettingsModal";
 import {
@@ -390,6 +391,7 @@ export function App() {
       <ModalHost />
       <ContextMenu />
       <Toasts />
+      <UpdateBanner />
       {dropping ? (
         <div className="drop-overlay" aria-hidden="true">
           <div>

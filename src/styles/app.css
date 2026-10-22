@@ -1204,6 +1204,8 @@ button.th:not(:disabled):hover { color: var(--text); }
 .toast-progress { display: block; height: 4px; margin-top: 7px; border-radius: 4px; background: rgb(255 255 255 / 0.1); overflow: hidden; }
 .toast-progress i { display: block; height: 100%; background: var(--accent); transform-origin: left; transform: scaleX(var(--p)); transition: transform 200ms linear; border-radius: inherit; }
 .toast .text-btn { color: var(--accent-ink); }
+/* The desktop app's update (UpdateBanner.tsx): top right, over the full player but under dialogs. */
+.update-banner { position: fixed; top: calc(var(--titlebar-h, 0px) + 12px); right: 16px; z-index: 65; width: min(360px, calc(100vw - 32px)); }
 
 .modal-layer { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 20px; background: rgb(0 0 0 / 0.55); backdrop-filter: blur(6px); animation: fade-in 200ms ease both; }
 .modal-layer.closing { animation: fade-out 180ms ease both; }

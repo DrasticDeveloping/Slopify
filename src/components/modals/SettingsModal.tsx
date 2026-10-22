@@ -158,7 +158,8 @@ function updateStatus(u: DesktopUpdates) {
     case "none": return "You're up to date.";
     case "available": return u.portable ? `Slopify ${u.available} is out. This portable copy updates by downloading the new one.` : `Slopify ${u.available} is out.`;
     case "downloading": return `Downloading Slopify ${u.available ?? ""}… ${u.progress}%`;
-    case "ready": return `Slopify ${u.available} is ready. Restart to finish updating; your music and playlists stay.`;
+    case "ready": return `Slopify ${u.available} is ready. Restart to finish updating, or it installs next time Slopify starts; your music and playlists stay.`;
+    case "installing": return `Installing Slopify ${u.available}. Slopify will reopen in a moment.`;
     case "error": return u.error ?? "Couldn't check for updates.";
     default: return "Slopify checks for updates in the background.";
   }
@@ -175,13 +176,13 @@ function DesktopUpdateRows() {
         {u.status === "ready" || (u.portable && u.status === "available") ? (
           <button type="button" className="btn primary" onClick={installUpdate}>{u.portable ? "Download" : "Restart"}</button>
         ) : (
-          <button type="button" className="btn sm" disabled={off || u.status === "checking" || u.status === "downloading"} onClick={checkForUpdates}>
+          <button type="button" className="btn sm" disabled={off || u.status === "checking" || u.status === "downloading" || u.status === "installing"} onClick={checkForUpdates}>
             Check for updates
           </button>
         )}
       </Row>
       <Row icon="sparkle" title="Update channel" desc="Nightly gets new builds as soon as they're made, before they reach Stable. They may have more bugs.">
-        <select className="input sm" value={u.channel} disabled={off || u.status === "downloading"} onChange={(e) => setUpdateChannel(e.target.value as UpdateChannel)} aria-label="Update channel">
+        <select className="input sm" value={u.channel} disabled={off || u.status === "downloading" || u.status === "installing"} onChange={(e) => setUpdateChannel(e.target.value as UpdateChannel)} aria-label="Update channel">
           <option value="stable">Stable</option>
           <option value="nightly">Nightly</option>
         </select>

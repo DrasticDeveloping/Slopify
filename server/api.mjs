@@ -486,7 +486,7 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
         sourceIdentity: result.sourceIdentity || null,
         sourceSha256: result.sourceSha256 || null,
         contentSha256: result.contentSha256 || null,
-        artworkUrl: artworkFile ? null : remoteArtwork,
+        artworkUrl: remoteArtwork,
         artworkFile,
         clip: null,
         // The app reads an upload's artist from its title before saving, so the
@@ -505,7 +505,7 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
     }
   }
 
-  /** Video saves bring their cover as a data URL; it is kept as a small image file. Other covers stay links. */
+  /** Video saves bring their cover as a data URL; it is kept as a small image file (alongside its link, for other devices). Other covers stay links. */
   async function saveDataArtwork(id, artwork) {
     if (!artwork?.startsWith("data:")) return null;
     const [, type, b64] = /^data:([^;]+);base64,(.*)$/.exec(artwork) ?? [];

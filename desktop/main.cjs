@@ -77,7 +77,14 @@ function createWindow() {
   window.webContents.on("will-navigate", (event, url) => {
     if (new URL(url).origin !== origin) { event.preventDefault(); external(url); }
   });
-  window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  // Only Slopify's own page may copy to the clipboard (its Copy buttons); everything else is refused.
+  window.webContents.session.setPermissionRequestHandler((_contents, permission, callback, details) => {
+    let own = false;
+    try {
+      own = new URL(details.requestingUrl).origin === origin;
+    } catch { /* No page: refused. */ }
+    callback(own && permission === "clipboard-sanitized-write");
+  });
   window.once("ready-to-show", () => window.show());
   window.loadURL(origin).catch(fail);
 }
@@ -163,7 +170,7 @@ else {
     await startBackend();
     createWindow();
     background = startBackground({ getWindow: () => window, show: showWindow, log });
-    startUpdates(() => window, log);
+    startUpdates(() => window, log, { isPlaying: () => Boolean(background?.isPlaying()) });
   }).catch(fail);
 }
 app.on("window-all-closed", () => app.quit());
