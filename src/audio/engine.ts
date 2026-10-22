@@ -191,6 +191,28 @@ export class AudioEngine {
   onProgress: (position: number, clock: number, rate: number, audible: boolean) => void = () => undefined;
   /** Playback jumped or changed pace, so the next sample must not be compared with the last one. */
   onDiscontinuity: () => void = () => undefined;
+  /** Playback started, stopped or moved, so anything showing the position should look again. */
+  onChange: () => void = () => undefined;
+  /** Suspends the audio graph a little after pausing, so an idle app isn't processing silence. */
+  private sleepTimer = 0;
+
+  private jumped() {
+    this.onDiscontinuity();
+    this.onChange();
+  }
+
+  /** Lets the audio graph sleep once nothing is playing or fading out. */
+  private sleepSoon() {
+    clearTimeout(this.sleepTimer);
+    this.sleepTimer = window.setTimeout(() => {
+      const ctx = this.ctx;
+      if (this.playing || ctx?.state !== "running") return;
+      void ctx.suspend().catch(() => undefined).then(() => {
+        // Played again while it was going to sleep (ensure() still saw it running): wake it back up.
+        if (this.playing && ctx.state === "suspended") void ctx.resume();
+      });
+    }, 3000);
+  }
 
   captureProgress() {
     this.onProgress(this.position, performance.now(), this.rate, this.playing && this.ctx?.state === "running" && !this.muted && this.volume > 0);
@@ -236,7 +258,10 @@ export class AudioEngine {
       this.applyNormalize();
       this.applyTone();
     }
+    clearTimeout(this.sleepTimer);
     if (this.ctx.state === "suspended") void this.ctx.resume();
+    // Loaded without playing (a restored song, say): sleep again unless playback starts.
+    this.sleepSoon();
     return this.ctx;
   }
 
@@ -352,7 +377,7 @@ export class AudioEngine {
       if (this.playing) next.play();
       else next.pause();
       this.captureProgress();
-      this.onDiscontinuity();
+      this.jumped();
       this.retireVoice(0.2);
       this.voice = next;
       this.url = url;
@@ -361,7 +386,7 @@ export class AudioEngine {
   }
 
   load(track: EngineTrack, options: LoadOptions) {
-    this.onDiscontinuity();
+    this.jumped();
     this.dropSwap();
     const ctx = this.ensure();
     const crossfade = options.crossfade ?? 0;
@@ -395,7 +420,7 @@ export class AudioEngine {
   /** Updates the playable range; playback outside the new range snaps to its start. */
   setRange(start: number, end: number) {
     this.captureProgress();
-    this.onDiscontinuity();
+    this.jumped();
     this.start = start;
     this.setEnd(end);
     // Use the raw voice position; the `position` getter is already clamped to the new end.
@@ -412,7 +437,7 @@ export class AudioEngine {
   play() {
     if (!this.voice) return;
     this.ensure();
-    this.onDiscontinuity();
+    this.jumped();
     if (this.position >= this.end - 0.05 || this.position < this.start - 0.05) this.seek(this.start);
     this.voice.play();
     this.playing = true;
@@ -422,17 +447,18 @@ export class AudioEngine {
 
   pause() {
     this.captureProgress();
-    this.onDiscontinuity();
+    this.jumped();
     this.voice?.pause();
     this.killRetiring();
     this.playing = false;
     clearInterval(this.monitor);
+    this.sleepSoon();
   }
 
   seek(position: number) {
     if (!this.voice) return;
     this.captureProgress();
-    this.onDiscontinuity();
+    this.jumped();
     // Stay inside the clip range.
     const p = Math.max(this.start, Math.min(position, Math.max(this.start, this.end - 0.05)));
     this.killRetiring();
@@ -452,7 +478,7 @@ export class AudioEngine {
 
   setVolume(volume: number, muted = this.muted) {
     this.captureProgress();
-    this.onDiscontinuity();
+    this.jumped();
     this.volume = volume;
     this.muted = muted;
     this.applyVolume();
@@ -460,7 +486,7 @@ export class AudioEngine {
 
   setRate(rate: number) {
     this.captureProgress();
-    this.onDiscontinuity();
+    this.jumped();
     this.rate = rate;
     this.voice?.setRate(rate);
   }

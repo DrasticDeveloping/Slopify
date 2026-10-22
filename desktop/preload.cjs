@@ -17,6 +17,14 @@ contextBridge.exposeInMainWorld("slopifyDesktop", {
     ipcRenderer.on("player:command", handler);
     return () => ipcRenderer.removeListener("player:command", handler);
   },
+  /** Whether the window can be seen (not minimised or hidden in the tray). */
+  onWindowShown(listener) {
+    const handler = (_event, shown) => listener(shown);
+    ipcRenderer.on("desktop:window-shown", handler);
+    // As it is now, too (the page may have reloaded while hidden).
+    void ipcRenderer.invoke("desktop:window-shown").then(listener);
+    return () => ipcRenderer.removeListener("desktop:window-shown", handler);
+  },
   /** Slopify links the app was opened with (a shared playlist's page): one now if one is waiting, then each as it comes. */
   onLink(listener) {
     const handler = (_event, link) => listener(link);

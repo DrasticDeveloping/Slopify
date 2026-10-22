@@ -120,6 +120,13 @@ h1, h2, h3, p { margin: 0; }
 .ambient i:nth-child(2) { right: -25vmax; top: 10vmax; background: var(--accent-2); animation-duration: 46s; animation-delay: -12s; }
 .ambient i:nth-child(3) { left: 20vmax; bottom: -35vmax; background: var(--accent-3); opacity: 0.35; animation-duration: 52s; }
 @keyframes drift { to { transform: translate(6vmax, 4vmax) scale(1.12); } }
+/*
+ * The slow drifts and zooms hold still unless music is playing: each frame they move, every blurred
+ * glass panel above them has to be blurred again, which kept an idle app busy. They freeze in place,
+ * so pausing never jumps. A window hidden in the tray stops all of them.
+ */
+:root:not([data-playing]) :is(.ambient i, .artist-hero-bg .art, .fp-backdrop .art) { animation-play-state: paused; }
+:root[data-window="hidden"] *, :root[data-window="hidden"] *::before, :root[data-window="hidden"] *::after { animation-play-state: paused !important; }
 
 .sidebar, .main, .right-panel, .playerbar { position: relative; z-index: 1; }
 

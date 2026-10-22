@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { engine } from "../audio/engine";
+import { setWindowShown } from "../lib/live";
 import { dismissToast, navigate, next as nextSong, previous, toast, togglePlay } from "./actions";
 import { flushPersist, getState, subscribe as subscribeApp } from "./store";
 
@@ -40,6 +41,7 @@ interface Bridge {
   settings: { get(): Promise<DesktopSettings>; set(patch: Partial<DesktopSettings>): Promise<DesktopSettings> };
   nowPlaying(now: NowPlaying | null): void;
   onCommand(listener: (name: string) => void): () => void;
+  onWindowShown?(listener: (shown: boolean) => void): () => void;
   onLink?(listener: (link: { type: "shared"; id: string }) => void): () => void;
   updates: {
     get(): Promise<DesktopUpdates>;
@@ -112,6 +114,7 @@ export function setDesktopSetting(patch: Partial<Pick<DesktopSettings, "closeToT
 
 /** Tells the desktop app what's playing (for the tray and Discord), and takes its play/pause, next and previous. */
 function startNowPlaying(b: Bridge) {
+  b.onWindowShown?.(setWindowShown);
   b.onCommand((name) => {
     if (name === "toggle") togglePlay();
     else if (name === "next") nextSong();

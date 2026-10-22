@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { onLiveFrame } from "../lib/live";
 
 interface SliderProps {
   value?: number;
   max: number;
   step?: number;
-  /** Reads a live value every frame (used by the seek bars) instead of `value`. */
+  /** Reads a live value as playback moves (used by the seek bars; see lib/live.ts) instead of `value`. */
   poll?: () => number;
   onInput?: (v: number) => void;
   onCommit?: (v: number) => void;
@@ -42,13 +43,9 @@ export function Slider({ value, max, step, poll, onInput, onCommit, label, forma
 
   useEffect(() => {
     if (!poll) return;
-    let raf = 0;
-    const loop = () => {
+    return onLiveFrame(() => {
       if (drag.current === null) paint(poll());
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    });
     // paint closes over max/format; restart when they change.
   }, [poll, safeMax, format]);
 

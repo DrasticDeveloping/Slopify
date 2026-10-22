@@ -1,10 +1,12 @@
 import { useEffect, useRef, type RefObject } from "react";
 import { engine } from "../audio/engine";
+import { onLiveFrame } from "../lib/live";
 
 /**
  * Frequency bars drawn from the shared analyser. Also publishes a smoothed
  * bass "energy" value as a CSS variable on `pulseTarget` so artwork can breathe
- * with the music. With reduced motion it draws its bars once, at rest.
+ * with the music. With reduced motion it draws its bars once, at rest. Once paused
+ * and settled it stops drawing until playback moves again (see lib/live.ts).
  */
 export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: RefObject<HTMLElement | null>; bars?: number; reduced?: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -14,7 +16,6 @@ export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: 
     if (!el) return;
     const ctx = el.getContext("2d");
     if (!ctx) return;
-    let raf = 0;
     let energy = 0;
     const heights = new Float32Array(bars);
     let data: Uint8Array<ArrayBuffer> | null = null;
@@ -23,10 +24,9 @@ export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: 
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       el.width = el.clientWidth * dpr;
       el.height = el.clientHeight * dpr;
-      if (reduced) draw();
+      draw();
     };
     const draw = () => {
-      if (!reduced) raf = requestAnimationFrame(draw);
       const analyser = reduced ? null : engine.analyser;
       const w = el.width;
       const h = el.height;
@@ -46,12 +46,14 @@ export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: 
       const gap = Math.max(2, w / bars / 4);
       const bw = w / bars - gap;
       let bass = 0;
+      let moving = false;
       for (let i = 0; i < bars; i++) {
         // Log-spaced bins so low and mid frequencies get most of the width.
         const bin = data ? Math.min(data.length - 1, Math.floor(Math.pow(i / bars, 1.7) * data.length * 0.7) + 1) : 0;
         const v = data && playing ? data[bin] / 255 : 0;
         if (i < 6) bass += v / 6;
         heights[i] += (v - heights[i]) * (v > heights[i] ? 0.5 : 0.12);
+        if (heights[i] > 0.002) moving = true;
         const bh = Math.max(2, heights[i] * h * 0.95);
         const x = i * (bw + gap) + gap / 2;
         ctx.globalAlpha = 0.35 + heights[i] * 0.65;
@@ -62,13 +64,15 @@ export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: 
       ctx.globalAlpha = 1;
       energy += (bass - energy) * 0.18;
       if (pulseTarget?.current && !reduced) pulseTarget.current.style.setProperty("--energy", energy.toFixed(3));
+      // Still falling back to rest after a pause: keep drawing until it's there.
+      return moving || energy > 0.002;
     };
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(el);
-    if (!reduced) raf = requestAnimationFrame(draw);
+    const stop = reduced ? () => undefined : onLiveFrame(draw);
     return () => {
-      cancelAnimationFrame(raf);
+      stop();
       ro.disconnect();
     };
   }, [bars, pulseTarget, reduced]);

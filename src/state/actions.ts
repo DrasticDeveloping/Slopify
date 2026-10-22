@@ -2,6 +2,7 @@ import { engine } from "../audio/engine";
 import { hashString, likedPlaylist, paletteFromSeed } from "../data/library";
 import type { ClipRange, Genre, Playlist, Track } from "../data/types";
 import { todayKey } from "../lib/format";
+import { wakeLive } from "../lib/live";
 import { adoptMixes } from "../recommend/mixes";
 import { recommend, type RankOptions } from "../recommend/rank";
 import {
@@ -804,7 +805,7 @@ export function seek(seconds: number) {
   if (cued && cued.id === s.currentId) {
     cued = { ...cued, position: Math.max(0, seconds) };
     // Nothing of it is loaded yet (another song may be): it starts from here when played.
-    if (engine.loadedTrackId !== cued.id) return;
+    if (engine.loadedTrackId !== cued.id) return wakeLive();
     cued = null;
   }
   engine.seek(seconds);
