@@ -69,20 +69,30 @@ export function SearchView({ q }: { q: string }) {
   if (!results) {
     return (
       <div className="view">
-        <h1 className="section-title big">Browse all</h1>
-        <p className="muted">Find songs on YouTube, Spotify and SoundCloud using the search bar above. You can also paste playlist links.</p>
-        <ChooseFiles />
+        <header className="browse-head">
+          <div>
+            <h1 className="section-title big">Browse all</h1>
+            <p className="muted">Search YouTube, Spotify and SoundCloud from the bar above — or paste a playlist link.</p>
+          </div>
+          <div className="browse-files">
+            <ChooseFiles label="Add local files" note={false} />
+            <span className="browse-files-note">Cleared when you reload</span>
+          </div>
+        </header>
         <div className="browse-grid">
           <button type="button" className="browse-tile" style={{ "--h": 260 } as CSSProperties} onClick={() => navigate({ name: "library" })}>
             <strong>Your library</strong>
+            <span className="browse-sub">Playlists & saved songs</span>
             <Art palette={{ a: "hsl(260 70% 60%)", b: "hsl(290 60% 45%)", c: "hsl(240 55% 25%)" }} icon="library" className="browse-art" />
           </button>
           <button type="button" className="browse-tile" style={{ "--h": 350 } as CSSProperties} onClick={() => navigate({ name: "playlist", id: "liked" })}>
             <strong>Liked Songs</strong>
+            <span className="browse-sub">Everything you've hearted</span>
             <Art palette={playlists[0].palette} icon="heartFill" className="browse-art" />
           </button>
           <button type="button" className="browse-tile" style={{ "--h": 160 } as CSSProperties} onClick={() => navigate({ name: "history" })}>
             <strong>Your stats</strong>
+            <span className="browse-sub">Top artists & listening time</span>
             <Art palette={{ a: "hsl(160 70% 50%)", b: "hsl(190 70% 40%)", c: "hsl(220 60% 25%)" }} icon="stats" className="browse-art" />
           </button>
         </div>
