@@ -11,7 +11,10 @@ function provider(tags, allowPrerelease = true) {
   const instance = new NightlyGitHubProvider({ owner: "test", repo: "releases" }, updater, {
     platform: "win32", executor: { request: async (options) => {
       requested.push(options.path);
+      // Stable reads the releases feed (electron-updater's own provider).
       if (options.path.includes(".atom")) return `<feed>${tags.map(tag => `<entry><link href="https://github.com/test/releases/releases/tag/${tag}"/><title>${tag}</title><content>Notes</content></entry>`).join("")}</feed>`;
+      // `tags` are listed newest first; the API's order doesn't matter, so it's reversed here.
+      if (options.path.includes("/repos/test/releases/releases")) return JSON.stringify(tags.map((tag, i) => ({ tag_name: tag, name: tag, body: "Notes", draft: false, published_at: new Date(Date.UTC(2026, 9, 20) - i * 60_000).toISOString() })).reverse());
       if (options.path.endsWith("/latest")) return JSON.stringify({ tag_name: "v2.0.0" });
       const tag = /\/download\/(v[^/]+)\//.exec(options.path)?.[1];
       return `version: ${tag.slice(1)}\nfiles:\n  - url: Setup.exe\n    sha512: checksum\n`;
@@ -21,17 +24,33 @@ function provider(tags, allowPrerelease = true) {
 }
 
 test("Nightly receives a newer stable and resolves its installer", async () => {
-  const { instance, requested } = provider(["v2.0.1-nightly.20261013.930", "v2.0.1"]);
+  const { instance, requested } = provider(["v2.0.1", "v2.0.1-nightly.20261013.930"]);
   const info = await instance.getLatestVersion();
   assert.equal(info.version, "2.0.1");
   assert.ok(requested.some(path => path.endsWith("/v2.0.1/latest.yml")));
   assert.equal(instance.resolveFiles(info)[0].url.href, "https://github.com/test/releases/releases/download/v2.0.1/Setup.exe");
 });
 
-test("Nightly selects the highest nightly and ignores other prereleases", async () => {
-  const { instance, requested } = provider(["v3.0.0-alpha.1", "v2.0.1-nightly.20261013.930.1", "v2.0.1-nightly.20261013.930.2", "v2.0.0"]);
+test("Nightly selects the newest published nightly and ignores other prereleases", async () => {
+  const { instance, requested } = provider(["v3.0.0-alpha.1", "v2.0.1-nightly.20261013.930.2", "v2.0.1-nightly.20261013.930.1", "v2.0.0"]);
   assert.equal((await instance.getLatestVersion()).version, "2.0.1-nightly.20261013.930.2");
   assert.ok(requested.some(path => path.endsWith("nightly.yml")));
+});
+
+test("Nightly takes the newest release even when its version is lower", async () => {
+  const { instance } = provider(["v0.0.1", "v2.0.1-nightly.20261021.2223.40991"]);
+  assert.equal((await instance.getLatestVersion()).version, "0.0.1");
+});
+
+test("Nightly skips drafts", async () => {
+  const { instance } = provider(["v0.0.2-nightly.20261022.100", "v0.0.1"]);
+  const request = instance.executor.request;
+  instance.executor.request = async (options) => {
+    const text = await request(options);
+    if (!options.path.includes("/repos/")) return text;
+    return JSON.stringify(JSON.parse(text).map((r) => (r.tag_name.includes("nightly") ? { ...r, draft: true, published_at: null } : r)));
+  };
+  assert.equal((await instance.getLatestVersion()).version, "0.0.1");
 });
 
 test("Stable ignores nightlies", async () => {

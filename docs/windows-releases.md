@@ -66,7 +66,7 @@ gh workflow run release.yml --repo DrasticDeveloping/Slopify --ref master -f cha
 
 For a build artifact only, use `-f channel=nightly -f publish=false`. Manual runs default to publishing disabled. For subsequent Stable releases, update package.json and package-lock.json together with `npm.cmd version patch --no-git-tag-version`, then commit and merge that version before dispatching.
 
-Stable builds include both `latest.yml` and `nightly.yml`; Nightly builds include `nightly.yml`. The Nightly GitHub provider selects the highest Stable or Nightly version, while Stable follows GitHub's latest stable release. A saved development preference of `"beta"` is read as Nightly.
+Stable builds include both `latest.yml` and `nightly.yml`; Nightly builds include `nightly.yml`. Nightly takes the most recently published release on GitHub (by its publishing time, from GitHub's API), Stable or Nightly, even if its version number is lower than the one installed; Stable follows GitHub's latest stable release. A saved development preference of `"beta"` is read as Nightly.
 
 ### Publishing a local build
 
