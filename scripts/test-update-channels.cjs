@@ -11,6 +11,8 @@ function provider(tags, allowPrerelease = true) {
   const instance = new NightlyGitHubProvider({ owner: "test", repo: "releases" }, updater, {
     platform: "win32", executor: { request: async (options) => {
       requested.push(options.path);
+      // Stable reads the releases feed (electron-updater's own provider).
+      if (options.path.includes(".atom")) return `<feed>${tags.map(tag => `<entry><link href="https://github.com/test/releases/releases/tag/${tag}"/><title>${tag}</title><content>Notes</content></entry>`).join("")}</feed>`;
       // `tags` are listed newest first; the API's order doesn't matter, so it's reversed here.
       if (options.path.includes("/repos/test/releases/releases")) return JSON.stringify(tags.map((tag, i) => ({ tag_name: tag, name: tag, body: "Notes", draft: false, published_at: new Date(Date.UTC(2026, 9, 20) - i * 60_000).toISOString() })).reverse());
       if (options.path.endsWith("/latest")) return JSON.stringify({ tag_name: "v2.0.0" });
