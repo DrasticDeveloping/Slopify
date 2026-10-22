@@ -29,7 +29,7 @@ const SONG_ID = /^[A-Za-z0-9-]{8,64}$/;
 const DELETED_FOR_MS = 15 * 60_000;
 /** SQL that's true unless user `?1` was deleted after `?<at>` (now less DELETED_FOR_MS). */
 const notDeleted = (at: number) => `NOT EXISTS (SELECT 1 FROM deleted_users WHERE id = ?1 AND deleted_at > ?${at})`;
-const deletedSince = () => Date.now() - DELETED_FOR_MS;
+export const deletedSince = () => Date.now() - DELETED_FOR_MS;
 const gone = () => new HttpError(410, "This account was deleted.");
 
 /** Refuses with 410 when the account was just deleted. Every write checks this itself too, in the same statement. */
@@ -142,6 +142,7 @@ export async function deleteAccount(env: LibraryEnv, userId: string) {
   await env.DB.batch([
     env.DB.prepare("INSERT INTO deleted_users (id, deleted_at) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET deleted_at = ?2").bind(userId, Date.now()),
     env.DB.prepare("DELETE FROM songs WHERE user_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM song_counts WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM library_state WHERE user_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId),
     ...socialDeletions(env, userId),
@@ -243,7 +244,7 @@ export async function putSong(env: LibraryEnv, userId: string, id: string, body:
   if (!SONG_ID.test(id)) throw new HttpError(400, "Invalid song id.");
   const data = checkSong(id, body);
   // A new song (or one deleted before) counts towards the limit; changes to a saved one don't.
-  const row = await env.DB.prepare("SELECT (SELECT deleted FROM songs WHERE user_id = ?1 AND id = ?2) AS deleted, (SELECT COUNT(*) FROM songs WHERE user_id = ?1 AND deleted = 0) AS saved")
+  const row = await env.DB.prepare("SELECT (SELECT deleted FROM songs WHERE user_id = ?1 AND id = ?2) AS deleted, COALESCE((SELECT saved FROM song_counts WHERE user_id = ?1), 0) AS saved")
     .bind(userId, id).first<{ deleted: number | null; saved: number }>();
   if (row && row.deleted !== 0 && row.saved >= MAX_SONGS) throw new HttpError(413, `An account can keep up to ${MAX_SONGS.toLocaleString("en")} songs.`);
   const updatedAt = await writeSong(env, userId, id, data, 0);

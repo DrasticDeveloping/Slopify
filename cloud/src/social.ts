@@ -1,4 +1,4 @@
-import { bytes, checkNotDeleted, getProfile, HttpError, https, normalizeUsername, record, text, USERNAME, type LibraryEnv, type Profile } from "./library";
+import { bytes, checkNotDeleted, deletedSince, getProfile, HttpError, https, normalizeUsername, record, text, USERNAME, type LibraryEnv, type Profile } from "./library";
 
 /*
  * Friends and shared playlists.
@@ -111,9 +111,12 @@ export async function setActivity(env: LibraryEnv, userId: string, body: unknown
     playing: input.playing === true,
     roomCode: typeof input.roomCode === "string" && FRIEND_CODE.test(input.roomCode) ? normalizeFriendCode(input.roomCode) : null,
   };
-  await checkNotDeleted(env, userId);
-  await env.DB.prepare("INSERT INTO activity (user_id, data, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(user_id) DO UPDATE SET data = ?2, updated_at = ?3")
-    .bind(userId, JSON.stringify(activity), Date.now()).run();
+  // Not for an account being deleted, checked in the same statement as the write.
+  const result = await env.DB.prepare(
+    "INSERT INTO activity (user_id, data, updated_at) SELECT ?1, ?2, ?3 WHERE NOT EXISTS (SELECT 1 FROM deleted_users WHERE id = ?1 AND deleted_at > ?4) " +
+      "ON CONFLICT(user_id) DO UPDATE SET data = ?2, updated_at = ?3",
+  ).bind(userId, JSON.stringify(activity), Date.now(), deletedSince()).run();
+  if (!result.meta.changes) await checkNotDeleted(env, userId);
   return { shared: true };
 }
 
@@ -276,19 +279,21 @@ export async function sharePlaylist(env: LibraryEnv, userId: string, playlistId:
   const json = JSON.stringify(data);
   if (bytes(json) > MAX_SHARE_BYTES) throw new HttpError(413, "This playlist is too large to share.");
   if (!(await getProfile(env, userId))) throw new HttpError(400, "Choose a display name first.");
-  await checkNotDeleted(env, userId);
   // An automatic republish names the version it saw: a newer one (from another device) isn't replaced.
+  // One statement, so neither that nor a deletion can slip in between the check and the write.
   const base = record(body)?.baseUpdatedAt;
-  if (typeof base === "number") {
-    const current = await env.DB.prepare("SELECT updated_at FROM shared_playlists WHERE owner_id = ? AND playlist_id = ?").bind(userId, playlistId).first<{ updated_at: number }>();
-    if (current && current.updated_at !== base) throw new HttpError(409, "This playlist was shared from another device since. Catch up first.");
-  }
-  const now = Date.now();
   const row = await env.DB.prepare(
-    "INSERT INTO shared_playlists (id, owner_id, playlist_id, on_profile, data, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) " +
-      "ON CONFLICT(owner_id, playlist_id) DO UPDATE SET on_profile = ?4, data = ?5, updated_at = ?6 RETURNING id",
-  ).bind(randomCode("abcdefghijklmnopqrstuvwxyz0123456789", 16), userId, playlistId, onProfile ? 1 : 0, json, now).first<{ id: string }>();
-  return { shareId: row!.id, playlistId, onProfile, updatedAt: now, songCount: data.tracks.length };
+    "INSERT INTO shared_playlists (id, owner_id, playlist_id, on_profile, data, created_at, updated_at) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6 " +
+      "WHERE NOT EXISTS (SELECT 1 FROM deleted_users WHERE id = ?2 AND deleted_at > ?8) " +
+      "ON CONFLICT(owner_id, playlist_id) DO UPDATE SET on_profile = ?4, data = ?5, updated_at = MAX(?6, shared_playlists.updated_at + 1) " +
+      "WHERE ?7 IS NULL OR shared_playlists.updated_at = ?7 RETURNING id, updated_at",
+  ).bind(randomCode("abcdefghijklmnopqrstuvwxyz0123456789", 16), userId, playlistId, onProfile ? 1 : 0, json, Date.now(), typeof base === "number" ? base : null, deletedSince())
+    .first<{ id: string; updated_at: number }>();
+  if (!row) {
+    await checkNotDeleted(env, userId);
+    throw new HttpError(409, "This playlist was shared from another device since. Catch up first.");
+  }
+  return { shareId: row.id, playlistId, onProfile, updatedAt: row.updated_at, songCount: data.tracks.length };
 }
 
 /** Stops sharing: the link stops working, and it's gone from followers' libraries and friends' inboxes. */
