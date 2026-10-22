@@ -72,7 +72,9 @@ interface StreamHooks {
   save(id: string, then?: (libraryId: string) => void): void;
   dismiss(id: string): void;
 }
-let streamHooks: StreamHooks | null = null;
+// `var` with no initializer: importer.ts calls connectStreams while this module is still loading
+// (actions -> recommend/mixes -> importer), before a `let` here would exist.
+var streamHooks: StreamHooks | undefined;
 export function connectStreams(hooks: StreamHooks) {
   streamHooks = hooks;
 }
