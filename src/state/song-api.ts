@@ -17,6 +17,8 @@ export interface ServerSong {
   updatedAt: number;
   sourceURL: string | null;
   artworkUrl: string | null;
+  /** The cover as a web link, even when this server shows its own copy (for other devices). */
+  remoteArtworkUrl?: string | null;
   clip: ClipRange | null;
   /** Further metadata under namespaced keys, for features that need no server change. */
   extra: Record<string, unknown>;

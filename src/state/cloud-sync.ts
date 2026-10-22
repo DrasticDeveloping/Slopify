@@ -55,7 +55,7 @@ const forCloud = (s: ServerSong & { playableURL?: string | null }) => ({
   addedAt: s.addedAt,
   sourceURL: s.sourceURL,
   playableURL: s.playableURL ?? null,
-  artworkUrl: s.artworkUrl?.startsWith("https://") ? s.artworkUrl : null,
+  artworkUrl: [s.remoteArtworkUrl, s.artworkUrl].find((url) => url?.startsWith("https://")) ?? null,
   clip: s.clip,
   extra: s.extra,
 });
