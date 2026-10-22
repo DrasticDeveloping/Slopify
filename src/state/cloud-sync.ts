@@ -75,13 +75,12 @@ async function local<T>(url: string, init: RequestInit) {
   return body.song as T;
 }
 
-/** Brings this computer's songs and the account's into step. Returns whether this computer's songs changed. */
-export async function syncCloudSongs(): Promise<boolean> {
-  const userId = getAccount().userId;
-  if (getAccount().status !== "signedIn" || !userId) return false;
+/** Brings this computer's songs and account `userId`'s into step (only while it's the one signed in). Returns whether this computer's songs changed. */
+export async function syncCloudSongs(userId: string): Promise<boolean> {
+  if (getAccount().status !== "signedIn" || getAccount().userId !== userId) return false;
   const agreed = readAgreed(userId);
   const localSongs = new Map((await listSongs()).map((s) => [s.id, s as ServerSong & { playableURL?: string | null }]));
-  const { songs: changes, until } = await cloudCall<{ songs: CloudSong[]; until: number }>(`/v1/library/songs?since=${agreed.cursor}`);
+  const { songs: changes, until } = await cloudCall<{ songs: CloudSong[]; until: number }>(`/v1/library/songs?since=${agreed.cursor}`, { as: userId });
   let changedHere = false;
   const deletedThere = new Set<string>();
 
@@ -133,7 +132,7 @@ export async function syncCloudSongs(): Promise<boolean> {
     if (!portable(song) || deletedThere.has(song.id)) continue;
     const was = agreed.songs[song.id];
     if (was && song.updatedAt <= was.local) continue;
-    const saved = await cloudCall<CloudSong>(`/v1/library/songs/${encodeURIComponent(song.id)}`, { method: "PUT", body: forCloud(song) });
+    const saved = await cloudCall<CloudSong>(`/v1/library/songs/${encodeURIComponent(song.id)}`, { method: "PUT", body: forCloud(song), as: userId });
     agreed.songs[song.id] = { cloud: saved.updatedAt, local: song.updatedAt };
     writeAgreed(userId, agreed);
   }
@@ -146,7 +145,7 @@ export async function syncCloudSongs(): Promise<boolean> {
     for (const id of missing) delete agreed.songs[id];
   } else {
     for (const id of missing) {
-      await cloudCall(`/v1/library/songs/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await cloudCall(`/v1/library/songs/${encodeURIComponent(id)}`, { method: "DELETE", as: userId });
       delete agreed.songs[id];
     }
   }

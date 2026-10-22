@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { thisDevice } from "../lib/native";
 import { toast } from "./actions";
-import { getState, setState } from "./store";
+import { flushPersist, getState, setState } from "./store";
 
 /*
  * Slopify's online service (cloud/): accounts, the library following your
@@ -63,9 +63,10 @@ export const useAccount = () => useSyncExternalStore(subscribeAccount, () => acc
  * a sign-in if it loads later.
  */
 const SIGN_IN_WAIT = 15_000;
+const UNREACHABLE = "Couldn't reach Slopify's sign-in. Check your connection.";
 if (cloudEnabled) {
   window.setTimeout(() => {
-    if (account.status === "loading" && !account.userId) set({ status: "signedOut", error: "Couldn't reach Slopify's sign-in. Check your connection." });
+    if (account.status === "loading" && !account.userId) set({ status: "signedOut", error: UNREACHABLE });
   }, SIGN_IN_WAIT);
 }
 
@@ -81,7 +82,25 @@ interface ClerkBridge {
 }
 let clerk: ClerkBridge | null = null;
 
-export const signIn = () => clerk?.openSignIn();
+/**
+ * Clerk, or its sign-in window, couldn't load (offline, Clerk unreachable, or it
+ * refused this address). It can't be loaded again in place, so signing in
+ * offers to reload Slopify instead. Until Clerk has reported in, the same.
+ */
+let clerkReady = false;
+let clerkFailed = false;
+export function clerkUnavailable() {
+  clerkFailed = true;
+  // Signed in, Clerk itself works: only its windows are missing.
+  if (account.userId) return;
+  set({ status: "signedOut", error: UNREACHABLE });
+}
+export function signIn() {
+  if (clerkReady && !clerkFailed) return void clerk?.openSignIn();
+  if (!window.confirm("Slopify's sign-in couldn't load, probably because the connection dropped. Reload Slopify to try again?")) return;
+  flushPersist();
+  location.reload();
+}
 export const manageAccount = () => clerk?.openUserProfile();
 export async function signOut() {
   await clerk?.signOut();
@@ -109,31 +128,53 @@ export function connectClerk(bridge: ClerkBridge) {
 /**
  * Clerk's sign-in state changed. On sign-in, the account's Slopify profile is
  * loaded (or created from the Clerk user's name and picture the first time),
- * and its name and picture become this app's.
+ * and its name and picture become this app's. If that fails (a dropped
+ * connection at sign-in), it tries again on its own until it works.
  */
 export async function clerkChanged(user: { id: string; name: string | null; username?: string | null; email: string | null; imageUrl: string | null } | null) {
+  clerkReady = true;
+  window.clearTimeout(profileRetry);
   if (!user) {
     const was = account.status;
+    profileLoading = null;
     set({ status: "signedOut", userId: null, email: null, profile: null, error: null });
     if (was === "signedIn") toast("Signed out", { detail: `Your library stays on ${thisDevice}.` });
     return;
   }
-  if (account.userId === user.id && account.status === "signedIn") return;
-  set({ status: "loading", userId: user.id, email: user.email, error: null });
+  if (account.userId === user.id && ((account.status === "signedIn" && account.profile) || profileLoading === user.id)) return;
+  if (account.userId !== user.id) {
+    profileAttempts = 0;
+    set({ status: "loading", userId: user.id, email: user.email, profile: null, error: null });
+  }
+  profileLoading = user.id;
   try {
-    let profile = await cloudCall<CloudProfile | null>("/v1/me");
+    let profile = await cloudCall<CloudProfile | null>("/v1/me", { as: user.id });
     if (!profile) {
       const name = (user.name || user.email?.split("@")[0] || getState().settings.profileName || "Listener").slice(0, 40);
       // The first username comes from the sign-in's own, or the email address; it can be changed in Settings.
-      profile = await cloudCall<CloudProfile>("/v1/me", { method: "PUT", body: { displayName: name, avatarUrl: user.imageUrl, suggestedUsername: user.username || user.email?.split("@")[0] || null } });
+      profile = await cloudCall<CloudProfile>("/v1/me", { method: "PUT", body: { displayName: name, avatarUrl: user.imageUrl, suggestedUsername: user.username || user.email?.split("@")[0] || null }, as: user.id });
     }
-    set({ status: "signedIn", profile });
+    // Another account signed in meanwhile: this one's profile isn't wanted any more.
+    if (account.userId !== user.id) return;
+    profileAttempts = 0;
+    set({ status: "signedIn", profile, error: null });
     adoptProfile(profile);
     signedInListeners.forEach((l) => l());
   } catch (error) {
+    if (account.userId !== user.id) return;
     set({ status: "signedIn", profile: null, error: message(error) });
+    const delay = Math.min(60_000, 5_000 * 2 ** profileAttempts++);
+    profileRetry = window.setTimeout(() => {
+      if (account.userId === user.id && !account.profile) void clerkChanged(user);
+    }, delay);
+  } finally {
+    if (profileLoading === user.id) profileLoading = null;
   }
 }
+/** The account whose profile is loading, the next try after a failed one, and how many have failed in a row. */
+let profileLoading: string | null = null;
+let profileRetry: number | undefined;
+let profileAttempts = 0;
 
 /** Things to start once signed in (library sync). */
 const signedInListeners = new Set<() => void>();
@@ -163,10 +204,14 @@ export class CloudError extends Error {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : "Couldn't reach Slopify's online service.");
 
-/** One call to the online service as the signed-in account. Throws CloudError (with `status`, and the body for 409s). */
-export async function cloudCall<T>(path: string, { method = "GET", body, signal }: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+/**
+ * One call to the online service as the signed-in account. Throws CloudError (with `status`, and the body for 409s).
+ * With `as`, the call is only made as that account: if another one has signed in meanwhile, it throws instead.
+ */
+export async function cloudCall<T>(path: string, { method = "GET", body, signal, as }: { method?: string; body?: unknown; signal?: AbortSignal; as?: string } = {}): Promise<T> {
   const token = await clerk?.getToken();
   if (!token) throw new CloudError(401, "Sign in first.");
+  if (as !== undefined && (tokenUser(token) !== as || account.userId !== as)) throw new CloudError(0, "You signed in to another account.");
   let res: Response;
   try {
     res = await fetch(cloudConfig.url + path, {
@@ -183,6 +228,15 @@ export async function cloudCall<T>(path: string, { method = "GET", body, signal 
   const json = (await res.json().catch(() => null)) as { ok?: boolean; result?: T; error?: { message?: string } } | null;
   if (!res.ok || !json?.ok) throw new CloudError(res.status, json?.error?.message || `Slopify's online service answered HTTP ${res.status}.`, json);
   return json.result as T;
+}
+
+/** Who a session token is for (its `sub`), without checking it: the service does that. */
+function tokenUser(token: string) {
+  try {
+    return (JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))) as { sub?: string }).sub ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** The WebSocket address for a Listen Along room, carrying a fresh token (browsers can't send headers on WebSockets). */

@@ -1,7 +1,8 @@
 import { engine } from "../audio/engine";
-import { hashString, paletteFromSeed } from "../data/library";
+import { hashString, likedPlaylist, paletteFromSeed } from "../data/library";
 import type { ClipRange, Genre, Playlist, Track } from "../data/types";
 import { todayKey } from "../lib/format";
+import { adoptMixes } from "../recommend/mixes";
 import { recommend, type RankOptions } from "../recommend/rank";
 import {
   countReason, emptyTaste, ListeningCollector, noteLikes, noteSaves, recordListen, setLinks, type Listen, type ReasonKind, type SongLink,
@@ -251,12 +252,38 @@ export function rememberSongLinks(links: SongLink[]) {
 
 /** Forgets listening, likes and saves as signals, hidden songs and what was learned. Library and playlists stay. */
 export function resetRecommendations() {
+  forgetTaste();
+  toast("Recommendations reset", { detail: "Your library and playlists are unchanged." });
+}
+
+function forgetTaste() {
   collector.clear();
   setState((s) => ({ taste: { ...emptyTaste(s.taste.rev + 1), resetAt: Date.now() }, context: s.context ? { ...s.context, picks: undefined } : null }));
   const current = getState().currentId;
   if (current && getState().isPlaying) startListening(current);
   flushPersist();
-  toast("Recommendations reset", { detail: "Your library and playlists are unchanged." });
+}
+
+/**
+ * Clears playlists, likes, recently played, settings and recommendations. It's
+ * an ordinary change, saved with what was last synced, so it reaches the music
+ * server and the account like any other (dropping this window's saved copy
+ * instead would just bring it all back). Then the app reloads, so nothing kept
+ * in memory (recommended songs, mixes) survives. Songs stay.
+ */
+export function resetAppData() {
+  setState({
+    playlists: [likedPlaylist()],
+    settings: { ...defaultSettings },
+    listens: [],
+    upNext: [],
+    history: [],
+  });
+  adoptMixes([]);
+  forgetTaste();
+  // Recommended songs (recommend/useDiscovery.ts) are kept only on this device.
+  localStorage.removeItem("slopify.discovery.v1");
+  location.reload();
 }
 
 /* ───────────────────────── navigation ───────────────────────── */

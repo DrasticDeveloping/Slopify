@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { thisDevice } from "../lib/native";
 import { goBack, goForward, navigate, openMenu, openModal, playList, togglePlay } from "../state/actions";
-import { useStore } from "../state/store";
+import { getState, useStore, type MenuState } from "../state/store";
 import { installApp, usePwa } from "../state/pwa";
 import { cloudEnabled, manageAccount, signIn, signOut, useAccount } from "../state/cloud";
 import { openShared, parseShareLink } from "../state/social";
@@ -46,9 +46,11 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
     navigate({ name: "search", q });
   };
 
+  /** The profile menu while it's open, so it can follow the account (sign-in finishing or failing). */
+  const shownProfile = useRef<{ el: HTMLElement; menu: MenuState } | null>(null);
   const profileMenu = (el: HTMLElement) => {
     const r = el.getBoundingClientRect();
-    openMenu({
+    const menu: MenuState = {
       x: r.right - 240,
       y: r.bottom + 8,
       // Signed out, the name is only this device's: say plainly that no account is signed in.
@@ -69,8 +71,14 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
         { label: "Keyboard shortcuts", icon: "keyboard", hint: "?", run: () => openModal({ type: "settings", tab: "shortcuts" }) },
         ...(account.status === "signedIn" ? [{ separator: true }, { label: "Manage account", icon: "user", run: manageAccount }, { label: "Sign out", icon: "logout", run: () => void signOut() }] : []),
       ],
-    });
+    };
+    shownProfile.current = { el, menu };
+    openMenu(menu);
   };
+  useEffect(() => {
+    const shown = shownProfile.current;
+    if (shown && getState().menu === shown.menu) profileMenu(shown.el);
+  }, [account]);
 
   const showTitle = Boolean(header?.visible);
 
