@@ -101,6 +101,14 @@ function SnoozedSongs() {
   const tracks = useStore((s) => s.tracks);
   const artists = useStore((s) => s.artists);
   const songs = snoozedSongs({ settings, tracks });
+  // Redraw when the next snooze ends, so it leaves the list.
+  const [, setTick] = useState(0);
+  const soonest = songs[0]?.until;
+  useEffect(() => {
+    if (!soonest) return;
+    const timer = window.setTimeout(() => setTick((n) => n + 1), Math.min(2 ** 31 - 1, Math.max(0, soonest - Date.now()) + 50));
+    return () => clearTimeout(timer);
+  }, [soonest]);
   return (
     <>
       <h3 className="set-section">Snoozed songs</h3>

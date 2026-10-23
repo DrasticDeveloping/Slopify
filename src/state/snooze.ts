@@ -1,4 +1,4 @@
-import { next, toast, updateSettings } from "./actions";
+import { next, nextTrackId, toast, togglePlay, updateSettings } from "./actions";
 import { getState, snoozedUntil, type AppState, type MenuItem } from "./store";
 
 /*
@@ -36,7 +36,7 @@ export function snoozedSongs(s: Pick<AppState, "settings" | "tracks">, now = Dat
   return Object.entries(s.settings.snoozed ?? {}).filter(([, until]) => typeof until === "number" && until > now).filter(([id]) => s.tracks[id]).sort((a, b) => a[1] - b[1]).map(([id, until]) => ({ id, until }));
 }
 
-/** Snoozes `ids` for `ms`. Snoozing the song that's playing skips it now. */
+/** Snoozes `ids` for `ms`. Snoozing the song that's playing skips it now, or stops it when nothing follows. */
 export function snooze(ids: string[], ms: number, length: string) {
   const s = getState();
   const songs = ids.filter((id) => s.tracks[id] && !s.tracks[id].stream);
@@ -45,7 +45,10 @@ export function snooze(ids: string[], ms: number, length: string) {
   const until = Date.now() + ms;
   updateSettings({ snoozed: { ...current(), ...Object.fromEntries(songs.map((id) => [id, until])) } });
   const skipped = s.isPlaying && s.currentId && songs.includes(s.currentId) ? s.currentId : null;
-  if (skipped) next();
+  if (skipped) {
+    if (nextTrackId()) next();
+    else togglePlay();
+  }
   const title = songs.length === 1 ? `“${s.tracks[songs[0]].title}”` : `${songs.length} songs`;
   toast(`Snoozed ${title} for ${length}`, {
     detail: `${songs.length === 1 ? "It's" : "They're"} skipped ${snoozeEnds(until)}. Play ${songs.length === 1 ? "it" : "them"} yourself any time.`,
