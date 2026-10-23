@@ -74,7 +74,7 @@ export function randomColours(): Pick<CustomTheme, "accent" | "accent2" | "backg
   return { accent: hsl(h, 0.85, 0.66), accent2: hsl(h2, 0.75, 0.55), background: hsl(h, 0.35, 0.05) };
 }
 
-const newId = () => `custom-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const newId = (): CustomTheme["id"] => `custom-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /** Makes a new theme from the colours of the one chosen now, and switches to it. */
 export function createTheme() {
