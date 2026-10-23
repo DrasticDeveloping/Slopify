@@ -120,6 +120,10 @@ export function deleteTheme(id: string) {
         const now = getState().settings;
         const kept = customThemes(now);
         if (kept.some((t) => t.id === id)) return;
+        if (kept.length >= MAX_CUSTOM_THEMES) {
+          toast(`Couldn't bring back “${theme.name}”`, { detail: `You already have ${MAX_CUSTOM_THEMES} themes. Delete one first.` });
+          return;
+        }
         const at = Math.min(mine.indexOf(theme), kept.length);
         updateSettings({ customThemes: [...kept.slice(0, at), theme, ...kept.slice(at)], ...(wasChosen ? { theme: id as Settings["theme"] } : {}) });
       },
