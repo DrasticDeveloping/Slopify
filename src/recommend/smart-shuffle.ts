@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { ReasonKind } from "./taste";
 import { isPlayable, recommendations } from "../state/actions";
 import { canStream, registerStreams, streamTrackId } from "../state/importer";
-import { getState, setState, subscribe, type AppState } from "../state/store";
+import { getState, setState, snoozedUntil, subscribe, type AppState } from "../state/store";
 import { discover, seedsForIds, trackKey } from "./service";
 
 /*
@@ -84,11 +84,11 @@ function slots(upcoming: string[], added: Set<string>, playingMine: boolean) {
   return at;
 }
 
-/** Library songs that suit what's playing and aren't in the list or queue. */
+/** Library songs that suit what's playing and aren't in the list or queue, or snoozed. */
 function ownedFor(s: AppState, r: Session, count: number) {
   const exclude = new Set([...(s.context?.ids ?? []), ...s.order, ...s.upNext, ...r.added, ...r.owned]);
   const list = recommendations(s, { mode: "autoplay", seedId: s.currentId ?? undefined, exclude, limit: count * 2 })
-    .filter((rec) => !s.tracks[rec.id]?.stream && !r.seen.has(trackKey(s, rec.id)));
+    .filter((rec) => !s.tracks[rec.id]?.stream && !snoozedUntil(s, rec.id) && !r.seen.has(trackKey(s, rec.id)));
   for (const rec of list.slice(0, count)) {
     r.owned.push(rec.id);
     r.picks[rec.id] = rec.kind;
