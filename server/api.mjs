@@ -332,12 +332,68 @@ async function prepareSongFile(song, dir, signal) {
   return { filePath: result.filePath, size: result.size, sha256: result.contentSha256 };
 }
 
+/** What the online service accepts in one call (cloud/src/index.ts MAX_BODY_BYTES). */
+const MAX_CLOUD_BODY_BYTES = 1024 * 1024;
+
+/**
+ * /api/cloud/v1/… → the online service's /v1/…. The page calls the service
+ * through here, its own origin, because a browser checks each cross-origin call
+ * that carries a sign-in token with an extra OPTIONS call first, and the
+ * service's Cloudflare plan counts those as requests too. Only to the service
+ * the web app was built for: the page names it in X-Slopify-Cloud, and when it
+ * doesn't match (or this server has none), the 404 CLOUD_PROXY_OFF tells the
+ * page to call the service directly instead.
+ */
+async function proxyCloud(req, res, url, cloudUrl) {
+  const target = cloudUrl.replace(/\/+$/, "");
+  const path = url.pathname.slice("/api/cloud".length);
+  if (!target || req.headers["x-slopify-cloud"] !== target || !path.startsWith("/v1/")) {
+    return sendJSON(res, 404, { ok: false, error: { code: "CLOUD_PROXY_OFF", message: "This music server doesn't pass calls to that online service." } });
+  }
+  // Calls carry the page's sign-in, so only Slopify's own pages may make them.
+  if (crossSite(req)) return sendJSON(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "Requests from other websites aren't allowed." } });
+  const method = req.method || "GET";
+  let body;
+  if (method !== "GET" && method !== "HEAD") {
+    const chunks = [];
+    let size = 0;
+    try {
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > MAX_CLOUD_BODY_BYTES) return sendJSON(res, 413, { ok: false, error: { code: "TOO_LARGE", message: "Request too large." } });
+        chunks.push(chunk);
+      }
+    } catch {
+      return void res.end(); // The page left partway through sending.
+    }
+    body = Buffer.concat(chunks);
+  }
+  const headers = {};
+  for (const name of ["authorization", "content-type"]) if (req.headers[name]) headers[name] = req.headers[name];
+  const controller = new AbortController();
+  const closed = () => { if (!res.writableFinished) controller.abort(); };
+  res.on("close", closed);
+  try {
+    const upstream = await fetch(target + path + url.search, { method, headers, body, redirect: "manual", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(25_000)]) });
+    const reply = Buffer.from(await upstream.arrayBuffer());
+    if (res.destroyed) return;
+    res.writeHead(upstream.status, { "Content-Type": upstream.headers.get("content-type") || "application/json; charset=utf-8", "Cache-Control": "no-store" });
+    res.end(reply);
+  } catch {
+    if (res.destroyed) return;
+    sendJSON(res, 502, { ok: false, error: { code: "CLOUD_UNREACHABLE", message: "Couldn't reach Slopify's online service. Check your connection." } });
+  } finally {
+    res.off("close", closed);
+  }
+}
+
 /** `owned`: whether this server still has the library (see library-lock.mjs); changes are refused once it hasn't. */
 /**
  * `stopsWhenClosed`: the standalone server stops once its last window closes,
  * so pages keep a connection open to say they're there (see main.mjs).
+ * `cloudUrl`: the online service the web app was built for (see proxyCloud), or "".
  */
-export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed = false }) {
+export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed = false, cloudUrl = "" }) {
   // Checked again just before each save: a request that started before a takeover mustn't finish it.
   const stillOwned = () => {
     if (!owned()) throw Object.assign(new Error("Another Slopify took over this library. Restart this one to use it again."), { status: 409 });
@@ -551,6 +607,8 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
     if (!url.pathname.startsWith("/api/")) return next();
     const parts = url.pathname.split("/").filter(Boolean).slice(1);
     const method = req.method || "GET";
+    // Before the library checks below: these calls go to the account, not this library.
+    if (parts[0] === "cloud") return await proxyCloud(req, res, url, cloudUrl);
     // Only Slopify's own pages may change the library: any website could otherwise post
     // here from the browser (a plain form or text/plain fetch needs no CORS permission).
     if (!["GET", "HEAD", "OPTIONS"].includes(method) && crossSite(req)) {
@@ -779,7 +837,7 @@ export function slopifyApi(options = {}) {
     if (!handler) {
       const dataDir = chosen ? path.resolve(chosen) : checkoutDataDir(fileURLToPath(new URL("../", import.meta.url)));
       const owned = lockLibrary(dataDir, { port: server.config.server?.port });
-      handler = createImportApi({ dataDir, owned });
+      handler = createImportApi({ dataDir, owned, cloudUrl: options.cloudUrl });
     }
     server.middlewares.use((req, res, next) => {
       handler(req, res, next).catch(next);

@@ -249,7 +249,9 @@ function knownHost(req) {
   return net.isIP(name) !== 0 || name === computerName || name === `${computerName}.local`;
 }
 
-const api = createImportApi({ dataDir, owned, stopsWhenClosed });
+// The online service the built app calls through this server (written by vite.config.ts); none in older builds.
+const cloudUrl = await fs.readFile(path.join(dist, "cloud.json"), "utf8").then((text) => String(JSON.parse(text).url || ""), () => "");
+const api = createImportApi({ dataDir, owned, stopsWhenClosed, cloudUrl });
 const server = http.createServer((req, res) => {
   if (!knownHost(req)) return void res.writeHead(421, { "Content-Type": "text/plain; charset=utf-8" }).end("Slopify doesn't answer to that address.");
   api(req, res, () => serveApp(req, res)).catch((error) => {
