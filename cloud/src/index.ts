@@ -141,7 +141,11 @@ function sharePage(shareId: string) {
   return new Response(html, { status: valid ? 200 : 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" } });
 }
 
-export default {
+/** Path words kept as they are in the request log; anything else (an id, a code, a name) is logged as ":id". */
+const ROUTE_WORDS = new Set(["v1", "p", "health", "me", "activity", "usernames", "social", "friends", "requests", "playlists", "shares", "shared", "follow", "send", "inbox", "library", "songs", "state", "rooms", "socket"]);
+const routeOf = (pathname: string) => "/" + pathname.split("/").filter(Boolean).map((p) => (ROUTE_WORDS.has(p) ? p : ":id")).join("/");
+
+const service = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
@@ -269,4 +273,16 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env) {
     await tidy(env);
   },
+} satisfies ExportedHandler<Env>;
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const started = Date.now();
+    const response = await service.fetch(request, env);
+    // One line per call, so Workers Logs can count calls by route (wrangler.jsonc `observability`).
+    // Only the route's shape is logged: never ids, the query (WebSocket tokens travel there) or who called.
+    console.log(JSON.stringify({ method: request.method, route: routeOf(new URL(request.url).pathname), status: response.status, ms: Date.now() - started }));
+    return response;
+  },
+  scheduled: service.scheduled,
 } satisfies ExportedHandler<Env>;
