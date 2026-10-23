@@ -35,7 +35,7 @@ Signing in uses [Clerk](https://clerk.com), which keeps your email address, pass
 
 Songs added from files on your computer, and the audio of any song, never leave your computer.
 
-This data is used only to sync your library between your devices, to run Listen Along, and to show your friends and the playlists you share. Cloudflare and Clerk process it on Slopify's behalf. Cloudflare keeps database recovery points for a limited time (up to 30 days) after any change, including a deletion.
+This data is used only to sync your library between your devices, to run Listen Along, and to show your friends and the playlists you share. Cloudflare and Clerk process it on Slopify's behalf. Cloudflare keeps database recovery points for a limited time (up to 30 days) after any change, including a deletion. To keep the service within its limits, it logs the kind of each call (such as "sync your library"), its result and how long it took, for a few days; these logs don't say who called, from where, or which songs, playlists or people it was about.
 
 ## Your choices
 
