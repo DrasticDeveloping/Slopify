@@ -144,15 +144,15 @@ function sharePage(shareId: string) {
 /** The route words the request log keeps, by position; anything else (an id, a code, a username) is logged as ":id". */
 const SECTIONS = new Set(["health", "me", "usernames", "social", "friends", "shares", "shared", "inbox", "library", "sync", "rooms"]);
 const ACTIONS = new Set(["playlists", "follow", "send", "socket"]);
-function routeOf(pathname: string) {
+function routeOf(method: string, pathname: string) {
   const parts = pathname.split("/").filter(Boolean);
   const [root, section, sub] = parts;
-  const kept = (i: number) => {
+  const kept = (i: number): boolean => {
     if (i === 0) return root === "v1" || root === "p";
     if (root !== "v1") return false;
     if (i === 1) return SECTIONS.has(section);
-    // /v1/library/songs, /v1/library/state, /v1/me/activity, /v1/friends/requests
-    if (i === 2) return (section === "library" && (sub === "songs" || sub === "state")) || (section === "me" && sub === "activity") || (section === "friends" && sub === "requests");
+    // /v1/library/songs, /v1/library/state, /v1/me/activity, /v1/friends/requests (only POST and DELETE: a GET there is a friend's id)
+    if (i === 2) return (section === "library" && (sub === "songs" || sub === "state")) || (section === "me" && sub === "activity") || (section === "friends" && sub === "requests" && method !== "GET");
     // /v1/friends/:id/playlists, /v1/shared/:id/follow, /v1/shared/:id/send, /v1/rooms/:code/socket
     if (i === 3) return ACTIONS.has(parts[3]) && !kept(2);
     return false;
@@ -296,7 +296,7 @@ export default {
     const response = await service.fetch(request, env);
     // One line per call, so Workers Logs can count calls by route (wrangler.jsonc `observability`).
     // Only the route's shape is logged: never ids, the query (WebSocket tokens travel there) or who called.
-    console.log(JSON.stringify({ method: request.method, route: routeOf(new URL(request.url).pathname), status: response.status, ms: Date.now() - started }));
+    console.log(JSON.stringify({ method: request.method, route: routeOf(request.method, new URL(request.url).pathname), status: response.status, ms: Date.now() - started }));
     return response;
   },
   scheduled: service.scheduled,
