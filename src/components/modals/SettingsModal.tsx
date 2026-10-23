@@ -10,7 +10,8 @@ import { toast } from "../../state/actions";
 import { connect, disconnect } from "../../state/server";
 import { deleteAccount, linkComputer } from "../../state/sync";
 import { installApp, installationHelp, updateApp, usePwa } from "../../state/pwa";
-import { defaultSettings, useStore, type Settings, type SettingsTab, type Theme } from "../../state/store";
+import { defaultSettings, useStore, type CustomTheme, type Settings, type SettingsTab, type Theme } from "../../state/store";
+import { activeCustomTheme, builtinThemes, createTheme, customThemes, deleteTheme, MAX_CUSTOM_THEMES, randomColours, tooLight, updateTheme } from "../../state/themes";
 import { Icon } from "../Icon";
 import { Slider } from "../Slider";
 import { Shell, Toggle } from "./Shell";
@@ -23,15 +24,6 @@ const tabs: Array<[SettingsTab, string, string]> = [
   ["appearance", "Appearance", "palette"],
   ["server", "Server", "server"],
   ["shortcuts", "Shortcuts", "keyboard"],
-];
-
-export const themes: Array<{ id: Theme; name: string; note: string; swatch: [string, string, string] }> = [
-  { id: "dynamic", name: "Dynamic", note: "Follows the artwork", swatch: ["#ff7ab6", "#7c5cff", "#2dd4bf"] },
-  { id: "midnight", name: "Midnight", note: "Violet classic", swatch: ["#8b5cf6", "#6366f1", "#14121f"] },
-  { id: "ocean", name: "Ocean", note: "Deep blues", swatch: ["#38bdf8", "#2563eb", "#0b1626"] },
-  { id: "forest", name: "Forest", note: "Calm greens", swatch: ["#4ade80", "#059669", "#0b1a12"] },
-  { id: "sunset", name: "Sunset", note: "Warm coral", swatch: ["#fb923c", "#e11d48", "#1f0f0c"] },
-  { id: "mono", name: "Mono", note: "Quiet greyscale", swatch: ["#f4f4f5", "#a1a1aa", "#18181b"] },
 ];
 
 const TONE_PRESETS: Array<{ name: string; tone: Omit<Settings["tone"], "balance"> }> = [
@@ -89,6 +81,54 @@ function ToneControls() {
           <Slider max={2} step={0.05} value={tone.balance + 1} onInput={(v) => change({ balance: Math.round((v - 1) * 20) / 20 })} label="Balance" format={(v) => side(v - 1)} showTooltip />
           <span className="muted small tone-value">{side(tone.balance)}</span>
         </div>
+      </div>
+    </>
+  );
+}
+
+/** The theme you made that's chosen: its name and colours, changed live. */
+function ThemeEditor({ theme }: { theme: CustomTheme }) {
+  const [name, setName] = useState(theme.name);
+  useEffect(() => setName(theme.name), [theme.name]);
+  const commitName = () => {
+    const value = name.trim();
+    if (value && value !== theme.name) updateTheme(theme.id, { name: value });
+    else setName(theme.name);
+  };
+  const colours: Array<[keyof Pick<CustomTheme, "accent" | "accent2" | "background">, string, string]> = [
+    ["accent", "Accent", "Buttons, sliders and what's playing."],
+    ["accent2", "Second accent", "Blends with the accent in gradients and the glow."],
+    ["background", "Background", tooLight(theme.background) ? "This is light enough to make text hard to read. Darker backgrounds work best." : "Panels and menus are mixed from it."],
+  ];
+  return (
+    <>
+      <h3 className="set-section">Edit “{theme.name}”</h3>
+      <div className="set-group">
+        <Row icon="edit" title="Name">
+          <input
+            className="input sm"
+            value={name}
+            maxLength={32}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
+            aria-label="Theme name"
+          />
+        </Row>
+        {colours.map(([key, title, desc]) => (
+          <Row key={key} icon="palette" title={title} desc={desc}>
+            <span className="colour-field">
+              <input type="color" value={theme[key]} onChange={(e) => updateTheme(theme.id, { [key]: e.target.value })} aria-label={`${title} colour`} />
+              <code className="mono">{theme[key]}</code>
+            </span>
+          </Row>
+        ))}
+        <Row icon="shuffle" title="Surprise me" desc="New colours that go together. Keep pressing until you like them.">
+          <button type="button" className="btn sm" onClick={() => updateTheme(theme.id, randomColours())}>Shuffle colours</button>
+        </Row>
+        <Row icon="trash" title="Delete theme" desc="Dynamic takes over. You can undo this for a moment afterwards.">
+          <button type="button" className="btn danger sm" onClick={() => deleteTheme(theme.id)}>Delete</button>
+        </Row>
       </div>
     </>
   );
@@ -381,6 +421,14 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
   const hiddenCount = Object.keys(taste.hidden).length + Object.keys(taste.hiddenDiscoveries).length;
   const set = <K extends keyof Settings>(key: K) => (value: Settings[K]) => updateSettings({ [key]: value } as Partial<Settings>);
   const fmtSec = (v: number) => `${Math.round(v)} seconds`;
+  const mine = customThemes(settings);
+  const editing = activeCustomTheme(settings);
+  const themeCards: Array<{ id: Theme; name: string; note: string; swatch: [string, string, string] }> = [
+    ...builtinThemes,
+    ...mine.map((t) => ({ id: t.id, name: t.name, note: "Your theme", swatch: [t.accent, t.accent2, t.background] as [string, string, string] })),
+  ];
+  // A deleted theme's id can linger (from another device): Dynamic is what shows then.
+  const chosen: Theme = themeCards.some((t) => t.id === settings.theme) ? settings.theme : "dynamic";
 
   return (
     <Shell title="Settings" subtitle="Kept in step through your music server" size="xl" className="settings-modal">
@@ -507,15 +555,15 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
             <>
               <h3 className="set-section">Theme</h3>
               <div className="theme-grid" role="radiogroup" aria-label="Theme">
-                {themes.map((t) => (
+                {themeCards.map((t) => (
                   <button
                     key={t.id}
                     type="button"
                     role="radio"
-                    aria-checked={settings.theme === t.id}
-                    tabIndex={settings.theme === t.id ? 0 : -1}
-                    onKeyDown={(e) => rovingKey(e, themes.map((x) => x.id), settings.theme, (theme) => updateSettings({ theme }))}
-                    className={`theme-card${settings.theme === t.id ? " on" : ""}`}
+                    aria-checked={chosen === t.id}
+                    tabIndex={chosen === t.id ? 0 : -1}
+                    onKeyDown={(e) => rovingKey(e, themeCards.map((x) => x.id), chosen, (theme) => updateSettings({ theme }))}
+                    className={`theme-card${chosen === t.id ? " on" : ""}`}
                     style={{ "--s1": t.swatch[0], "--s2": t.swatch[1], "--s3": t.swatch[2] } as CSSProperties}
                     onClick={() => updateSettings({ theme: t.id })}
                   >
@@ -526,10 +574,20 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                     </span>
                     <strong>{t.name}</strong>
                     <small>{t.note}</small>
-                    {settings.theme === t.id ? <Icon name="checkCircle" size={20} className="theme-check" /> : null}
+                    {chosen === t.id ? <Icon name="checkCircle" size={20} className="theme-check" /> : null}
                   </button>
                 ))}
               </div>
+              <div className="set-group theme-create">
+                <Row
+                  icon="plus"
+                  title="Make your own theme"
+                  desc={mine.length >= MAX_CUSTOM_THEMES ? `You have ${MAX_CUSTOM_THEMES} themes, the most you can keep. Delete one to make another.` : "Choose your own accent and background colours. It starts from the theme chosen now, and follows you to your other devices."}
+                >
+                  <button type="button" className="btn primary sm" disabled={mine.length >= MAX_CUSTOM_THEMES} onClick={createTheme}>Create theme</button>
+                </Row>
+              </div>
+              {editing ? <ThemeEditor key={editing.id} theme={editing} /> : null}
               <h3 className="set-section">Layout & motion</h3>
               <div className="set-group">
                 <Row icon="list" title="Compact song rows" desc="Fit more songs on screen.">
