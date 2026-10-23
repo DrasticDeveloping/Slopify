@@ -9,7 +9,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { TopBar } from "./components/TopBar";
-import { themes } from "./components/modals/SettingsModal";
+import { activeCustomTheme, builtinThemes, onAccent } from "./state/themes";
 import {
   closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume, takeScrollRestore, trackScroll,
   toggleLike, toggleMute, togglePlay, toggleShuffle, wireEngine,
@@ -77,28 +77,34 @@ function routeKey(route: Route) {
 
 function useTheme() {
   const theme = useStore((s) => s.settings.theme);
+  const custom = useStore((s) => activeCustomTheme(s.settings));
   const reduce = useStore((s) => s.settings.reduceMotion);
   const compact = useStore((s) => s.settings.compact);
   const palette = useStore((s) => (s.currentId ? s.albums[s.tracks[s.currentId]?.albumId]?.palette : undefined));
 
   useEffect(() => {
     const root = document.documentElement;
-    root.dataset.theme = theme;
+    // A theme you made that's been deleted (perhaps on another device) falls back to Dynamic.
+    const shown = custom ? "custom" : theme.startsWith("custom-") ? "dynamic" : theme;
+    root.dataset.theme = shown;
     root.dataset.motion = reduce ? "reduce" : "full";
     root.dataset.density = compact ? "compact" : "comfortable";
-    if (theme === "dynamic") {
+    for (const name of ["--accent", "--accent-2", "--accent-3", "--bg", "--on-accent"]) root.style.removeProperty(name);
+    if (custom) {
+      // The panels and third glow are mixed from these in CSS.
+      root.style.setProperty("--accent", custom.accent);
+      root.style.setProperty("--accent-2", custom.accent2);
+      root.style.setProperty("--bg", custom.background);
+      root.style.setProperty("--on-accent", onAccent(custom.accent));
+    } else if (shown === "dynamic") {
       const p = palette ?? { a: "#a78bfa", b: "#f472b6", c: "#1e1b4b" };
       root.style.setProperty("--accent", p.a);
       root.style.setProperty("--accent-2", p.b);
       root.style.setProperty("--accent-3", p.c);
-    } else {
-      root.style.removeProperty("--accent");
-      root.style.removeProperty("--accent-2");
-      root.style.removeProperty("--accent-3");
     }
     const meta = document.querySelector('meta[name="theme-color"]');
-    meta?.setAttribute("content", themes.find((t) => t.id === theme)?.swatch[2] ?? "#08080c");
-  }, [theme, reduce, compact, palette]);
+    meta?.setAttribute("content", custom?.background ?? builtinThemes.find((t) => t.id === shown)?.swatch[2] ?? "#08080c");
+  }, [theme, custom, reduce, compact, palette]);
 }
 
 const typing = (el: EventTarget | null) => {
