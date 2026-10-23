@@ -131,6 +131,8 @@ export interface AppState {
   upNext: string[];
   history: string[];
   shuffle: boolean;
+  /** Smart shuffle (Shuffle pressed twice): recommended songs join the shuffled queue (src/recommend/smart-shuffle.ts). Only with shuffle on. */
+  smartShuffle: boolean;
   repeat: RepeatMode;
   volume: number;
   muted: boolean;
@@ -209,7 +211,7 @@ interface CatalogPatch {
   albums: Record<string, Album>;
 }
 
-type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listenElsewhere" | "listens" | "taste">> & { catalog?: CatalogPatch; librarySync?: unknown };
+type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "smartShuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listenElsewhere" | "listens" | "taste">> & { catalog?: CatalogPatch; librarySync?: unknown };
 /*
  * The library sync base (see sync.ts) is saved in the same record as the app
  * data it describes. Tabs share this storage, so whichever tab saves last
@@ -296,6 +298,7 @@ function initialState(): AppState {
     upNext: [],
     history: [],
     shuffle: saved.shuffle ?? false,
+    smartShuffle: Boolean(saved.shuffle && saved.smartShuffle),
     repeat: saved.repeat ?? "off",
     volume: saved.volume ?? 0.72,
     muted: saved.muted ?? false,
@@ -352,6 +355,7 @@ export function flushPersist() {
     volume: s.volume,
     muted: s.muted,
     shuffle: s.shuffle,
+    smartShuffle: s.smartShuffle,
     repeat: s.repeat,
     speed: s.speed,
     sidebarCollapsed: s.sidebarCollapsed,

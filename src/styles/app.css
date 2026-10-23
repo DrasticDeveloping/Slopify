@@ -1013,6 +1013,8 @@ button.th:not(:disabled):hover { color: var(--text); }
 .transport.locked { opacity: 0.55; }
 .transport.big { gap: 22px; }
 .transport.big .icon-btn { width: 48px; height: 48px; }
+.q-smart { color: var(--accent-ink); }
+.q-smart svg { vertical-align: -1px; }
 .repeat-one { position: absolute; top: 4px; right: 3px; font-size: 9px; font-weight: 800; width: 13px; height: 13px; border-radius: 50%; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; }
 .play-main { position: relative; width: 40px; height: 40px; border-radius: 50%; background: var(--text); color: #0b0a10; display: grid; place-items: center; transition: transform 240ms var(--ease-spring), box-shadow 240ms; }
 .play-main:hover { transform: scale(1.08); box-shadow: 0 0 0 6px rgb(255 255 255 / 0.08); }

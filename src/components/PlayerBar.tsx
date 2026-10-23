@@ -3,7 +3,7 @@ import { engine } from "../audio/engine";
 import { formatTime } from "../lib/format";
 import { pollPosition, useCurrent, useLiveText } from "../lib/hooks";
 import { onLiveFrame } from "../lib/live";
-import { cycleRepeat, isLiked, navigate, next, openMenu, positionOf, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, toggleShuffle } from "../state/actions";
+import { cycleRepeat, isLiked, navigate, next, openMenu, positionOf, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, cycleShuffle } from "../state/actions";
 import { setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
 import { TrackArt } from "./Artwork";
@@ -26,14 +26,22 @@ export function Transport({ big }: { big?: boolean }) {
   const isPlaying = useStore((s) => s.isPlaying);
   const buffering = useStore((s) => s.buffering !== null && s.buffering === s.currentId);
   const shuffle = useStore((s) => s.shuffle);
+  const smart = useStore((s) => s.shuffle && s.smartShuffle);
   const repeat = useStore((s) => s.repeat);
   const hasTrack = useStore((s) => Boolean(s.currentId));
   const locked = useStore((s) => s.listen.mode === "guest");
   const size = big ? 26 : 20;
   return (
     <div className={`transport${big ? " big" : ""}${locked ? " locked" : ""}`}>
-      <button type="button" className={`icon-btn${shuffle ? " on dot" : ""}`} onClick={toggleShuffle} aria-pressed={shuffle} aria-label="Shuffle" title="Shuffle (S)">
-        <Icon name="shuffle" size={size - 2} />
+      <button
+        type="button"
+        className={`icon-btn${shuffle ? " on dot" : ""}`}
+        onClick={cycleShuffle}
+        aria-pressed={shuffle}
+        aria-label={smart ? "Smart shuffle" : "Shuffle"}
+        title={`${smart ? "Smart shuffle: recommended songs mixed in" : shuffle ? "Shuffle on: press again for smart shuffle" : "Shuffle"} (S)`}
+      >
+        <Icon name={smart ? "smartShuffle" : "shuffle"} size={size - 2} />
       </button>
       <button type="button" className="icon-btn" onClick={previous} disabled={!hasTrack} aria-label="Previous" title="Previous (Ctrl ←)">
         <Icon name="prev" size={size} />

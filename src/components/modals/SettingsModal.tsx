@@ -219,7 +219,7 @@ const shortcuts: Array<[string, string]> = [
   ["Ctrl ↑  /  Ctrl ↓", "Volume up / down"],
   ["M", "Mute"],
   ["L", "Like current song"],
-  ["S", "Shuffle"],
+  ["S", "Shuffle: on, smart shuffle, off"],
   ["R", "Repeat: loop song, repeat all, off"],
   ["Q", "Toggle queue"],
   ["F", "Full screen player (full screen while watching a video)"],

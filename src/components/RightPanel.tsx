@@ -12,6 +12,7 @@ import { Bars, Icon } from "./Icon";
 import { PlatformBadge } from "./TrackList";
 import { VideoSurface } from "./VideoSurface";
 import { useSlippedIn } from "../state/slipins";
+import { useSmartAdded } from "../recommend/smart-shuffle";
 import { useArtistMetadata } from "../recommend/artist";
 import type { Artist } from "../data/types";
 
@@ -39,6 +40,7 @@ function QueueRow({ id, onPlay, onRemove, current, index }: { id: string; onPlay
   const track = useStore((s) => s.tracks[id]);
   const artist = useStore((s) => (track ? s.artists[track.artistId] : undefined));
   const isPlaying = useStore((s) => s.isPlaying);
+  const recommended = useSmartAdded().has(id);
   if (!track) return null;
   return (
     <div className={`q-row${current ? " current" : ""}`} style={index !== undefined ? ({ "--i": Math.min(index, 12) } as CSSProperties) : undefined} onContextMenu={(e) => openTrackMenu(e, [id])}>
@@ -49,7 +51,7 @@ function QueueRow({ id, onPlay, onRemove, current, index }: { id: string; onPlay
       </div>
       <span className="title-text">
         <span className={`t-name${current ? " accent" : ""}`}>{track.title}<PlatformBadge track={track} /></span>
-        <span className="t-sub">{artist?.name}</span>
+        <span className="t-sub">{recommended ? <span className="q-smart" title="Added by smart shuffle"><Icon name="sparkle" size={11} /> Recommended · </span> : null}{artist?.name}</span>
       </span>
       <span className="q-dur">{formatTime(track.duration)}</span>
       {onRemove ? (

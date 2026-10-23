@@ -6,7 +6,7 @@ import { Card, PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu } from "../lib/menus";
-import { findMusic, isPlayable, libraryIds, likedIds, navigate, openModal, toggleShuffle } from "../state/actions";
+import { findMusic, isPlayable, libraryIds, likedIds, navigate, openModal, cycleShuffle } from "../state/actions";
 import { registerStreamed, useSlipIns } from "../state/slipins";
 import { downloadTracks } from "../state/server";
 import { getState, setState, useStore, type Route } from "../state/store";
@@ -28,6 +28,7 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
   const trackIds = useStore((s) => s.trackIds);
   const playlists = useStore((s) => s.playlists);
   const shuffle = useStore((s) => s.shuffle);
+  const smart = useStore((s) => s.shuffle && s.smartShuffle);
   const slipIns = useSlipIns();
   const filter: Filter = filters.some(([f]) => f === routeFilter) ? (routeFilter as Filter) : "all";
   // The filter lives in the route so the play button and "Playing from" match what's on screen.
@@ -88,8 +89,8 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
       </div>
       <div className="action-bar">
         <PlayFab ids={ids} label={label} route={route} size="lg" />
-        <button type="button" className={`icon-btn lg${shuffle ? " on" : ""}`} onClick={toggleShuffle} aria-pressed={shuffle} aria-label="Shuffle" title="Shuffle">
-          <Icon name="shuffle" size={24} />
+        <button type="button" className={`icon-btn lg${shuffle ? " on" : ""}`} onClick={cycleShuffle} aria-pressed={shuffle} aria-label={smart ? "Smart shuffle" : "Shuffle"} title={smart ? "Smart shuffle: recommended songs mixed in" : shuffle ? "Shuffle on: press again for smart shuffle" : "Shuffle"}>
+          <Icon name={smart ? "smartShuffle" : "shuffle"} size={24} />
         </button>
         <span className="muted small">{plural(ids.length, "song")} · {formatLongDuration(total)}</span>
       </div>
