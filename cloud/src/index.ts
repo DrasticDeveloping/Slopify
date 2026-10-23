@@ -142,7 +142,7 @@ function sharePage(shareId: string) {
 }
 
 /** Path words kept as they are in the request log; anything else (an id, a code, a name) is logged as ":id". */
-const ROUTE_WORDS = new Set(["v1", "p", "health", "me", "activity", "usernames", "social", "friends", "requests", "playlists", "shares", "shared", "follow", "send", "inbox", "library", "songs", "state", "rooms", "socket"]);
+const ROUTE_WORDS = new Set(["v1", "p", "health", "me", "activity", "usernames", "social", "friends", "requests", "playlists", "shares", "shared", "follow", "send", "inbox", "library", "songs", "state", "sync", "rooms", "socket"]);
 const routeOf = (pathname: string) => "/" + pathname.split("/").filter(Boolean).map((p) => (ROUTE_WORDS.has(p) ? p : ":id")).join("/");
 
 const service = {
