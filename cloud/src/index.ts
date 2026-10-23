@@ -141,9 +141,24 @@ function sharePage(shareId: string) {
   return new Response(html, { status: valid ? 200 : 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" } });
 }
 
-/** Path words kept as they are in the request log; anything else (an id, a code, a name) is logged as ":id". */
-const ROUTE_WORDS = new Set(["v1", "p", "health", "me", "activity", "usernames", "social", "friends", "requests", "playlists", "shares", "shared", "follow", "send", "inbox", "library", "songs", "state", "sync", "rooms", "socket"]);
-const routeOf = (pathname: string) => "/" + pathname.split("/").filter(Boolean).map((p) => (ROUTE_WORDS.has(p) ? p : ":id")).join("/");
+/** The route words the request log keeps, by position; anything else (an id, a code, a username) is logged as ":id". */
+const SECTIONS = new Set(["health", "me", "usernames", "social", "friends", "shares", "shared", "inbox", "library", "sync", "rooms"]);
+const ACTIONS = new Set(["playlists", "follow", "send", "socket"]);
+function routeOf(pathname: string) {
+  const parts = pathname.split("/").filter(Boolean);
+  const [root, section, sub] = parts;
+  const kept = (i: number) => {
+    if (i === 0) return root === "v1" || root === "p";
+    if (root !== "v1") return false;
+    if (i === 1) return SECTIONS.has(section);
+    // /v1/library/songs, /v1/library/state, /v1/me/activity, /v1/friends/requests
+    if (i === 2) return (section === "library" && (sub === "songs" || sub === "state")) || (section === "me" && sub === "activity") || (section === "friends" && sub === "requests");
+    // /v1/friends/:id/playlists, /v1/shared/:id/follow, /v1/shared/:id/send, /v1/rooms/:code/socket
+    if (i === 3) return ACTIONS.has(parts[3]) && !kept(2);
+    return false;
+  };
+  return "/" + parts.map((p, i) => (kept(i) ? p : ":id")).join("/");
+}
 
 const service = {
   async fetch(request: Request, env: Env): Promise<Response> {
