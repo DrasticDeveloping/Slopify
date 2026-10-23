@@ -11,7 +11,18 @@ const cloud = {
 };
 
 export default defineConfig({
-  plugins: [react(), slopifyApi()],
+  plugins: [
+    react(),
+    slopifyApi({ cloudUrl: cloud.url }),
+    {
+      // The built app's online service, for the music server that serves it (server/main.mjs):
+      // it passes the app's calls on to that service, and only to that one.
+      name: "slopify-cloud-config",
+      generateBundle() {
+        this.emitFile({ type: "asset", fileName: "cloud.json", source: JSON.stringify({ url: cloud.url }) });
+      },
+    },
+  ],
   define: { __SLOPIFY_CLOUD__: JSON.stringify(cloud) },
   server: { port: 5199, watch: { ignored: ["**/data/**"] } },
   preview: { port: 5199 },
