@@ -64,10 +64,10 @@ function sessionFor(s: AppState) {
   return session;
 }
 
-/** Where recommendations go in the songs ahead: after every EVERY of yours, within the next AHEAD. */
-function slots(upcoming: string[], added: Set<string>) {
+/** Where recommendations go in the songs ahead: after every EVERY of yours (counting the one playing), within the next AHEAD. */
+function slots(upcoming: string[], added: Set<string>, playingMine: boolean) {
   const at: number[] = [];
-  let since = 0;
+  let since = playingMine ? 1 : 0;
   let mine = 0;
   for (let i = 0; i < upcoming.length && mine < AHEAD; i++) {
     if (added.has(upcoming[i])) {
@@ -131,7 +131,7 @@ function fill() {
   if (!active(s)) return;
   const r = sessionFor(s);
   const upcoming = s.order.slice(s.index + 1);
-  const open = slots(upcoming, r.added);
+  const open = slots(upcoming, r.added, Boolean(s.currentId) && !r.added.has(s.currentId!));
   if (!open.length) return;
   const usable = (id: string) => isPlayable(s.tracks[id], s) && !s.order.includes(id);
   r.fresh = r.fresh.filter(usable);
