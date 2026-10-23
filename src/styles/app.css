@@ -53,6 +53,8 @@
 :root[data-theme="forest"] { --accent: #4ade80; --accent-2: #059669; --accent-3: #052e16; --bg: #050906; --panel: rgb(13 21 17 / 0.84); --panel-solid: #0d1511; }
 :root[data-theme="sunset"] { --accent: #fb923c; --accent-2: #e11d48; --accent-3: #450a0a; --bg: #0a0605; --panel: rgb(24 15 13 / 0.84); --panel-solid: #180f0d; }
 :root[data-theme="mono"] { --accent: #f4f4f5; --accent-2: #a1a1aa; --accent-3: #27272a; --bg: #060607; --panel: rgb(17 17 19 / 0.88); --panel-solid: #111113; }
+/* A theme you made: --accent, --accent-2, --bg and --on-accent are set from it (App.tsx); the rest is mixed from them. */
+:root[data-theme="custom"] { --panel-solid: color-mix(in oklab, var(--bg) 92%, white); --panel: color-mix(in oklab, var(--panel-solid) 84%, transparent); --accent-3: color-mix(in oklab, var(--accent-2) 35%, var(--bg)); }
 :root[data-density="compact"] { --row-h: 44px; }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -247,6 +249,7 @@ h1, h2, h3, p { margin: 0; }
 .pill { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 99px; background: rgb(0 0 0 / 0.35); font-size: 11.5px; font-weight: 700; color: var(--text); margin-right: 8px; }
 .badge { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 4px; background: var(--raised); color: var(--text-2); font-size: 9.5px; font-weight: 750; letter-spacing: 0.06em; margin-left: 8px; vertical-align: 2px; }
 .badge.clip { color: var(--accent-ink); background: var(--accent-soft); }
+.badge.snoozed { gap: 4px; }
 .badge.platform { gap: 5px; letter-spacing: 0.02em; font-weight: 650; }
 .badge.platform .prov-dot { width: 6px; height: 6px; }
 .kbd { display: inline-flex; align-items: center; height: 22px; padding: 0 7px; border-radius: 6px; font: 600 11px/1 var(--font); color: var(--text-2); border: 1px solid var(--line-strong); background: rgb(255 255 255 / 0.03); white-space: nowrap; }
@@ -1372,6 +1375,13 @@ button.th:not(:disabled):hover { color: var(--text); }
 .theme-preview b { position: absolute; left: 34%; right: 8px; top: 8px; height: 26px; border-radius: 6px; background: linear-gradient(135deg, var(--s1), var(--s2)); }
 .theme-preview em { position: absolute; right: 12px; bottom: 9px; width: 18px; height: 18px; border-radius: 50%; background: var(--s1); }
 .theme-check { position: absolute; top: 16px; right: 16px; color: var(--s1); --on-accent: #0b0a10; }
+.theme-create { margin-top: 10px; }
+.colour-field { display: inline-flex; align-items: center; gap: 10px; }
+.colour-field input[type="color"] { width: 44px; height: 32px; padding: 2px; border-radius: var(--r-sm); background: var(--raised); border: 1px solid var(--line-strong); cursor: pointer; }
+.colour-field input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.colour-field input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 5px; }
+.colour-field input[type="color"]::-moz-color-swatch { border: 0; border-radius: 5px; }
+.colour-field code { min-width: 7ch; color: var(--text-2); font-size: 12px; }
 .shortcuts { padding: 4px 0; }
 .shortcut { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 16px; font-size: 13.5px; }
 .shortcut + .shortcut { border-top: 1px solid var(--line); }

@@ -65,11 +65,23 @@ export interface Toast {
   sticky?: boolean;
 }
 
-export type Theme = "dynamic" | "midnight" | "ocean" | "forest" | "sunset" | "mono";
+export type BuiltinTheme = "dynamic" | "midnight" | "ocean" | "forest" | "sunset" | "mono";
+/** A built-in theme, or one you made (its id starts with "custom-"; see themes.ts). */
+export type Theme = BuiltinTheme | `custom-${string}`;
+/** A theme made with the theme creator: two accents and a background, as #rrggbb. */
+export interface CustomTheme {
+  id: `custom-${string}`;
+  name: string;
+  accent: string;
+  accent2: string;
+  background: string;
+}
 export type RepeatMode = "off" | "all" | "one";
 
 export interface Settings {
   theme: Theme;
+  /** Themes you made (Settings → Appearance). */
+  customThemes: CustomTheme[];
   crossfade: boolean;
   crossfadeSeconds: number;
   reduceMotion: boolean;
@@ -86,6 +98,8 @@ export interface Settings {
   slipIns: "off" | "rare" | "sometimes" | "often";
   /** Tone controls (dB for bass, mid and treble; −1 left to 1 right for balance). */
   tone: { bass: number; mid: number; treble: number; balance: number };
+  /** Songs that are skipped when playback moves on by itself, with when that ends (ms since 1970; see snooze.ts). */
+  snoozed: Record<string, number>;
 }
 
 export interface PlaybackContext {
@@ -166,6 +180,7 @@ const STORAGE_KEY = "resonance.remastered.v1";
 
 export const defaultSettings: Settings = {
   theme: "dynamic",
+  customThemes: [],
   crossfade: false,
   crossfadeSeconds: 6,
   reduceMotion: false,
@@ -178,7 +193,14 @@ export const defaultSettings: Settings = {
   downloadMode: "verified_file_cache",
   slipIns: "sometimes",
   tone: { bass: 0, mid: 0, treble: 0, balance: 0 },
+  snoozed: {},
 };
+
+/** When the song's snooze ends, or 0 if it isn't snoozed. */
+export function snoozedUntil(s: AppState, id: string, now = Date.now()) {
+  const until = s.settings.snoozed?.[id];
+  return typeof until === "number" && until > now ? until : 0;
+}
 
 interface CatalogPatch {
   /** Library order, excluding session-only file imports and streamed recommendations. */
