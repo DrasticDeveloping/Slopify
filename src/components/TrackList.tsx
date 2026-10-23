@@ -5,7 +5,8 @@ import { announce } from "../lib/announce";
 import { openTrackMenu } from "../lib/menus";
 import { isPlayable, moveInPlaylist, navigate, playList, toggleLike, togglePlay } from "../state/actions";
 import { PROVIDERS, trackPlatform } from "../state/importer";
-import { getState, setState, useStore, type Route } from "../state/store";
+import { getState, setState, snoozedUntil, useStore, type Route } from "../state/store";
+import { snoozeEnds } from "../state/snooze";
 import { ArtistLinks } from "./ArtistLinks";
 import { TrackArt } from "./Artwork";
 import { Bars, Icon } from "./Icon";
@@ -159,6 +160,7 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
   const downloading = useStore((s) => s.server.downloads[id]);
   const playable = useStore((s) => isPlayable(s.tracks[id], s));
   const hasClip = useStore((s) => Boolean(s.clips[id]));
+  const snoozed = useStore((s) => snoozedUntil(s, id));
   if (!track) return null;
 
   const play = () => {
@@ -299,6 +301,7 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
             <PlatformBadge track={track} />
             {track.kind === "video" ? <span className="badge">VIDEO</span> : null}
             {hasClip ? <span className="badge clip" title="Clip range applied"><Icon name="scissors" size={11} /></span> : null}
+            {snoozed ? <span className="badge snoozed" title={`Snoozed ${snoozeEnds(snoozed)}: skipped unless you play it`}><Icon name="snooze" size={11} /> SNOOZED</span> : null}
           </span>
           <span className="t-sub">
             {track.storage === "downloads" ? <Icon name="downloaded" size={13} className="ok" title="Downloaded" /> : null}

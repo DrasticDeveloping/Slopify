@@ -51,6 +51,7 @@ const paths: Record<string, JSX.Element> = {
   sidebar: <><rect x="3.5" y="4.5" width="17" height="15" rx="3" /><path d="M9.5 4.5v15" /></>,
   globe: <><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.4 2.6 3.5 5.5 3.5 8.5s-1.1 5.9-3.5 8.5c-2.4-2.6-3.5-5.5-3.5-8.5S9.6 6.1 12 3.5Z" /></>,
   keyboard: <><rect x="2.5" y="6" width="19" height="12" rx="2.5" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7.5 14h9" /></>,
+  snooze: <><circle cx="12" cy="13" r="7.5" /><path d="M4.5 5.5 7 3.5M19.5 5.5 17 3.5M9.8 10.5h4.4l-4.4 5h4.4" /></>,
   palette: <><path d="M12 3.5a8.5 8.5 0 0 0 0 17c1.2 0 1.8-.8 1.8-1.6 0-1.3-1.1-1.6-1.1-2.7 0-.9.7-1.6 1.6-1.6h2a4.2 4.2 0 0 0 4.2-4.2c0-3.9-3.8-6.9-8.5-6.9Z" /><circle cx="7.8" cy="11" r="1.1" className="f" /><circle cx="10.5" cy="7.5" r="1.1" className="f" /><circle cx="15" cy="7.8" r="1.1" className="f" /></>,
   sliders: <><path d="M4 7h9M17 7h3M4 17h3M11 17h9" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="17" r="2" /></>,
   bolt: <path d="M13 3 5 13.5h6L10 21l8-10.5h-6z" />,

@@ -13,6 +13,7 @@ import { hideFromMix } from "../recommend/mixes";
 import { trackKey } from "../recommend/service";
 import { downloadTracks } from "../state/server";
 import { isSlipIn, toggleSlipIn } from "../state/slipins";
+import { snoozeItem } from "../state/snooze";
 
 /** Slip a song into your listening now and then, or stop. */
 function slipItem(ids: string[]): MenuItem {
@@ -124,6 +125,7 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
     [
       ...(single ? [{ label: "Start song radio", icon: "radio", disabled: !singlePlayable, run: () => startRadio(single.id) }] : []),
       slipItem(ids),
+      ...[snoozeItem(ids)].filter((item): item is MenuItem => item !== null),
       ...(single
         ? [s.taste.hidden[single.id]
           ? { label: "Show in recommendations", icon: "sparkle", run: () => unhideRecommendation(single.id) }

@@ -10,6 +10,7 @@ import { toast } from "../../state/actions";
 import { connect, disconnect } from "../../state/server";
 import { deleteAccount, linkComputer } from "../../state/sync";
 import { installApp, installationHelp, updateApp, usePwa } from "../../state/pwa";
+import { snoozedSongs, snoozeEnds, wake } from "../../state/snooze";
 import { defaultSettings, useStore, type CustomTheme, type Settings, type SettingsTab, type Theme } from "../../state/store";
 import { activeCustomTheme, builtinThemes, createTheme, customThemes, deleteTheme, MAX_CUSTOM_THEMES, randomColours, tooLight, updateTheme } from "../../state/themes";
 import { Icon } from "../Icon";
@@ -81,6 +82,43 @@ function ToneControls() {
           <Slider max={2} step={0.05} value={tone.balance + 1} onInput={(v) => change({ balance: Math.round((v - 1) * 20) / 20 })} label="Balance" format={(v) => side(v - 1)} showTooltip />
           <span className="muted small tone-value">{side(tone.balance)}</span>
         </div>
+      </div>
+    </>
+  );
+}
+
+/** Songs you snoozed, each with when it's back and a button to end it now. */
+function SnoozedSongs() {
+  const settings = useStore((s) => s.settings);
+  const tracks = useStore((s) => s.tracks);
+  const artists = useStore((s) => s.artists);
+  const songs = snoozedSongs({ settings, tracks });
+  // Redraw when the next snooze ends, so it leaves the list.
+  const [, setTick] = useState(0);
+  const soonest = songs[0]?.until;
+  useEffect(() => {
+    if (!soonest) return;
+    const timer = window.setTimeout(() => setTick((n) => n + 1), Math.min(2 ** 31 - 1, Math.max(0, soonest - Date.now()) + 50));
+    return () => clearTimeout(timer);
+  }, [soonest]);
+  return (
+    <>
+      <h3 className="set-section">Snoozed songs</h3>
+      <div className="set-group">
+        <Row icon="snooze" title={songs.length ? plural(songs.length, "snoozed song") : "Nothing snoozed"} desc="Snoozed songs are skipped when playback moves on by itself, until their time is up. Snooze a song from its menu. Playing or queueing one yourself still plays it.">
+          {songs.length > 1 ? <button type="button" className="btn sm" onClick={() => wake(songs.map((x) => x.id))}>Stop all</button> : null}
+        </Row>
+        {songs.map(({ id, until }) => (
+          <div className="set-row snoozed-song" key={id}>
+            <span className="set-copy">
+              <strong>{tracks[id]?.title}</strong>
+              <small>{artists[tracks[id]?.artistId]?.name ?? "Unknown artist"} · Snoozed {snoozeEnds(until)}</small>
+            </span>
+            <span className="set-control">
+              <button type="button" className="btn sm" onClick={() => wake([id])} aria-label={`Stop snoozing ${tracks[id]?.title}`}>Stop snoozing</button>
+            </span>
+          </div>
+        ))}
       </div>
     </>
   );
@@ -530,6 +568,7 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                   </label>
                 </Row>
               </div>
+              <SnoozedSongs />
               <h3 className="set-section">Transitions</h3>
               <div className="set-group">
                 <Row icon="wave" title="Crossfade" desc={settings.crossfade ? `Songs overlap by ${settings.crossfadeSeconds} seconds.` : "Blend the end of a song into the next one."}>

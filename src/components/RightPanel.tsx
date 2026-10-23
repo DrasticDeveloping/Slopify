@@ -69,6 +69,7 @@ export function QueueView() {
   const context = useStore((s) => s.context);
   const history = useStore((s) => s.history);
   const repeat = useStore((s) => s.repeat);
+  const snoozed = useStore((s) => s.settings.snoozed);
   const [tab, setTab] = useState<"queue" | "recent">("queue");
   const uid = useId();
   const tabProps = (value: "queue" | "recent") => ({
@@ -82,9 +83,12 @@ export function QueueView() {
     onClick: () => setTab(value),
     onKeyDown: (e: KeyboardEvent<HTMLElement>) => rovingKey(e, ["queue", "recent"] as const, tab, setTab),
   });
-  const rest = order.slice(index + 1, index + 61);
+  // Snoozed songs are skipped, so they aren't listed (each keeps its place in the order for jumping to).
+  const now = Date.now();
+  const awake = (at: number) => !((snoozed?.[order[at]] ?? 0) > now);
+  const rest = order.slice(index + 1, index + 61).map((id, i) => ({ id, at: index + 1 + i })).filter((r) => awake(r.at));
   // With repeat-all the queue wraps around to the start of the context.
-  const wrap = repeat === "all" && rest.length < 60 ? order.slice(0, Math.max(0, Math.min(index, 60 - rest.length))) : [];
+  const wrap = repeat === "all" && rest.length < 60 ? order.slice(0, Math.max(0, Math.min(index, 60 - rest.length))).map((id, at) => ({ id, at })).filter((r) => awake(r.at)) : [];
 
   return (
     <>
@@ -119,11 +123,11 @@ export function QueueView() {
               <h3 className="q-head">
                 Next from: <button type="button" className="link strong" onClick={() => context?.route && navigate(context.route)}>{context?.label}</button>
               </h3>
-              {rest.map((id, i) => (
-                <QueueRow key={`${id}-${index + 1 + i}`} id={id} index={i} onPlay={() => jumpToOrderIndex(index + 1 + i)} />
+              {rest.map(({ id, at }, i) => (
+                <QueueRow key={`${id}-${at}`} id={id} index={i} onPlay={() => jumpToOrderIndex(at)} />
               ))}
-              {wrap.map((id, i) => (
-                <QueueRow key={`wrap-${id}-${i}`} id={id} index={rest.length + i} onPlay={() => jumpToOrderIndex(i)} />
+              {wrap.map(({ id, at }, i) => (
+                <QueueRow key={`wrap-${id}-${at}`} id={id} index={rest.length + i} onPlay={() => jumpToOrderIndex(at)} />
               ))}
             </section>
           ) : null}

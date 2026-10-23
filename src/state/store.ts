@@ -98,6 +98,8 @@ export interface Settings {
   slipIns: "off" | "rare" | "sometimes" | "often";
   /** Tone controls (dB for bass, mid and treble; −1 left to 1 right for balance). */
   tone: { bass: number; mid: number; treble: number; balance: number };
+  /** Songs that are skipped when playback moves on by itself, with when that ends (ms since 1970; see snooze.ts). */
+  snoozed: Record<string, number>;
 }
 
 export interface PlaybackContext {
@@ -189,7 +191,14 @@ export const defaultSettings: Settings = {
   downloadMode: "verified_file_cache",
   slipIns: "sometimes",
   tone: { bass: 0, mid: 0, treble: 0, balance: 0 },
+  snoozed: {},
 };
+
+/** When the song's snooze ends, or 0 if it isn't snoozed. */
+export function snoozedUntil(s: AppState, id: string, now = Date.now()) {
+  const until = s.settings.snoozed?.[id];
+  return typeof until === "number" && until > now ? until : 0;
+}
 
 interface CatalogPatch {
   /** Library order, excluding session-only file imports and streamed recommendations. */
