@@ -11,7 +11,8 @@ import { syncServerLibrary } from "./importer";
 import { flushSongChanges } from "./song-api";
 import { CloudError, cloudCall, deleteSignIn, getAccount, onSignedIn, signOut } from "./cloud";
 import { leaveRoom } from "./listen";
-import { forgetCloudSongs, syncCloudSongs } from "./cloud-sync";
+import { cloudSongsSince, forgetCloudSongs, syncCloudSongs, type CloudSongChanges } from "./cloud-sync";
+import { receiveSocial, socialWanted, type Social } from "./social";
 
 /*
  * Library data on the music server: playlists, likes, listening history,
@@ -610,6 +611,39 @@ async function cloudState(userId: string): Promise<Remote> {
   return { conflict: false, rev, data: data?.version === 1 ? data : null };
 }
 
+/** Whether the service has /v1/sync (one older than it answers 404, and each part is then asked for on its own). */
+let combinedPoll = true;
+interface AccountPoll { songs: CloudSongChanges; state: Remote }
+
+/**
+ * The account's song changes, its library document and, when due, friends
+ * (handed to social.ts), in one call. The document only comes when it isn't
+ * `base` any more. Null from a service without /v1/sync.
+ */
+async function pollAccount(userId: string, base: Base): Promise<AccountPoll | null> {
+  if (!combinedPoll) return null;
+  const query = new URLSearchParams({ since: String(cloudSongsSince(userId)) });
+  if (base.data) query.set("rev", String(base.rev));
+  const withSocial = socialWanted();
+  if (withSocial) query.set("social", "1");
+  const asked = Date.now();
+  let result: { songs: CloudSongChanges; state: { rev: number; data?: LibraryData | null; unchanged?: boolean }; social?: Social };
+  try {
+    result = await cloudCall(`/v1/sync?${query}`, { as: userId });
+  } catch (error) {
+    if (error instanceof CloudError && error.status === 404) {
+      combinedPoll = false;
+      return null;
+    }
+    throw error;
+  }
+  if (withSocial && result.social) receiveSocial(result.social, asked);
+  const { rev, data, unchanged } = result.state;
+  // Unchanged: the account still has the document agreed at that rev.
+  const remote = unchanged && rev === base.rev ? base.data : data?.version === 1 ? data : null;
+  return { songs: result.songs, state: { conflict: false, rev, data: remote } };
+}
+
 async function saveCloudState(userId: string, baseRev: number, data: LibraryData): Promise<Remote> {
   try {
     const saved = await cloudCall<{ rev: number }>("/v1/library/state", { method: "PUT", body: { baseRev, data }, as: userId });
@@ -747,10 +781,11 @@ async function syncWithAccount() {
     // Another account signed in while that was checked: its own sync starts afresh.
     if (getAccount().userId !== userId) return;
     if (getState().server.linkedElsewhere) setState((s) => ({ server: { ...s.server, linkedElsewhere: undefined } }));
-    if (await syncCloudSongs(userId)) await syncServerLibrary();
     if (cloudAgreed?.userId !== userId) cloudAgreed = { userId, base: cloudBase(userId) };
     const mine = cloudAgreed;
-    await mergeWith(await cloudState(userId), (rev, data) => saveCloudState(userId, rev, data), () => mine.base, (base) => {
+    const poll = await pollAccount(userId, mine.base);
+    if (await syncCloudSongs(userId, poll?.songs)) await syncServerLibrary();
+    await mergeWith(poll?.state ?? await cloudState(userId), (rev, data) => saveCloudState(userId, rev, data), () => mine.base, (base) => {
       mine.base = base;
       try {
         localStorage.setItem(cloudBaseKey(userId), JSON.stringify(base));

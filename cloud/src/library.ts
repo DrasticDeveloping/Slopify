@@ -264,6 +264,14 @@ export async function getState(env: LibraryEnv, userId: string) {
   return row ? { rev: row.rev, data: JSON.parse(row.data) as unknown } : { rev: 0, data: null };
 }
 
+/** The document, or only its rev (`unchanged`) when it's still `haveRev`, the one the caller has. */
+export async function getStateUnless(env: LibraryEnv, userId: string, haveRev: number) {
+  const row = await env.DB.prepare("SELECT rev, CASE WHEN rev = ? THEN NULL ELSE data END AS data FROM library_state WHERE user_id = ?")
+    .bind(haveRev, userId).first<{ rev: number; data: string | null }>();
+  if (!row) return { rev: 0, data: null };
+  return row.data === null ? { rev: row.rev, unchanged: true } : { rev: row.rev, data: JSON.parse(row.data) as unknown };
+}
+
 /** Replaces the document if `baseRev` is still current; otherwise reports a conflict with the current one. */
 export async function putState(env: LibraryEnv, userId: string, body: unknown) {
   const input = (record(body) ?? {}) as { baseRev?: unknown; data?: unknown };

@@ -1,5 +1,5 @@
 import { AuthError, verifySession, type AuthEnv } from "./auth";
-import { checkNotDeleted, deleteAccount, usernameAvailable, deleteSong, getProfile, getState, HttpError, leftRooms, listSongs, noteLeftRoom, noteRoom, putSong, putState, saveProfile, tidy, type LibraryEnv } from "./library";
+import { checkNotDeleted, deleteAccount, usernameAvailable, deleteSong, getProfile, getState, getStateUnless, HttpError, leftRooms, listSongs, noteLeftRoom, noteRoom, putSong, putState, saveProfile, tidy, type LibraryEnv } from "./library";
 import { ListenAlongRoom } from "./room";
 import {
   acceptFriend, dismissInbox, dropRequest, followShared, friendPlaylists, getShared, getSocial, profileWithCode, requestFriend, sendShared, setActivity,
@@ -36,6 +36,8 @@ import {
  *   POST   /v1/shared/:shareId/send    { friendIds }: send it to friends
  *   DELETE /v1/inbox/:shareId          dismiss a playlist a friend sent
  *   DELETE /v1/me                      delete the caller's profile and library
+ *   GET    /v1/sync?since=t&rev=r&social=1  one poll: { songs } as /v1/library/songs?since=t, { state } as /v1/library/state
+ *                                      (only { rev, unchanged } while it's still rev r), and { social } as /v1/social if asked
  *   GET    /v1/library/songs?since=t   songs changed after t, and `until` for next time
  *   PUT    /v1/library/songs/:id       save a song (a link and its details)
  *   DELETE /v1/library/songs/:id
@@ -193,6 +195,17 @@ export default {
         }
       }
 
+      if (parts[1] === "sync" && parts.length === 2 && method === "GET") {
+        // What the app checks every 30 seconds, in one call rather than three.
+        const since = Number(url.searchParams.get("since") || 0);
+        const rev = Number(url.searchParams.get("rev") ?? -1);
+        const [songs, state, social] = await Promise.all([
+          listSongs(env, userId, Number.isFinite(since) && since > 0 ? since : 0),
+          getStateUnless(env, userId, Number.isSafeInteger(rev) && rev > 0 ? rev : -1),
+          url.searchParams.get("social") === "1" ? getSocial(env, userId) : undefined,
+        ]);
+        return ok({ songs, state, social });
+      }
       if (parts[1] === "social" && parts.length === 2 && method === "GET") return ok(await getSocial(env, userId));
       if (parts[1] === "usernames" && parts.length === 3 && method === "GET") return ok(await usernameAvailable(env, userId, decodeURIComponent(parts[2])));
       if (parts[1] === "friends") {
