@@ -10,7 +10,7 @@ import {
 } from "../recommend/taste";
 import { deviceUrl, dropFromDevice } from "./device";
 import { deleteSong, saveSongChanges } from "./song-api";
-import { defaultSettings, flushPersist, getState, setState, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast } from "./store";
+import { defaultSettings, flushPersist, getState, setState, snoozedUntil, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast } from "./store";
 
 /* ───────────────────────── selectors ───────────────────────── */
 
@@ -591,7 +591,13 @@ export function playList(ids: string[], startId?: string, ctx?: { label: string;
     toast("Nothing playable here", { detail: s.server.status !== "connected" ? "Connect to your music server to stream these songs." : undefined });
     return;
   }
-  const first = startId && playable.includes(startId) ? startId : s.shuffle ? playable[Math.floor(Math.random() * playable.length)] : playable[0];
+  // Snoozed songs only start when chosen; the list skips them as it plays.
+  const awake = playable.filter((id) => !snoozedUntil(s, id));
+  if (!awake.length && !(startId && playable.includes(startId))) {
+    toast(playable.length === 1 ? "This song is snoozed" : "Every song here is snoozed", { detail: "Play one yourself, or stop snoozing them from its menu." });
+    return;
+  }
+  const first = startId && playable.includes(startId) ? startId : s.shuffle ? awake[Math.floor(Math.random() * awake.length)] : awake[0];
   const order = s.shuffle ? shuffled(playable, first) : playable;
   setState({
     context: { label: ctx?.label ?? "Library", route: ctx?.route, ids: playable, picks: ctx?.picks, radioKey: ctx?.radioKey },
@@ -693,18 +699,20 @@ export function togglePlay() {
 
 /**
  * Finds the next playable song: manual queue first, then the collection order.
- * Songs that became unavailable (e.g. server went offline) are skipped.
+ * Songs that became unavailable (e.g. server went offline) are skipped, and so
+ * are snoozed songs in the collection (queued ones were chosen, so they play).
  */
 function peekNext(s: AppState) {
   for (let i = 0; i < s.upNext.length; i++) {
     if (isPlayable(s.tracks[s.upNext[i]], s)) return { id: s.upNext[i], upNextSkip: i + 1, index: s.index };
   }
   const n = s.order.length;
+  const now = Date.now();
   for (let step = 1; step <= n; step++) {
     const raw = s.index + step;
     if (raw >= n && s.repeat !== "all") break;
     const index = raw % n;
-    if (isPlayable(s.tracks[s.order[index]], s)) return { id: s.order[index], upNextSkip: s.upNext.length, index };
+    if (isPlayable(s.tracks[s.order[index]], s) && !snoozedUntil(s, s.order[index], now)) return { id: s.order[index], upNextSkip: s.upNext.length, index };
   }
   return null;
 }
@@ -740,7 +748,8 @@ function advance({ crossfade = 0, auto = false, end = "changed" as Listen["end"]
     if (auto && s.settings.autoplay && s.currentId && s.listen.mode !== "guest") {
       // Songs like the one that just ended, skipping what was just played or is still queued.
       const seed = s.tracks[s.currentId];
-      const list = recommendations(s, { mode: "autoplay", seedId: s.currentId, exclude: [...s.upNext, ...s.history.slice(0, 20)], limit: 30 });
+      const snoozed = Object.keys(s.settings.snoozed ?? {}).filter((id) => snoozedUntil(s, id));
+      const list = recommendations(s, { mode: "autoplay", seedId: s.currentId, exclude: [...s.upNext, ...s.history.slice(0, 20), ...snoozed], limit: 30 });
       if (list.length) {
         const ids = list.map((r) => r.id);
         toast("Autoplay is on", { detail: `Playing songs like “${seed.title}”.` });

@@ -3,7 +3,7 @@ import { recommend } from "../recommend/rank";
 import type { Listen } from "../recommend/taste";
 import { connectSlipIns, isLiked, isPlayable, toast, toggleLike } from "./actions";
 import { registerStreams, streamSong, streamTrackId, type StreamSong } from "./importer";
-import { getState, type AppState } from "./store";
+import { getState, snoozedUntil, type AppState } from "./store";
 
 /*
  * Slip-ins: songs you've picked to be played now and then, between the songs
@@ -173,7 +173,7 @@ function pick(state: AppState, nextId: string): string | null {
   const s = getState();
   const listed = new Set([...(s.context?.ids ?? []), ...s.upNext, ...s.history.slice(0, 15), s.currentId, nextId]);
   const now = Date.now();
-  const ids = Object.keys(songs).filter((id) => !listed.has(id) && isPlayable(s.tracks[id], s) && !(now - (songs[id].lastAt ?? 0) < REST));
+  const ids = Object.keys(songs).filter((id) => !listed.has(id) && isPlayable(s.tracks[id], s) && !snoozedUntil(s, id, now) && !(now - (songs[id].lastAt ?? 0) < REST));
   if (!ids.length) return null;
   // It plays when you're likely to enjoy it after what's playing; otherwise it waits for a better moment.
   const bar = sinceLast >= gap * PATIENCE ? FAIR : LIKELY;
