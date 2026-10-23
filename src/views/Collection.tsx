@@ -9,16 +9,17 @@ import { TrackList } from "../components/TrackList";
 import { PlaylistSuggestions } from "../components/PlaylistSuggestions";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
-import { findMusic, libraryIds, navigate, openModal, startCollectionRadio, toggleShuffle } from "../state/actions";
+import { findMusic, libraryIds, navigate, openModal, startCollectionRadio, cycleShuffle } from "../state/actions";
 import { downloadTracks } from "../state/server";
 import { shareOf, useSocial } from "../state/social";
 import { useStore, type Route } from "../state/store";
 
 function ShuffleToggle() {
   const shuffle = useStore((s) => s.shuffle);
+  const smart = useStore((s) => s.shuffle && s.smartShuffle);
   return (
-    <button type="button" className={`icon-btn lg${shuffle ? " on" : ""}`} onClick={toggleShuffle} aria-pressed={shuffle} aria-label="Shuffle" title="Shuffle">
-      <Icon name="shuffle" size={24} />
+    <button type="button" className={`icon-btn lg${shuffle ? " on" : ""}`} onClick={cycleShuffle} aria-pressed={shuffle} aria-label={smart ? "Smart shuffle" : "Shuffle"} title={smart ? "Smart shuffle: recommended songs mixed in" : shuffle ? "Shuffle on: press again for smart shuffle" : "Shuffle"}>
+      <Icon name={smart ? "smartShuffle" : "shuffle"} size={24} />
     </button>
   );
 }

@@ -12,7 +12,7 @@ import { TopBar } from "./components/TopBar";
 import { themes } from "./components/modals/SettingsModal";
 import {
   closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume, takeScrollRestore, trackScroll,
-  toggleLike, toggleMute, togglePlay, toggleShuffle, wireEngine,
+  toggleLike, toggleMute, togglePlay, cycleShuffle, wireEngine,
 } from "./state/actions";
 import { prepareMixes } from "./recommend/mixes";
 import { startMusicServer } from "./state/server";
@@ -27,6 +27,7 @@ import { LibraryView, PlaylistsView } from "./views/Library";
 import { ArtistView } from "./views/Artist";
 // Plugs web-discovery radio into the player (see connectRadio).
 import "./recommend/radio";
+import "./recommend/smart-shuffle";
 import "./state/slipins";
 import { ReleaseView } from "./views/Release";
 import { SearchView } from "./views/Search";
@@ -202,7 +203,7 @@ function useShortcuts() {
           const k = e.key.toLowerCase();
           if (k === "m") toggleMute();
           else if (k === "l" && s.currentId) toggleLike(s.currentId);
-          else if (k === "s") toggleShuffle();
+          else if (k === "s") cycleShuffle();
           else if (k === "r") cycleRepeat();
           else if (k === "q") setState({ panel: s.panel === "queue" ? null : "queue" });
           else if (k === "f" && s.currentId) setState({ fullPlayer: !s.fullPlayer });

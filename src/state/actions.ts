@@ -874,8 +874,27 @@ export function toggleShuffle() {
     // A queued song from outside the collection leaves the cursor on the collection song it interrupted
     // (-1 = before the first song, so Next plays order[0]).
     const index = inCollection ? order.indexOf(s.currentId) : on ? -1 : order.indexOf(s.order[s.index]);
-    setState({ shuffle: on, order, index });
-  } else setState({ shuffle: on });
+    setState({ shuffle: on, order, index, ...(on ? {} : { smartShuffle: false }) });
+  } else setState({ shuffle: on, ...(on ? {} : { smartShuffle: false }) });
+}
+
+let shuffleToast = -1;
+
+/** The Shuffle button and S: shuffle → smart shuffle (recommended songs join the queue) → off. */
+export function cycleShuffle() {
+  if (listenLocked()) return;
+  const s = getState();
+  if (!s.shuffle) toggleShuffle();
+  else if (!s.smartShuffle) setState({ smartShuffle: true });
+  else toggleShuffle();
+  const now = getState();
+  const [message, detail] =
+    now.smartShuffle ? ["Smart shuffle on", "Recommended songs join your queue, one after every two of yours. Press again to turn shuffle off."]
+    : now.shuffle ? ["Shuffle on", "Press again for smart shuffle, with recommended songs mixed in."]
+    : ["Shuffle off", undefined];
+  // Rapid presses update one toast instead of stacking three.
+  if (getState().toasts.some((t) => t.id === shuffleToast)) updateToast(shuffleToast, { message, detail }, 2600);
+  else shuffleToast = toast(message, { detail, duration: 2600 });
 }
 
 let repeatToast = -1;
