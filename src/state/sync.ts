@@ -12,7 +12,7 @@ import { flushSongChanges } from "./song-api";
 import { CloudError, cloudCall, deleteSignIn, getAccount, onSignedIn, signOut } from "./cloud";
 import { leaveRoom } from "./listen";
 import { cloudSongsSince, forgetCloudSongs, syncCloudSongs, type CloudSongChanges } from "./cloud-sync";
-import { receiveSocial, socialWanted, type Social } from "./social";
+import { claimSocial, receiveSocial, type Social } from "./social";
 
 /*
  * Library data on the music server: playlists, likes, listening history,
@@ -624,7 +624,7 @@ async function pollAccount(userId: string, base: Base): Promise<AccountPoll | nu
   if (!combinedPoll) return null;
   const query = new URLSearchParams({ since: String(cloudSongsSince(userId)) });
   if (base.data) query.set("rev", String(base.rev));
-  const withSocial = socialWanted();
+  const withSocial = claimSocial();
   if (withSocial) query.set("social", "1");
   const asked = Date.now();
   let result: { songs: CloudSongChanges; state: { rev: number; data?: LibraryData | null; unchanged?: boolean }; social?: Social };
@@ -637,7 +637,7 @@ async function pollAccount(userId: string, base: Base): Promise<AccountPoll | nu
     }
     throw error;
   }
-  if (withSocial && result.social) receiveSocial(result.social, asked);
+  if (withSocial && result.social && getAccount().userId === userId) receiveSocial(result.social, asked);
   const { rev, data, unchanged } = result.state;
   // Unchanged: the account still has the document agreed at that rev.
   const remote = unchanged && rev === base.rev ? base.data : data?.version === 1 ? data : null;
@@ -785,6 +785,8 @@ async function syncWithAccount() {
     const mine = cloudAgreed;
     const poll = await pollAccount(userId, mine.base);
     if (await syncCloudSongs(userId, poll?.songs)) await syncServerLibrary();
+    // Signed out, or into another account, while that was fetched: its document mustn't be merged here.
+    if (getAccount().status !== "signedIn" || getAccount().userId !== userId) return;
     await mergeWith(poll?.state ?? await cloudState(userId), (rev, data) => saveCloudState(userId, rev, data), () => mine.base, (base) => {
       mine.base = base;
       try {

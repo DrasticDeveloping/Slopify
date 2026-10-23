@@ -74,8 +74,21 @@ let loading: Promise<void> | null = null;
 let loadedAt = 0;
 /** When the latest load from here was asked for: anything asked for before it is older. */
 let askedAt = 0;
-/** Whether they're due again: the library's sync (sync.ts) asks for them with its own call when they are. */
-export const socialWanted = () => signedIn() && !loading && Date.now() - loadedAt >= POLL - 5_000;
+/** When the library's sync last said it would bring them (claimSocial). */
+let claimedAt = 0;
+/** How long such a claim holds: longer than a call to the service can take (cloud.ts). */
+const CLAIM = 25_000;
+/** Whether they're due again, and not already on their way. */
+const socialWanted = () => signedIn() && !loading && Date.now() - loadedAt >= POLL - 5_000 && Date.now() - claimedAt >= CLAIM;
+/**
+ * Whether the library's sync (sync.ts) should ask for them with its own call:
+ * when they're due. Until they arrive (or the claim runs out) they aren't asked for here as well.
+ */
+export function claimSocial() {
+  if (!socialWanted()) return false;
+  claimedAt = Date.now();
+  return true;
+}
 /** They arrived, from a call made at `asked` (one made before the latest load from here is ignored). */
 export function receiveSocial(next: Social, asked: number) {
   if (!signedIn() || asked < askedAt) return;
