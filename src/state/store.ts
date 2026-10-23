@@ -65,11 +65,23 @@ export interface Toast {
   sticky?: boolean;
 }
 
-export type Theme = "dynamic" | "midnight" | "ocean" | "forest" | "sunset" | "mono";
+export type BuiltinTheme = "dynamic" | "midnight" | "ocean" | "forest" | "sunset" | "mono";
+/** A built-in theme, or one you made (its id starts with "custom-"; see themes.ts). */
+export type Theme = BuiltinTheme | `custom-${string}`;
+/** A theme made with the theme creator: two accents and a background, as #rrggbb. */
+export interface CustomTheme {
+  id: `custom-${string}`;
+  name: string;
+  accent: string;
+  accent2: string;
+  background: string;
+}
 export type RepeatMode = "off" | "all" | "one";
 
 export interface Settings {
   theme: Theme;
+  /** Themes you made (Settings → Appearance). */
+  customThemes: CustomTheme[];
   crossfade: boolean;
   crossfadeSeconds: number;
   reduceMotion: boolean;
@@ -164,6 +176,7 @@ const STORAGE_KEY = "resonance.remastered.v1";
 
 export const defaultSettings: Settings = {
   theme: "dynamic",
+  customThemes: [],
   crossfade: false,
   crossfadeSeconds: 6,
   reduceMotion: false,

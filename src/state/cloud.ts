@@ -214,7 +214,7 @@ export async function cloudCall<T>(path: string, { method = "GET", body, signal,
   if (as !== undefined && (tokenUser(token) !== as || account.userId !== as)) throw new CloudError(0, "You signed in to another account.");
   let res: Response;
   try {
-    res = await fetch(cloudConfig.url + path, {
+    res = await send(path, {
       method,
       headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -225,9 +225,37 @@ export async function cloudCall<T>(path: string, { method = "GET", body, signal,
     if ((error as Error)?.name === "AbortError") throw error;
     throw new CloudError(0, "Couldn't reach Slopify's online service. Check your connection.");
   }
-  const json = (await res.json().catch(() => null)) as { ok?: boolean; result?: T; error?: { message?: string } } | null;
+  const json = (await res.json().catch(() => null)) as { ok?: boolean; result?: T; error?: { code?: string; message?: string } } | null;
+  // The music server passing the call on couldn't reach the service: the same as not reaching it.
+  if (res.status === 502 && json?.error?.code === "CLOUD_UNREACHABLE") throw new CloudError(0, json.error.message || "Couldn't reach Slopify's online service.");
   if (!res.ok || !json?.ok) throw new CloudError(res.status, json?.error?.message || `Slopify's online service answered HTTP ${res.status}.`, json);
   return json.result as T;
+}
+
+/**
+ * Whether calls go through this app's music server (/api/cloud, server/api.mjs
+ * proxyCloud). That's the page's own origin, so the browser makes no CORS check
+ * (an extra OPTIONS call, which the service's plan counts as a request) before
+ * each one. Off for good once the server says it doesn't pass calls on.
+ */
+let viaServer = true;
+
+async function send(path: string, init: RequestInit & { headers: Record<string, string> }): Promise<Response> {
+  if (viaServer) {
+    try {
+      const res = await fetch(`/api/cloud${path}`, { ...init, headers: { ...init.headers, "X-Slopify-Cloud": cloudConfig.url } });
+      if (res.status !== 404) return res;
+      // CLOUD_PROXY_OFF: built for another service. NOT_FOUND: a music server from before /api/cloud.
+      const code = ((await res.clone().json().catch(() => null)) as { error?: { code?: string } } | null)?.error?.code;
+      if (code !== "CLOUD_PROXY_OFF" && code !== "NOT_FOUND") return res;
+      viaServer = false;
+    } catch (error) {
+      const name = (error as Error)?.name;
+      if (name === "AbortError" || name === "TimeoutError") throw error;
+      // The music server didn't answer: this call goes to the service directly.
+    }
+  }
+  return fetch(cloudConfig.url + path, init);
 }
 
 /** Who a session token is for (its `sub`), without checking it: the service does that. */
