@@ -70,15 +70,40 @@ const reason = (error: unknown) => (error instanceof Error ? error.message : "Co
 const inFront = () => document.visibilityState === "visible" && document.hasFocus();
 
 let loading: Promise<void> | null = null;
+/** When friends, requests, inbox and shares last arrived (from here, or with the library's sync). */
+let loadedAt = 0;
+/** When the latest load from here was asked for: anything asked for before it is older. */
+let askedAt = 0;
+/** When the library's sync last said it would bring them (claimSocial). */
+let claimedAt = 0;
+/** How long such a claim holds: longer than a call to the service can take (cloud.ts). */
+const CLAIM = 25_000;
+/** Whether they're due again, and not already on their way. */
+const socialWanted = () => signedIn() && !loading && Date.now() - loadedAt >= POLL - 5_000 && Date.now() - claimedAt >= CLAIM;
+/**
+ * Whether the library's sync (sync.ts) should ask for them with its own call:
+ * when they're due. Until they arrive (or the claim runs out) they aren't asked for here as well.
+ */
+export function claimSocial() {
+  if (!socialWanted()) return false;
+  claimedAt = Date.now();
+  return true;
+}
+/** They arrived, from a call made at `asked` (one made before the latest load from here is ignored). */
+export function receiveSocial(next: Social, asked: number) {
+  if (!signedIn() || asked < askedAt) return;
+  loadedAt = Date.now();
+  socialError = "";
+  setSocial(next);
+  republishChanged();
+}
 /** Loads friends, requests, inbox and shares. */
 export function refreshSocial(): Promise<void> {
   if (!signedIn()) return Promise.resolve();
-  loading ??= cloudCall<Social>("/v1/social")
-    .then((next) => {
-      socialError = "";
-      setSocial(next);
-      republishChanged();
-    })
+  if (loading) return loading;
+  const asked = (askedAt = Date.now());
+  loading = cloudCall<Social>("/v1/social")
+    .then((next) => receiveSocial(next, asked))
     .catch((error: unknown) => {
       socialError = reason(error);
       listeners.forEach((l) => l());
@@ -446,7 +471,8 @@ export function watchSocial() {
     if (s.server.cloudSyncedAt !== prev.server.cloudSyncedAt && caughtUp() && social) republishChanged();
   });
   window.setInterval(() => {
-    if (!signedIn() || !inFront()) return;
+    // Usually they came with the library's last sync, so nothing is asked for here.
+    if (!inFront() || !socialWanted()) return;
     void refreshSocial();
   }, POLL);
   window.setInterval(() => {

@@ -75,12 +75,19 @@ async function local<T>(url: string, init: RequestInit) {
   return body.song as T;
 }
 
-/** Brings this computer's songs and account `userId`'s into step (only while it's the one signed in). Returns whether this computer's songs changed. */
-export async function syncCloudSongs(userId: string): Promise<boolean> {
+/** Where the account's song changes were last read up to: the `since` for the next check. */
+export const cloudSongsSince = (userId: string) => readAgreed(userId).cursor;
+export interface CloudSongChanges { songs: CloudSong[]; until: number }
+
+/**
+ * Brings this computer's songs and account `userId`'s into step (only while it's the one signed in). Returns whether this computer's songs changed.
+ * `fetched`: the account's changes since `cloudSongsSince`, when they came with another call (sync.ts), so they aren't asked for again.
+ */
+export async function syncCloudSongs(userId: string, fetched?: CloudSongChanges): Promise<boolean> {
   if (getAccount().status !== "signedIn" || getAccount().userId !== userId) return false;
   const agreed = readAgreed(userId);
   const localSongs = new Map((await listSongs()).map((s) => [s.id, s as ServerSong & { playableURL?: string | null }]));
-  const { songs: changes, until } = await cloudCall<{ songs: CloudSong[]; until: number }>(`/v1/library/songs?since=${agreed.cursor}`, { as: userId });
+  const { songs: changes, until } = fetched ?? await cloudCall<CloudSongChanges>(`/v1/library/songs?since=${agreed.cursor}`, { as: userId });
   let changedHere = false;
   const deletedThere = new Set<string>();
 
