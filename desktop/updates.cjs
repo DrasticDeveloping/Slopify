@@ -15,7 +15,8 @@ const path = require("node:path");
  * portable EXE can't replace itself, so it links to the download.
  */
 
-const CHECK_EVERY = 4 * 60 * 60_000;
+/** Often, so a build the online service turns away (cloud/src/index.ts MIN_CLIENT) is replaced soon. */
+const CHECK_EVERY = 10 * 60_000;
 /** How long the "Installing" banner shows before the app closes to install. */
 const INSTALL_NOTICE = 1500;
 /** An install that hasn't closed the app by then has failed. */

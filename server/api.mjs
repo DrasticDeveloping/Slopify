@@ -370,7 +370,7 @@ async function proxyCloud(req, res, url, cloudUrl) {
     body = Buffer.concat(chunks);
   }
   const headers = {};
-  for (const name of ["authorization", "content-type"]) if (req.headers[name]) headers[name] = req.headers[name];
+  for (const name of ["authorization", "content-type", "x-slopify-client"]) if (req.headers[name]) headers[name] = req.headers[name];
   const controller = new AbortController();
   const closed = () => { if (!res.writableFinished) controller.abort(); };
   res.on("close", closed);

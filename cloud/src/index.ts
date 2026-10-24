@@ -17,6 +17,12 @@ import {
  * Each account (and, before sign-in is checked, each address) may make a
  * limited number of calls a minute; past it, calls get 429 until the minute is up.
  *
+ * Every call except /v1/health and /p/ says which version of the app's calls it
+ * is: `X-Slopify-Client: <n>`, or `?client=<n>` for WebSockets. Anything older
+ * than MIN_CLIENT (or not saying, as builds before it didn't) gets
+ * 426 UPDATE_REQUIRED, before sign-in is checked, so an old build that
+ * misbehaves can be turned away cheaply.
+ *
  *   GET    /v1/health
  *   GET    /p/:shareId                 a shared playlist's link opened in a browser: how to open it in Slopify (no sign-in)
  *   GET    /v1/me                      the caller's profile (null until saved), with their friend code
@@ -61,6 +67,12 @@ async function limit(limiter: RateLimit | undefined, key: string) {
   if (limiter && !(await limiter.limit({ key })).success) throw new HttpError(429, "Too many requests. Wait a minute and try again.");
 }
 
+/**
+ * The oldest version of the app's calls served (src/state/cloud.ts CLOUD_CLIENT).
+ * 2: one combined poll through the music server, and no re-saving between versions.
+ */
+const MIN_CLIENT = 2;
+
 const MAX_BODY_BYTES = 1024 * 1024;
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE = /^[A-HJ-NP-Z2-9]{4}-?[A-HJ-NP-Z2-9]{4}$/;
@@ -69,7 +81,7 @@ const CODE = /^[A-HJ-NP-Z2-9]{4}-?[A-HJ-NP-Z2-9]{4}$/;
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Slopify-Client",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -171,6 +183,11 @@ const service = {
     if (parts[0] !== "v1") return fail(404, "Not found.");
     try {
       if (parts[1] === "health" && parts.length === 2) return ok({ service: "slopify-cloud" });
+      // Old builds are turned away first, before they cost a sign-in check or a rate-limit lookup.
+      const client = Number(request.headers.get("X-Slopify-Client") ?? url.searchParams.get("client") ?? 0);
+      if (!(client >= MIN_CLIENT)) {
+        return reply(426, { ok: false, error: { code: "UPDATE_REQUIRED", message: "This version of Slopify is too old for your account. Update Slopify to keep syncing." } });
+      }
 
       await limit(env.ADDRESS_LIMIT, request.headers.get("CF-Connecting-IP") ?? "unknown");
       const bearer = request.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");

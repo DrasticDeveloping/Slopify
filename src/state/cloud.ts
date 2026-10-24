@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { thisDevice } from "../lib/native";
 import { toast } from "./actions";
+import { checkForUpdates } from "./desktop";
 import { flushPersist, getState, setState } from "./store";
 
 /*
@@ -205,10 +206,22 @@ export class CloudError extends Error {
 const message = (error: unknown) => (error instanceof Error ? error.message : "Couldn't reach Slopify's online service.");
 
 /**
+ * Which version of the online service's calls this app makes (cloud/src/index.ts
+ * MIN_CLIENT). Raise it with a change the service must be able to tell apart.
+ */
+export const CLOUD_CLIENT = 2;
+/**
+ * Set once the service said this build is too old: no more calls this session
+ * (each would only be turned away again), and the desktop app looks for its update.
+ */
+let outdated: CloudError | null = null;
+
+/**
  * One call to the online service as the signed-in account. Throws CloudError (with `status`, and the body for 409s).
  * With `as`, the call is only made as that account: if another one has signed in meanwhile, it throws instead.
  */
 export async function cloudCall<T>(path: string, { method = "GET", body, signal, as }: { method?: string; body?: unknown; signal?: AbortSignal; as?: string } = {}): Promise<T> {
+  if (outdated) throw outdated;
   const token = await clerk?.getToken();
   if (!token) throw new CloudError(401, "Sign in first.");
   if (as !== undefined && (tokenUser(token) !== as || account.userId !== as)) throw new CloudError(0, "You signed in to another account.");
@@ -216,7 +229,7 @@ export async function cloudCall<T>(path: string, { method = "GET", body, signal,
   try {
     res = await send(path, {
       method,
-      headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      headers: { Authorization: `Bearer ${token}`, "X-Slopify-Client": String(CLOUD_CLIENT), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: signal ?? AbortSignal.timeout(20_000),
       cache: "no-store",
@@ -228,6 +241,11 @@ export async function cloudCall<T>(path: string, { method = "GET", body, signal,
   const json = (await res.json().catch(() => null)) as { ok?: boolean; result?: T; error?: { code?: string; message?: string } } | null;
   // The music server passing the call on couldn't reach the service: the same as not reaching it.
   if (res.status === 502 && json?.error?.code === "CLOUD_UNREACHABLE") throw new CloudError(0, json.error.message || "Couldn't reach Slopify's online service.");
+  if (res.status === 426 && json?.error?.code === "UPDATE_REQUIRED") {
+    outdated = new CloudError(426, json.error.message || "This version of Slopify is too old for your account. Update Slopify to keep syncing.", json);
+    checkForUpdates();
+    throw outdated;
+  }
   if (!res.ok || !json?.ok) throw new CloudError(res.status, json?.error?.message || `Slopify's online service answered HTTP ${res.status}.`, json);
   return json.result as T;
 }
@@ -269,10 +287,12 @@ function tokenUser(token: string) {
 
 /** The WebSocket address for a Listen Along room, carrying a fresh token (browsers can't send headers on WebSockets). */
 export async function roomSocketUrl(code: string) {
+  if (outdated) throw outdated;
   const token = await clerk?.getToken();
   if (!token) throw new CloudError(401, "Sign in to use Listen Along.");
   const url = new URL(`${cloudConfig.url}/v1/rooms/${encodeURIComponent(code)}/socket`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("token", token);
+  url.searchParams.set("client", String(CLOUD_CLIENT));
   return url.toString();
 }
