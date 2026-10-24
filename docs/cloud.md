@@ -70,7 +70,7 @@ npm.cmd run dev             # http://127.0.0.1:8787
 - To see where requests go: Cloudflare dashboard → Workers & Pages → slopify-cloud → Observability. The service logs one line per call (`method`, `route` with ids replaced by `:id`, `status`, `ms`); group by `route` and `method` to count them. Cloudflare's own per-call logs are off (`wrangler.jsonc` `observability`), since they would keep addresses and WebSocket tokens. Workers Logs allows 200,000 lines a day on the Free plan, more than the request limit.
 - Each account may make 300 calls a minute, and each address 600 (wrangler.jsonc `ratelimits`); past that, calls get 429 and the app retries a minute later. A first sync sends one call per song, so a very large library takes a few minutes to upload.
 - An account can keep up to 20,000 songs.
-- Rooms hold 20 people. A room ends a minute after its host leaves, five minutes after everyone has, or a day after it started.
+- Rooms hold 20 people. A room ends a minute after its host leaves, five minutes after everyone has, or a day after it started. Closing or reloading the app leaves its room at once: a guest drops off the list, and a host's room ends.
 - Once a day (a cron trigger in `wrangler.jsonc`), the service removes deletion records older than 15 minutes, room records older than two days and listening activity older than a day.
 - A shared playlist can have up to 2,000 songs; an account up to 500 friends and 100 unanswered requests it sent.
 - The library document is limited to about 900 KB, which is many thousands of playlist entries.
