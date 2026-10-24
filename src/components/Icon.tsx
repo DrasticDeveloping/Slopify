@@ -28,6 +28,7 @@ const paths: Record<string, JSX.Element> = {
   chevronDown: <path d="m6 9 6 6 6-6" />,
   chevronUp: <path d="m6 15 6-6 6 6" />,
   queue: <><path d="M4 6h12M4 11h12M4 16h7" /><path className="f" d="M15 14.2v5.6a.6.6 0 0 0 .9.5l4.4-2.8a.6.6 0 0 0 0-1l-4.4-2.8a.6.6 0 0 0-.9.5Z" /></>,
+  lyrics: <><path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" /><path d="M8 9h8M8 12.5h5" /></>,
   nowPlaying: <><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M10 9.5v5l4-2.5z" className="f" /></>,
   volume: <><path className="f" d="M4 9.5v5h3.6L12.5 19V5L7.6 9.5z" /><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" /></>,
   volumeLow: <><path className="f" d="M4 9.5v5h3.6L12.5 19V5L7.6 9.5z" /><path d="M15.5 9a4 4 0 0 1 0 6" /></>,

@@ -8,6 +8,7 @@ import { ArtistLinks } from "./ArtistLinks";
 import { TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 import { openSpeedMenu, SeekRow, Transport, VolumeControl } from "./PlayerBar";
+import { LyricsView } from "./Lyrics";
 import { QueueView } from "./RightPanel";
 import { toggleFullscreen, useIsFullscreen, VideoSurface } from "./VideoSurface";
 import { Visualizer } from "./Visualizer";
@@ -49,7 +50,9 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
   const playing = useStore((s) => s.isPlaying);
   const reduced = useReducedMotion();
   const menuOpen = useStore((s) => s.menu !== null);
-  const [queue, setQueue] = useState(false);
+  /** The side pane beside the player: the queue or the lyrics (each replaces the controls on narrow screens). */
+  const [pane, setPane] = useState<"queue" | "lyrics" | null>(null);
+  const queue = pane === "queue";
   const pulse = useRef<HTMLDivElement>(null);
   const close = () => setState({ fullPlayer: false });
   const closeBtn = useRef<HTMLButtonElement>(null);
@@ -68,7 +71,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
   const watching = video && watchId === id;
   useEffect(() => setWatchId(null), [id]);
   const watch = () => {
-    setQueue(false);
+    setPane(null);
     setWatchId(id);
     requestAnimationFrame(() => closeBtn.current?.focus());
   };
@@ -79,17 +82,19 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
     requestAnimationFrame(() => watchBtn.current?.focus());
   };
   const fullscreen = useIsFullscreen();
-  /* On narrow screens the queue replaces the controls (and its button), so focus follows whichever is showing. */
-  const showQueue = (open: boolean) => {
-    setQueue(open);
+  /* On narrow screens a pane replaces the controls (and its button), so focus follows whichever is showing. */
+  const showPane = (next: typeof pane) => {
+    const was = pane;
+    setPane(next);
     requestAnimationFrame(() => {
       const root = dialog.current;
       if (!root || focusIsVisible()) return;
-      focusFirstVisible(open ? "[data-queue-hide]" : "[data-queue-toggle]", root) || closeBtn.current?.focus();
+      focusFirstVisible(next ? "[data-pane-hide]" : `[data-pane-toggle="${was}"]`, root) || closeBtn.current?.focus();
     });
   };
+  const togglePane = (which: "queue" | "lyrics") => showPane(pane === which ? null : which);
   // Video controls fade out while the video plays undisturbed.
-  const idle = useIdle(dialog, watching && playing && !queue && !menuOpen);
+  const idle = useIdle(dialog, watching && playing && !pane && !menuOpen);
 
   // Switching modes can remove the focused transport or artwork button.
   // Keep keyboard focus in the player after that DOM change.
@@ -162,7 +167,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
       return;
     }
     if (e.key !== "Tab" || !dialog.current) return;
-    const items = [...dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled), [role="slider"]:not([aria-disabled="true"]), input, [tabindex="0"]')].filter((x) => x.offsetParent !== null);
+    const items = [...dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled):not([tabindex="-1"]), a[href], [role="slider"]:not([aria-disabled="true"]), input, [tabindex="0"]')].filter((x) => x.offsetParent !== null);
     if (!items.length) return;
     const first = items[0];
     const last = items[items.length - 1];
@@ -204,22 +209,27 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
       {speed}×
     </button>
   );
-  const queuePanel = queue ? (
-    <aside className="fp-queue" aria-label="Queue">
+  const queuePanel = pane ? (
+    <aside className={`fp-queue${pane === "lyrics" ? " fp-lyrics" : ""}`} aria-label={pane === "queue" ? "Queue" : "Lyrics"}>
       <div className="fp-queue-head">
-        <strong>Queue</strong>
-        <button type="button" className="icon-btn sm" data-queue-hide onClick={() => showQueue(false)} aria-label="Hide queue">
+        <strong>{pane === "queue" ? "Queue" : "Lyrics"}</strong>
+        <button type="button" className="icon-btn sm" data-pane-hide onClick={() => showPane(null)} aria-label={pane === "queue" ? "Hide queue" : "Hide lyrics"}>
           <Icon name="close" size={16} />
         </button>
       </div>
-      <QueueView />
+      {pane === "queue" ? <QueueView /> : <LyricsView trackId={track.id} />}
     </aside>
   ) : null;
+  const lyricsBtn = (
+    <button type="button" className={`icon-btn${pane === "lyrics" ? " on dot" : ""}`} data-pane-toggle="lyrics" onClick={() => togglePane("lyrics")} aria-pressed={pane === "lyrics"} aria-label="Lyrics" title="Lyrics">
+      <Icon name="lyrics" size={20} />
+    </button>
+  );
 
   return (
     <div
       ref={dialog}
-      className={`full-player${closing ? " closing" : ""}${queue ? " with-queue" : ""}${watching ? " video-mode" : ""}${idle ? " idle" : ""}`}
+      className={`full-player${closing ? " closing" : ""}${pane ? " with-queue" : ""}${watching ? " video-mode" : ""}${idle ? " idle" : ""}`}
       role="dialog"
       aria-modal="true"
       aria-label="Now playing"
@@ -275,7 +285,8 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
               </div>
               <Transport big />
               <div className="fp-vbar-side end">
-                <button type="button" className={`icon-btn${queue ? " on dot" : ""}`} data-queue-toggle onClick={() => showQueue(!queue)} aria-pressed={queue} aria-label="Queue" title="Queue">
+                {lyricsBtn}
+                <button type="button" className={`icon-btn${queue ? " on dot" : ""}`} data-pane-toggle="queue" onClick={() => togglePane("queue")} aria-pressed={queue} aria-label="Queue" title="Queue">
                   <Icon name="queue" size={20} />
                 </button>
                 <button type="button" className="icon-btn" onClick={flipFullscreen} aria-label={fullscreen ? "Exit full screen" : "Full screen"} title={fullscreen ? "Exit full screen (F)" : "Full screen (F)"}>
@@ -307,10 +318,16 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
               <div className="fp-utils">
                 {speedBtn}
                 <VolumeControl />
-                <button type="button" className={`btn ghost sm${queue ? " on" : ""}`} data-queue-toggle onClick={() => showQueue(!queue)} aria-pressed={queue}>
-                  <Icon name="queue" size={18} />
-                  Queue
-                </button>
+                <div className="fp-pane-btns">
+                  <button type="button" className={`btn ghost sm${pane === "lyrics" ? " on" : ""}`} data-pane-toggle="lyrics" onClick={() => togglePane("lyrics")} aria-pressed={pane === "lyrics"}>
+                    <Icon name="lyrics" size={18} />
+                    Lyrics
+                  </button>
+                  <button type="button" className={`btn ghost sm${queue ? " on" : ""}`} data-pane-toggle="queue" onClick={() => togglePane("queue")} aria-pressed={queue}>
+                    <Icon name="queue" size={18} />
+                    Queue
+                  </button>
+                </div>
               </div>
             </div>
             {queuePanel}

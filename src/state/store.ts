@@ -100,6 +100,8 @@ export interface Settings {
   tone: { bass: number; mid: number; treble: number; balance: number };
   /** Songs that are skipped when playback moves on by itself, with when that ends (ms since 1970; see snooze.ts). */
   snoozed: Record<string, number>;
+  /** Seconds each song's lyrics are moved, where they're out of time with it (positive shows them sooner). */
+  lyricsOffsets: Record<string, number>;
 }
 
 export interface PlaybackContext {
@@ -138,7 +140,7 @@ export interface AppState {
   muted: boolean;
   speed: number;
 
-  panel: "queue" | "details" | null;
+  panel: "queue" | "details" | "lyrics" | null;
   fullPlayer: boolean;
   modal: Modal | null;
   menu: MenuState | null;
@@ -194,6 +196,7 @@ export const defaultSettings: Settings = {
   slipIns: "sometimes",
   tone: { bass: 0, mid: 0, treble: 0, balance: 0 },
   snoozed: {},
+  lyricsOffsets: {},
 };
 
 /** When the song's snooze ends, or 0 if it isn't snoozed. */

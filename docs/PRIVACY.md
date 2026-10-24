@@ -16,6 +16,7 @@ To find and play music, Slopify's music server (which runs on your computer) con
 - **A public Spotify search service** (`debridvault.elfhosted.com`), for Spotify search.
 - **ListenBrainz, MusicBrainz and Cover Art Archive**, for recommendations and release details. Only artist names and song titles are sent, never your history.
 - **TheAudioDB and Wikipedia**, for artist pictures and biographies. Only artist names are sent.
+- **LRCLIB**, for lyrics, when you open them. Only the song's title, artist, album and length are sent.
 - **Deezer**, for artist pictures and for the album a song is from. Artist names and song titles are sent, never your history.
 - **GitHub**, when the desktop app checks for updates.
 - **Discord**, if "Show what you're playing on Discord" is on in the desktop app, which shows the current song on your Discord profile.
