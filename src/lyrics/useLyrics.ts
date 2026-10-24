@@ -173,7 +173,7 @@ export function useLyrics(trackId: string) {
 
 const MAX_ADJUST = 30;
 
-/** Seconds this song's lyrics are moved; positive shows them sooner. Saved with your settings. */
+/** Seconds this song's lyrics are moved; positive shows them sooner. Saved on this device (not synced). */
 export const useLyricsAdjust = (trackId: string) => useStore((s) => s.settings.lyricsOffsets?.[trackId] ?? 0);
 
 export function setLyricsAdjust(trackId: string, seconds: number) {

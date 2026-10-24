@@ -34,8 +34,11 @@ import { claimSocial, receiveSocial, type Social } from "./social";
  * songs its playlists name exist here under the same ids.
  */
 
-/** Settings that describe this device rather than the listener. */
-const DEVICE_SETTINGS = new Set<keyof Settings>(["downloadMode"]);
+/**
+ * Settings that describe this device rather than the listener, or that are kept
+ * per device to spare the online service (lyrics timing changes a click at a time).
+ */
+const DEVICE_SETTINGS = new Set<keyof Settings>(["downloadMode", "lyricsOffsets"]);
 const QUICK = 2000;
 const SLOW = 30_000;
 const POLL = 30_000;
@@ -91,11 +94,12 @@ const canonicalAll = (list: Record<string, Playlist>) => Object.fromEntries(Obje
 /** The listener's settings (not this device's), limited to settings this version of the app has. */
 const listenerSettings = (settings: Record<string, unknown>) => pick(settings, (key) => key in defaultSettings && !DEVICE_SETTINGS.has(key as keyof Settings));
 /**
- * Settings from a newer version, which this one doesn't have: kept as they are in
- * the copy, so this version never deletes them and the newer one never puts them
- * back (the two would otherwise re-save the library at each other endlessly).
+ * Settings from a newer version, which this one doesn't have, and device settings
+ * an older version did sync: kept as they are in the copy, so this version never
+ * deletes them and the other one never puts them back (the two would otherwise
+ * re-save the library at each other endlessly).
  */
-const newerSettings = (settings: Record<string, unknown> = {}) => pick(settings, (key) => !(key in defaultSettings));
+const newerSettings = (settings: Record<string, unknown> = {}) => pick(settings, (key) => !(key in defaultSettings) || DEVICE_SETTINGS.has(key as keyof Settings));
 /** Shuffle, repeat and speed as a new device starts: the baseline, so its defaults never override yours. */
 const PLAYBACK_DEFAULTS: Record<string, unknown> = { shuffle: false, repeat: "off", speed: 1 };
 /** Mixes keyed in one order everywhere, so devices listing them differently still agree. */
@@ -941,7 +945,10 @@ export function watchLibraryData() {
     const s = getState();
     const prev = last;
     last = s;
-    if (s.playlists !== prev.playlists || s.settings !== prev.settings || s.taste.likes !== prev.taste.likes || s.taste.saves !== prev.taste.saves
+    // Only settings that sync are news (a device setting, like lyrics timing, isn't worth a call to the account).
+    const settingsChanged = s.settings !== prev.settings
+      && !same(listenerSettings(s.settings as unknown as Record<string, unknown>), listenerSettings(prev.settings as unknown as Record<string, unknown>));
+    if (s.playlists !== prev.playlists || settingsChanged || s.taste.likes !== prev.taste.likes || s.taste.saves !== prev.taste.saves
       || s.taste.hidden !== prev.taste.hidden || s.taste.hiddenDiscoveries !== prev.taste.hiddenDiscoveries
       || s.shuffle !== prev.shuffle || s.repeat !== prev.repeat || s.speed !== prev.speed || s.trackIds !== prev.trackIds || s.clips !== prev.clips) {
       changed(QUICK, 0);

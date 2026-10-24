@@ -100,7 +100,7 @@ export interface Settings {
   tone: { bass: number; mid: number; treble: number; balance: number };
   /** Songs that are skipped when playback moves on by itself, with when that ends (ms since 1970; see snooze.ts). */
   snoozed: Record<string, number>;
-  /** Seconds each song's lyrics are moved, where they're out of time with it (positive shows them sooner). */
+  /** Seconds each song's lyrics are moved, where they're out of time with it (positive shows them sooner). Kept on this device. */
   lyricsOffsets: Record<string, number>;
 }
 
