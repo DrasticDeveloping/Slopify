@@ -158,6 +158,9 @@ export function PlayerBar() {
         <button type="button" className={`icon-btn${panel === "details" ? " on dot" : ""}`} data-panel-opener="details" onClick={() => setState({ panel: panel === "details" ? null : "details" })} aria-pressed={panel === "details"} aria-label="Now playing view" title="Now playing view">
           <Icon name="nowPlaying" size={19} />
         </button>
+        <button type="button" className={`icon-btn${panel === "lyrics" ? " on dot" : ""}`} data-panel-opener="lyrics" onClick={() => setState({ panel: panel === "lyrics" ? null : "lyrics" })} disabled={!track} aria-pressed={panel === "lyrics"} aria-label="Lyrics" title="Lyrics">
+          <Icon name="lyrics" size={19} />
+        </button>
         <button type="button" className={`icon-btn${panel === "queue" ? " on dot" : ""}`} data-panel-opener="queue" onClick={() => setState({ panel: panel === "queue" ? null : "queue" })} aria-pressed={panel === "queue"} aria-label="Queue" title="Queue (Q)">
           <Icon name="queue" size={19} />
         </button>

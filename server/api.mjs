@@ -12,6 +12,7 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { createRecommendations } from "./recommendations.mjs";
 import { createArtists } from "./artists.mjs";
+import { createLyrics } from "./lyrics.mjs";
 import { createCatalog } from "./catalog.mjs";
 import { createStateStore, readLargeJSON } from "./library-state.mjs";
 import { readDurably, removeDurably, writeDurably } from "./durable-file.mjs";
@@ -406,6 +407,7 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
   void songFiles.sweep();
   const recommendations = createRecommendations();
   const artists = createArtists();
+  const lyrics = createLyrics();
   const catalog = createCatalog();
   const libraryState = createStateStore(dataDir, stillOwned);
 
@@ -624,6 +626,17 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
       if (parts[0] === "metadata" && parts[1] === "artist" && parts.length === 2 && method === "POST") {
         const result = await artists.profile(await readJSON(req));
         if (!res.destroyed) sendJSON(res, 200, { ok: true, result });
+        return;
+      }
+      if (parts[0] === "metadata" && parts[1] === "lyrics" && parts.length === 2 && method === "POST") {
+        const body = await readJSON(req);
+        const controller = new AbortController();
+        const closed = () => { if (!res.writableFinished) controller.abort(); };
+        res.on("close", closed);
+        try {
+          const result = await lyrics.lookup(body, controller.signal);
+          if (!res.destroyed) sendJSON(res, 200, { ok: true, result });
+        } finally { res.off("close", closed); }
         return;
       }
       if (parts[0] === "metadata" && parts[1] === "artists" && parts.length === 2 && method === "POST") {

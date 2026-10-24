@@ -11,6 +11,7 @@ import { Art, TrackArt } from "./Artwork";
 import { Bars, Icon } from "./Icon";
 import { PlatformBadge } from "./TrackList";
 import { VideoSurface } from "./VideoSurface";
+import { LyricsView } from "./Lyrics";
 import { useSlippedIn } from "../state/slipins";
 import { useSmartAdded } from "../recommend/smart-shuffle";
 import { useArtistMetadata } from "../recommend/artist";
@@ -222,10 +223,10 @@ function DetailsView() {
 }
 
 /** The side panel that's open: Now playing waits for a song, rather than taking up the screen with nothing in it. */
-export const usePanel = () => useStore((s) => (s.panel === "details" && !s.currentId ? null : s.panel));
+export const usePanel = () => useStore((s) => ((s.panel === "details" || s.panel === "lyrics") && !s.currentId ? null : s.panel));
 
 /** Closes the panel and puts focus back on the player bar button that opens it (or the page content, where that's hidden). */
-function closePanel(panel: "queue" | "details") {
+function closePanel(panel: "queue" | "details" | "lyrics") {
   setState({ panel: null });
   requestAnimationFrame(() => focusFirstVisible(`[data-panel-opener="${panel}"]`) || focusFirstVisible("main.main"));
 }
@@ -233,12 +234,14 @@ function closePanel(panel: "queue" | "details") {
 export function RightPanel() {
   const panel = usePanel();
   const label = useStore((s) => s.context?.label);
+  const currentId = useStore((s) => s.currentId);
   if (!panel) return null;
+  const title = panel === "queue" ? "Queue" : panel === "lyrics" ? "Lyrics" : "Now playing";
   return (
-    <aside className="right-panel" aria-label={panel === "queue" ? "Queue" : "Now playing"}>
+    <aside className="right-panel" aria-label={title}>
       <header className="rp-head">
         <div>
-          <h2>{panel === "queue" ? "Queue" : "Now playing"}</h2>
+          <h2>{title}</h2>
           {panel === "details" && label ? <span className="muted small">From {label}</span> : null}
         </div>
         <div className="rp-actions">
@@ -250,7 +253,7 @@ export function RightPanel() {
           </button>
         </div>
       </header>
-      {panel === "queue" ? <QueueView /> : <DetailsView />}
+      {panel === "queue" ? <QueueView /> : panel === "lyrics" && currentId ? <LyricsView key={currentId} trackId={currentId} /> : <DetailsView />}
     </aside>
   );
 }
