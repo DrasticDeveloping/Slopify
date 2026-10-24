@@ -21,7 +21,8 @@ export type Lyrics =
 export type LyricsState =
   | { status: "loading" }
   | { status: "offline" }
-  | { status: "failed"; message: string }
+  /** `retrying`: the lyrics library was busy, and it's asked again by itself shortly. */
+  | { status: "failed"; message: string; retrying: boolean }
   | { status: "ready"; lyrics: Lyrics };
 
 interface Query { title: string; artist: string; album: string; duration: number }
@@ -80,6 +81,11 @@ function toLyrics(answer: Answer): Lyrics {
 /** Lookups in flight, shared by every view asking for the same song (and the saver). */
 const pending = new Map<string, Promise<Answer>>();
 
+/** A lookup that failed because the lyrics library was busy or unreachable, so asking again later may work. */
+class Busy extends Error {}
+/** How long to wait before asking again by itself, after each busy answer in a row. */
+const AUTO_RETRY = [8_000, 20_000, 45_000, 90_000];
+
 function lookup(key: string, query: Query): Promise<Answer> {
   let task = pending.get(key);
   if (!task) {
@@ -91,7 +97,9 @@ function lookup(key: string, query: Query): Promise<Answer> {
     })
       .then(async (res) => {
         const body = await res.json().catch(() => null);
-        if (!res.ok || !body?.ok || !body.result?.status) throw new Error(body?.error?.message || "Couldn't look up lyrics.");
+        const message = body?.error?.message || "Couldn't look up lyrics.";
+        if ([502, 503, 504].includes(res.status)) throw new Busy(message);
+        if (!res.ok || !body?.ok || !body.result?.status) throw new Error(message);
         const answer = body.result as Answer;
         await writeSaved(key, answer);
         return answer;
@@ -122,13 +130,15 @@ export function useLyrics(trackId: string) {
   const key = query ? cacheKey(query) : "";
   const [state, setLyricsState] = useState<{ key: string; value: LyricsState }>({ key: "", value: { status: "loading" } });
   /** "Try again" asks the server even if this browser has an answer, for that song only. */
-  const [retry, setRetry] = useState({ key: "", n: 0 });
+  const [retry, setRetry] = useState({ key: "", n: 0, auto: 0 });
   const forced = retry.key === key && retry.n > 0;
+  const autoTries = retry.key === key ? retry.auto : 0;
   const offline = useStore((s) => s.server.status === "offline");
 
   useEffect(() => {
     if (!query) return setLyricsState({ key, value: { status: "ready", lyrics: { status: "none" } } });
     let live = true;
+    let timer = 0;
     setLyricsState({ key, value: { status: "loading" } });
     void (async () => {
       const hit = fresh(await readSaved(key), offline);
@@ -139,25 +149,31 @@ export function useLyrics(trackId: string) {
         const answer = await lookup(key, query);
         if (live) setLyricsState({ key, value: { status: "ready", lyrics: toLyrics(answer) } });
       } catch (error) {
-        if (live) setLyricsState({ key, value: { status: "failed", message: error instanceof Error ? error.message : "Couldn't look up lyrics." } });
+        if (!live) return;
+        // A busy lyrics library usually recovers soon: ask again by itself, waiting longer each time.
+        const wait = error instanceof Busy ? AUTO_RETRY[autoTries] : undefined;
+        setLyricsState({ key, value: { status: "failed", message: error instanceof Error ? error.message : "Couldn't look up lyrics.", retrying: wait !== undefined } });
+        if (wait !== undefined) timer = window.setTimeout(() => setRetry((r) => ({ key, n: (r.key === key ? r.n : 0) + 1, auto: autoTries + 1 })), wait);
       }
     })();
     return () => {
       live = false;
+      clearTimeout(timer);
     };
     // `query` is captured through `key`, which changes whenever it does.
   }, [key, offline, forced, retry.n]);
 
   // A result for an earlier song never shows for this one.
   const value: LyricsState = state.key === key ? state.value : { status: "loading" };
-  return { state: value, retry: () => setRetry((r) => ({ key, n: r.key === key ? r.n + 1 : 1 })) };
+  // Asking by hand starts the automatic tries over.
+  return { state: value, retry: () => setRetry((r) => ({ key, n: r.key === key ? r.n + 1 : 1, auto: 0 })) };
 }
 
 /* ───────────────────────── timing ───────────────────────── */
 
 const MAX_ADJUST = 30;
 
-/** Seconds this song's lyrics are moved; positive shows them sooner. Saved with your settings. */
+/** Seconds this song's lyrics are moved; positive shows them sooner. Saved on this device (not synced). */
 export const useLyricsAdjust = (trackId: string) => useStore((s) => s.settings.lyricsOffsets?.[trackId] ?? 0);
 
 export function setLyricsAdjust(trackId: string, seconds: number) {

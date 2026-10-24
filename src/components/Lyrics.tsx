@@ -25,7 +25,8 @@ export function LyricsView({ trackId }: { trackId: string }) {
     return (
       <LyricsNote>
         {state.message}
-        <button type="button" className="btn ghost sm" onClick={retry}>Try again</button>
+        {state.retrying ? <span className="ly-retrying small">Trying again shortly…</span> : null}
+        <button type="button" className="btn ghost sm" onClick={retry}>Try again now</button>
       </LyricsNote>
     );
   }
