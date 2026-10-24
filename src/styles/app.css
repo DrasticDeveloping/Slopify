@@ -1566,7 +1566,9 @@ button.th:not(:disabled):hover { color: var(--text); }
 .ly-credit { margin-top: 24px; }
 .ly-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 48px 24px; text-align: center; }
 .ly-empty .icon { opacity: 0.5; }
+.ly-empty p { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 34ch; }
 .ly-empty .btn { margin-top: 10px; }
+.ly-retrying { opacity: 0.8; }
 .ly-resume { position: absolute; z-index: 2; left: 50%; bottom: 58px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; box-shadow: var(--shadow-lg); animation: row-in 240ms var(--ease-out); }
 .ly-adjust { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 8px 12px; border-top: 1px solid var(--line); }
 .ly-adjust > span:first-child { margin-right: 6px; }

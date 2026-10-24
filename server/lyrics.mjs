@@ -16,6 +16,10 @@ const SPACING = 300;
 const CACHE_SIZE = 300;
 const FOUND_TTL = 7 * 86_400_000;
 const MISSING_TTL = 6 * 3_600_000;
+/** Waits before asking again when LRCLIB is overloaded (it often answers the next try). */
+const RETRIES = [800, 2500];
+/** How long to leave LRCLIB alone after it says we're asking too often, without a Retry-After. */
+const RATE_LIMIT_PAUSE = 20_000;
 /** How far a found song's length may be from ours, in seconds. */
 const LENGTH_SLACK = 4;
 
@@ -69,32 +73,62 @@ export function createLyrics({ fetchImpl = fetch, now = Date.now, wait = delay }
     while (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
   };
 
-  /** One request at a time, spaced out, and none for a minute after LRCLIB says it's busy. Null for "not found". */
-  function request(path, params, signal) {
-    const url = new URL(`${BASE}/${path}`);
-    for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
+  const busy = () => Object.assign(new Error("The lyrics library is busy right now."), { status: 503 });
+  const unreachable = () => Object.assign(new Error("The lyrics library couldn't be reached."), { status: 502 });
+
+  /** One attempt, in turn with every other request to LRCLIB and spaced out from the last. */
+  function attempt(url, signal) {
     const task = queue.then(async () => {
       signal.throwIfAborted();
-      if (blockedUntil > now()) throw Object.assign(new Error("The lyrics library is busy. Try again in a minute."), { status: 503 });
+      if (blockedUntil > now()) throw busy();
       await wait(Math.max(0, SPACING - (now() - last)), undefined, { signal });
       last = now();
-      const response = await fetchImpl(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]), headers: { Accept: "application/json", "User-Agent": USER_AGENT } }).catch((error) => {
+      return fetchImpl(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]), headers: { Accept: "application/json", "User-Agent": USER_AGENT } });
+    });
+    queue = task.catch(() => {});
+    return task;
+  }
+
+  /**
+   * A request to LRCLIB; null for "not found". An overloaded or unreachable
+   * LRCLIB is asked again a couple of times (it's often only one request it
+   * can't serve), letting other songs' requests through in between; only a
+   * rate limit (429) pauses every lookup.
+   */
+  async function request(path, params, signal) {
+    const url = new URL(`${BASE}/${path}`);
+    for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
+    for (let tries = 0; ; tries++) {
+      let response;
+      try {
+        response = await attempt(url, signal);
+      } catch (error) {
+        if (signal.aborted || error?.status) throw error;
         // A dropped connection or slow answer is the lyrics library being unreachable, not this server failing.
-        throw signal.aborted ? error : Object.assign(new Error("The lyrics library couldn't be reached."), { status: 502 });
-      });
+        if (tries < RETRIES.length) {
+          await wait(RETRIES[tries], undefined, { signal });
+          continue;
+        }
+        throw unreachable();
+      }
       if (response.status === 404) {
         void response.body?.cancel().catch(() => {});
         return null;
       }
-      if (response.status === 429 || response.status === 503) blockedUntil = now() + 60_000;
-      if (!response.ok) {
-        void response.body?.cancel().catch(() => {});
-        throw Object.assign(new Error("The lyrics library couldn't be reached."), { status: 502 });
+      if (response.ok) return readJSON(response);
+      void response.body?.cancel().catch(() => {});
+      if (response.status === 429) {
+        const after = Number(response.headers.get("retry-after"));
+        blockedUntil = now() + (Number.isFinite(after) && after > 0 ? Math.min(after, 120) * 1000 : RATE_LIMIT_PAUSE);
+        throw busy();
       }
-      return readJSON(response);
-    });
-    queue = task.catch(() => {});
-    return task;
+      const overloaded = response.status === 503 || response.status === 502 || response.status === 504;
+      if (overloaded && tries < RETRIES.length) {
+        await wait(RETRIES[tries], undefined, { signal });
+        continue;
+      }
+      throw overloaded ? busy() : unreachable();
+    }
   }
 
   /** Whether a found row is the song asked about: same title and artist, and about as long. */
@@ -113,24 +147,49 @@ export function createLyrics({ fetchImpl = fetch, now = Date.now, wait = delay }
     return bare(theirs) === bare(song.artist) || bare(leadArtist(theirs)) === bare(leadArtist(song.artist));
   }
 
+  /** The closest-length match among search results, synced lyrics first. */
+  function best(rows, song) {
+    const candidates = (Array.isArray(rows) ? rows : []).filter((row) => matches(row, song));
+    candidates.sort((a, b) => Number(Boolean(b.syncedLyrics)) - Number(Boolean(a.syncedLyrics)) || Math.abs(a.duration - song.duration) - Math.abs(b.duration - song.duration));
+    return candidates[0];
+  }
+
+  /**
+   * Exact lookups first (LRCLIB matches the length itself, within a couple of
+   * seconds), then searches. One step failing doesn't stop the others; "no
+   * lyrics" is only the answer when the library could answer everything asked
+   * (or the broad search, which covers the rest, did).
+   */
   async function find(song, signal) {
     const title = plainTitle(song.title);
     const lead = leadArtist(song.artist);
-    // An exact lookup first: LRCLIB matches the length itself (within a couple of seconds).
-    if (song.duration) {
-      for (const params of [
-        { track_name: song.title, artist_name: song.artist, album_name: song.album, duration: Math.round(song.duration) },
-        { track_name: title, artist_name: lead, duration: Math.round(song.duration) },
-      ]) {
-        const row = await request("get", params, signal);
-        if (row && matches(row, song)) return answer(row);
+    const steps = [
+      ...(song.duration
+        ? [
+          { path: "get", params: { track_name: song.title, artist_name: song.artist, album_name: song.album, duration: Math.round(song.duration) } },
+          { path: "get", params: { track_name: title, artist_name: lead, duration: Math.round(song.duration) } },
+        ]
+        : []),
+      { path: "search", params: { track_name: title, artist_name: lead } },
+      // A broader search LRCLIB can often still serve when it's struggling with the ones above.
+      // It covers what they'd find, so its answer settles the question even if they failed.
+      { path: "search", params: { q: `${lead} ${title}` }, onlyAfterFailure: true, settles: true },
+    ];
+    let failure = null;
+    for (const step of steps) {
+      if (step.onlyAfterFailure && !failure) continue;
+      try {
+        const found = await request(step.path, step.params, signal);
+        const row = step.path === "get" ? (found && matches(found, song) ? found : null) : best(found, song);
+        if (row) return answer(row);
+        if (step.settles) failure = null;
+      } catch (error) {
+        if (signal.aborted || blockedUntil > now()) throw error;
+        failure = error;
       }
     }
-    // Then a search, taking the closest-length match, synced lyrics first.
-    const rows = await request("search", { track_name: title, artist_name: lead }, signal);
-    const candidates = (Array.isArray(rows) ? rows : []).filter((row) => matches(row, song));
-    candidates.sort((a, b) => Number(Boolean(b.syncedLyrics)) - Number(Boolean(a.syncedLyrics)) || Math.abs(a.duration - song.duration) - Math.abs(b.duration - song.duration));
-    return candidates.length ? answer(candidates[0]) : { status: "none" };
+    if (failure) throw failure;
+    return { status: "none" };
   }
 
   return {
@@ -151,10 +210,14 @@ export function createLyrics({ fetchImpl = fetch, now = Date.now, wait = delay }
       // Two windows asking for the same song share one lookup.
       let task = pending.get(key);
       if (!task) {
-        task = find(song, AbortSignal.timeout(30_000))
+        // Within the app's own 40-second wait; running out of time means LRCLIB was too slow, i.e. busy.
+        const deadline = AbortSignal.timeout(32_000);
+        task = find(song, deadline)
           .then((value) => {
             remember(key, value);
             return value;
+          }, (error) => {
+            throw deadline.aborted ? busy() : error;
           })
           .finally(() => pending.delete(key));
         pending.set(key, task);
