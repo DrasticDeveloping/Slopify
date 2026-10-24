@@ -78,8 +78,8 @@ let askedAt = 0;
 let claimedAt = 0;
 /** How long such a claim holds: longer than a call to the service can take (cloud.ts). */
 const CLAIM = 25_000;
-/** Whether they're due again, and not already on their way. */
-const socialWanted = () => signedIn() && !loading && Date.now() - loadedAt >= POLL - 5_000 && Date.now() - claimedAt >= CLAIM;
+/** Whether they're due again, and not already on their way. Measured from the last try too, so one that failed waits as long as one that worked. */
+const socialWanted = () => signedIn() && !loading && Date.now() - Math.max(loadedAt, askedAt) >= POLL - 5_000 && Date.now() - claimedAt >= CLAIM;
 /**
  * Whether the library's sync (sync.ts) should ask for them with its own call:
  * when they're due. Until they arrive (or the claim runs out) they aren't asked for here as well.
@@ -478,8 +478,9 @@ export function watchSocial() {
   window.setInterval(() => {
     if (getState().isPlaying && Date.now() - activityAt > ACTIVITY_REFRESH) tellActivity(true);
   }, 60_000);
+  // Back at the window: only when they're due, so a window that keeps gaining and losing focus doesn't ask each time.
   const back = () => {
-    if (inFront()) void refreshSocial();
+    if (inFront() && socialWanted()) void refreshSocial();
   };
   window.addEventListener("focus", back);
   document.addEventListener("visibilitychange", back);
