@@ -91,6 +91,20 @@ export function leaveRoom() {
   toast(was === "host" ? "Room closed" : "Left the room");
 }
 
+/*
+ * Closing Slopify (or reloading it, which doesn't rejoin) leaves the room right
+ * away, rather than when the service notices the connection has gone: a guest
+ * drops off everyone's list, and a host's room ends for everyone.
+ */
+window.addEventListener("pagehide", () => {
+  const was = getState().listen.mode;
+  if (was === "idle") return;
+  leaving = true;
+  send({ type: was === "host" ? "end" : "leave" });
+  socket?.close(1000, "Closed");
+  reset();
+});
+
 function reset() {
   timers.forEach(clearInterval);
   timers = [];
