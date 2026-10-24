@@ -38,7 +38,7 @@ Slopify updates work like T3 Code's nightly builds. There are two channels:
 
 People choose their channel in **Settings → General → Update channel**. A nightly build starts on Nightly, and a stable build starts on Stable. Moving from Nightly to Stable installs the newest stable release, even if its version is older than the nightly they're running.
 
-The installed app checks 3 seconds after opening and every 4 hours after that. An update found as it opens is downloaded and installed straight away, and Slopify reopens on the new version; a banner at the top right says so. If music is already playing by the time the download finishes, it waits instead. Each version is installed this way only once, so a failed install doesn't loop. Updates found later download in the background, and the banner offers **Restart**. They also install the next time Slopify is closed or opened. The portable EXE can't replace itself, so it shows a **Download** link to the new release instead.
+The installed app checks 3 seconds after opening and every 10 minutes after that (so a build the online service turns away is replaced quickly; see docs/cloud.md). An update found as it opens is downloaded and installed straight away, and Slopify reopens on the new version; a banner at the top right says so. If music is already playing by the time the download finishes, it waits instead. Each version is installed this way only once, so a failed install doesn't loop. Updates found later download in the background, and the banner offers **Restart**. They also install the next time Slopify is closed or opened. The portable EXE can't replace itself, so it shows a **Download** link to the new release instead.
 
 ### Discord status
 
