@@ -75,6 +75,15 @@ npm.cmd run dev             # http://127.0.0.1:8787
 - A shared playlist can have up to 2,000 songs; an account up to 500 friends and 100 unanswered requests it sent.
 - The library document is limited to about 900 KB, which is many thousands of playlist entries.
 
+## Old versions of the app
+
+Every call says which version of the app's calls it is (`X-Slopify-Client`, or `?client=` on Listen Along's WebSocket; `CLOUD_CLIENT` in `src/state/cloud.ts`). The service turns away anything older than `MIN_CLIENT` (`cloud/src/index.ts`), and builds from before this rule, which don't say, with `426 UPDATE_REQUIRED`, before checking the sign-in. A turned-away build stops calling for the rest of its session and looks for an update; desktop copies look every 10 minutes anyway.
+
+Use it when an old build misbehaves (say, it keeps re-saving the library), or when a change to the service needs every caller to have it:
+
+1. Raise `CLOUD_CLIENT` in the app, and ship the release to both channels.
+2. Then raise `MIN_CLIENT` to match and deploy the service. Deploying it first locks everyone out until their update arrives.
+
 ## Backups
 
 D1 keeps its own recovery points (Time Travel: 7 days on the Free plan, 30 on Paid), which can restore the database to any minute in that window: `npx.cmd wrangler d1 time-travel restore slopify --timestamp=<time>`. For a copy kept longer, run `npm.cmd run db:backup` in `cloud/`; it saves the whole database as SQL in `cloud/backups/` (ignored by git). Backups contain every account's personal data: keep them private, and delete them when they're no longer needed.
