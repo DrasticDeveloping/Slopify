@@ -26,6 +26,8 @@ const RECONNECTS = 5;
 let socket: WebSocket | null = null;
 let code = "";
 let leaving = false;
+/** This device hosts the room, including while it reconnects. */
+let hosting = false;
 let reconnects = 0;
 let timers: number[] = [];
 let retryTimer = 0;
@@ -58,6 +60,7 @@ function needAccount() {
 export async function startRoom() {
   if (needAccount() || getState().listen.mode !== "idle") return;
   setListen({ mode: "connecting", code: "", members: [] });
+  hosting = true;
   try {
     const { code: made } = await cloudCall<{ code: string }>("/v1/rooms", { method: "POST" });
     await connect(made);
@@ -91,6 +94,20 @@ export function leaveRoom() {
   toast(was === "host" ? "Room closed" : "Left the room");
 }
 
+/*
+ * Closing Slopify (or reloading it, which doesn't rejoin) leaves the room right
+ * away, rather than when the service notices the connection has gone: a guest
+ * drops off everyone's list, and a host's room ends for everyone.
+ */
+window.addEventListener("pagehide", () => {
+  const was = getState().listen.mode;
+  if (was === "idle") return;
+  leaving = true;
+  send({ type: hosting ? "end" : "leave" });
+  socket?.close(1000, "Closed");
+  reset();
+});
+
 function reset() {
   timers.forEach(clearInterval);
   timers = [];
@@ -98,6 +115,7 @@ function reset() {
   reconnects = 0;
   stopHosting?.();
   stopHosting = null;
+  hosting = false;
   socket = null;
   code = "";
   playback = null;
@@ -163,6 +181,7 @@ function received(message: Record<string, unknown>) {
       const members = message.members as RoomMember[];
       const room = message.room as { code: string; hostName: string };
       setState({ listen: { mode: you.host ? "host" : "guest", code: room.code, members, host: room.hostName } });
+      hosting = you.host;
       offset = Number(message.now) - Date.now();
       timers.forEach(clearInterval);
       timers = [window.setInterval(() => send({ type: "ping", at: Date.now() }), PING_EVERY)];

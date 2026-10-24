@@ -11,6 +11,7 @@ import { DurableObject } from "cloudflare:workers";
  * Messages (JSON), client → room:
  *   { type: "state", song, position, playing, rate }   host only
  *   { type: "ping", at }                          anyone; answered with pong (clock sync)
+ *   { type: "leave" }                             guest: leaving now (the app closing)
  *   { type: "end" }                               host only: closes the room
  * room → client:
  *   { type: "welcome", you, room, state, members, now }
@@ -154,6 +155,10 @@ export class ListenAlongRoom extends DurableObject {
     }
     if (!message || typeof message !== "object" || Array.isArray(message)) return this.send(ws, { type: "error", message: "Invalid message." });
     if (message.type === "ping") return this.send(ws, { type: "pong", at: message.at, now: Date.now() });
+    if (message.type === "leave" && !member.host) {
+      ws.close(1000, "Left");
+      return this.left(ws);
+    }
     if (!member.host) return this.send(ws, { type: "error", message: "Only the host controls playback." });
     if (message.type === "end") return this.end("The host ended the room.");
     if (message.type === "state") {

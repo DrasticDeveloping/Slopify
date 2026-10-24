@@ -80,13 +80,22 @@ interface LibraryData {
 interface Base { rev: number; data: LibraryData | null }
 
 const synced = (id: string) => id.startsWith("srv_");
-const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
+/** JSON with every object's keys in one order, so copies that list the same keys differently still agree (and never re-save each other's order). */
+const stable = (value: unknown) => JSON.stringify(value, (_key, v: unknown) =>
+  v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v);
+const same = (a: unknown, b: unknown) => a === b || stable(a) === stable(b);
 const pick = <T>(map: Record<string, T>, keep: (key: string) => boolean) => Object.fromEntries(Object.entries(map).filter(([key]) => keep(key))) as Record<string, T>;
 /** Liked Songs always has the app's own name, description and art; only its songs are synced. */
 const canonical = (p: Playlist) => (p.id === "liked" ? likedPlaylist(p) : p);
 const canonicalAll = (list: Record<string, Playlist>) => Object.fromEntries(Object.entries(list).map(([id, p]) => [id, canonical(p)]));
 /** The listener's settings (not this device's), limited to settings this version of the app has. */
 const listenerSettings = (settings: Record<string, unknown>) => pick(settings, (key) => key in defaultSettings && !DEVICE_SETTINGS.has(key as keyof Settings));
+/**
+ * Settings from a newer version, which this one doesn't have: kept as they are in
+ * the copy, so this version never deletes them and the newer one never puts them
+ * back (the two would otherwise re-save the library at each other endlessly).
+ */
+const newerSettings = (settings: Record<string, unknown> = {}) => pick(settings, (key) => !(key in defaultSettings));
 /** Shuffle, repeat and speed as a new device starts: the baseline, so its defaults never override yours. */
 const PLAYBACK_DEFAULTS: Record<string, unknown> = { shuffle: false, repeat: "off", speed: 1 };
 /** Mixes keyed in one order everywhere, so devices listing them differently still agree. */
@@ -321,7 +330,7 @@ function localData(s: AppState, base: LibraryData | null): LibraryData {
     listens: Object.fromEntries(s.taste.listens.filter((l) => synced(l.trackId)).map((l) => [l.id, l])),
     plays: Object.fromEntries(s.listens.filter((l) => synced(l.id)).map((l) => [`${l.id}@${l.at}`, l])),
     listenLog: totals.listenLog,
-    settings: listenerSettings(s.settings as unknown as Record<string, unknown>),
+    settings: { ...newerSettings(base?.settings), ...listenerSettings(s.settings as unknown as Record<string, unknown>) },
     slipIns: withUnknown(sharedSlipIns(allSlipIns(), totals.slipIns), base?.slipIns),
     mixes: byId(Object.fromEntries(currentMixes().map((m) => [m.id, m]))),
     // A Listen Along guest plays at the host's speed, which isn't their own setting: theirs stays as agreed.
@@ -566,25 +575,30 @@ type Remote = { conflict: boolean; rev: number; data: LibraryData | null };
 /**
  * Merges this browser's data with one remote copy until they agree: fetch,
  * merge three ways against the last agreed base, save, and merge again if
- * someone else saved first.
+ * someone else saved first. `fromAccount`: the copy is the account's, so what
+ * it changes here isn't news to send back to the account (see `adopting`).
  */
-async function mergeWith(remoteNow: Remote, save: (baseRev: number, data: LibraryData) => Promise<Remote>, base: () => Base, setBase: (b: Base) => void) {
+async function mergeWith(remoteNow: Remote, save: (baseRev: number, data: LibraryData) => Promise<Remote>, base: () => Base, setBase: (b: Base) => void, fromAccount = false) {
+  const taking = <T>(take: () => T): T => (fromAccount ? adopt(take) : take());
   let remote = remoteNow;
   for (let tries = 0; tries < 4; tries++) {
-    catchUp(remote.data);
-    const agreed = base();
-    const mine = localData(getState(), agreed.data);
-    const merged = remote.data ? merge(remote.rev === agreed.rev ? remote.data : agreed.data, mine, remote.data) : mine;
-    if (remote.data && !same(merged, localData(getState(), remote.data))) apply(merged);
+    const merged = taking(() => {
+      catchUp(remote.data);
+      const agreed = base();
+      const mine = localData(getState(), agreed.data);
+      const out = remote.data ? merge(remote.rev === agreed.rev ? remote.data : agreed.data, mine, remote.data) : mine;
+      if (remote.data && !same(out, localData(getState(), remote.data))) apply(out);
+      return out;
+    });
     if (remote.data && same(merged, remote.data)) {
       setBase({ rev: remote.rev, data: remote.data });
-      showTotals();
+      taking(showTotals);
       return;
     }
     const saved = await save(remote.rev, merged);
     if (!saved.conflict) {
       setBase({ rev: saved.rev, data: merged });
-      showTotals();
+      taking(showTotals);
       return;
     }
     // Another browser saved first: merge with theirs and try again.
@@ -792,7 +806,7 @@ async function syncWithAccount() {
       try {
         localStorage.setItem(cloudBaseKey(userId), JSON.stringify(base));
       } catch { /* Kept for this session. */ }
-    });
+    }, true);
     setState((s) => ({ server: { ...s.server, cloudSyncedAt: Date.now(), cloudError: undefined } }));
     toldAccountError = "";
   } catch (error) {
@@ -817,6 +831,27 @@ let accountDue = 0;
 let accountCheckedAt = 0;
 function wantAccount(delay: number) {
   accountDue = Math.min(accountDue, Date.now() + delay);
+}
+/**
+ * Set while the account's copy is being put here. Those changes still go to the
+ * music server, but contacting the account again for them would only fetch what
+ * just arrived; and between two devices that disagree, it would have them re-save
+ * the library at each other every few seconds.
+ */
+let adopting = false;
+function adopt<T>(take: () => T): T {
+  const was = adopting;
+  adopting = true;
+  try {
+    return take();
+  } finally {
+    adopting = was;
+  }
+}
+/** Something changed here: the music server hears of it after `delay`, the account after `accountDelay`. */
+function changed(delay: number, accountDelay = delay) {
+  if (!adopting) wantAccount(accountDelay);
+  schedule(delay);
 }
 const inFront = () => document.visibilityState === "visible" && document.hasFocus();
 function accountWanted() {
@@ -909,17 +944,12 @@ export function watchLibraryData() {
     if (s.playlists !== prev.playlists || s.settings !== prev.settings || s.taste.likes !== prev.taste.likes || s.taste.saves !== prev.taste.saves
       || s.taste.hidden !== prev.taste.hidden || s.taste.hiddenDiscoveries !== prev.taste.hiddenDiscoveries
       || s.shuffle !== prev.shuffle || s.repeat !== prev.repeat || s.speed !== prev.speed || s.trackIds !== prev.trackIds || s.clips !== prev.clips) {
-      wantAccount(0);
-      schedule(QUICK);
+      changed(QUICK, 0);
     } else if (s.listens !== prev.listens || s.listenLog !== prev.listenLog || s.taste.listens !== prev.taste.listens) {
-      wantAccount(CLOUD_SLOW);
-      schedule(SLOW);
-    } else if (s.tracks !== prev.tracks) wantAccount(CLOUD_SLOW); // Song details reach the account with the next sync.
+      changed(SLOW, CLOUD_SLOW);
+    } else if (s.tracks !== prev.tracks && !adopting) wantAccount(CLOUD_SLOW); // Song details reach the account with the next sync.
   });
-  onSlipIns(() => {
-    wantAccount(0);
-    schedule(QUICK);
-  });
+  onSlipIns(() => changed(QUICK, 0));
   // Mixes are republished unchanged every minute; only a real change is worth contacting the account.
   const mixesNow = () => JSON.stringify(byId(Object.fromEntries(currentMixes().map((m) => [m.id, m]))));
   let lastMixes = mixesNow();
@@ -927,13 +957,9 @@ export function watchLibraryData() {
     const now = mixesNow();
     if (now === lastMixes) return;
     lastMixes = now;
-    wantAccount(0);
-    schedule(QUICK);
+    changed(QUICK, 0);
   });
-  onPlaybackSpot(() => {
-    wantAccount(CLOUD_SLOW);
-    schedule(SLOW);
-  });
+  onPlaybackSpot(() => changed(SLOW, CLOUD_SLOW));
   window.setInterval(() => void syncLibraryData().catch(() => undefined), POLL);
   // Back at the window: catch up with your other devices.
   const back = () => {
