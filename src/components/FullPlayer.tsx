@@ -5,7 +5,7 @@ import { openTrackMenu } from "../lib/menus";
 import { isLiked, navigate, toggleLike, togglePlay } from "../state/actions";
 import { getState, setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
-import { TrackArt } from "./Artwork";
+import { BlurredTrackArt, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 import { openSpeedMenu, SeekRow, Transport, VolumeControl } from "./PlayerBar";
 import { LyricsView } from "./Lyrics";
@@ -237,21 +237,15 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
       style={{ "--a": album.palette.a, "--b": album.palette.b, "--c": album.palette.c } as CSSProperties}
       onKeyDown={trap}
     >
-      {video ? (
-        // One video element for both modes, so switching never restarts or reloads it.
-        <div
-          className={`fp-video${watching ? "" : " ambient"}`}
-          aria-hidden={watching ? undefined : true}
-          onClick={watching ? onVideoClick : undefined}
-          onDoubleClick={watching ? onVideoDoubleClick : undefined}
-        >
-          <VideoSurface trackId={track.id} priority={2} label={watching} />
-          {watching && !playing ? <span className="fp-video-paused" aria-hidden="true"><Icon name="play" size={40} /></span> : null}
+      {watching ? (
+        // The engine's one video element moves in here (see audio/video.ts), so watching never restarts or reloads it.
+        <div className="fp-video" onClick={onVideoClick} onDoubleClick={onVideoDoubleClick}>
+          <VideoSurface trackId={track.id} priority={2} label />
+          {!playing ? <span className="fp-video-paused" aria-hidden="true"><Icon name="play" size={40} /></span> : null}
         </div>
       ) : (
-        <div className="fp-backdrop" aria-hidden="true">
-          <TrackArt trackId={track.id} />
-        </div>
+        // Behind the artwork, a video shows blurred, taken a few frames a second from wherever it's playing.
+        <BlurredTrackArt trackId={track.id} className="fp-backdrop" video={video} />
       )}
       <header className="fp-head">
         <button
@@ -301,8 +295,10 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
         <>
           <div className="fp-body">
             <div className="fp-stage">
-              <div className="fp-art-slot">
-                <div ref={pulse} className={`fp-art${playing ? " playing" : ""}`} key={track.id}>
+              {/* The visualizer sets --energy here, for the art's pulse and the glow behind it. */}
+              <div ref={pulse} className={`fp-art-slot${playing ? " playing" : ""}`}>
+                <span className="fp-glow" aria-hidden="true" />
+                <div className={`fp-art${playing ? " playing" : ""}`} key={track.id}>
                   <TrackArt trackId={track.id} label />
                   {video ? (
                     <button ref={watchBtn} type="button" className="fp-watch" aria-label={`Watch video for ${track.title}`} title="Watch video" onClick={watch}>

@@ -4,7 +4,7 @@ import { likedPlaylist } from "../data/library";
 import type { Listen } from "../recommend/taste";
 import { adoptMixes, currentMixes, onMixes, type Mix } from "../recommend/mixes";
 import { applyEngineSettings, setSpeed, toast, toggleShuffle } from "./actions";
-import { connectLibrarySync, defaultSettings, flushPersist, getState, initialLibrarySync, setState, subscribe, type AppState, type Settings } from "./store";
+import { connectLibrarySync, defaultSettings, getState, initialLibrarySync, persistLater, savingLater, setState, subscribe, type AppState, type Settings } from "./store";
 import { adoptPlaybackSpot, device, onPlaybackSpot, playbackSpot, type PlaybackSpot } from "./resume";
 import { adoptSlipIns, allSlipIns, onSlipIns, type SlipIn } from "./slipins";
 import { syncServerLibrary } from "./importer";
@@ -562,9 +562,19 @@ let agreedBase = readBase();
 let tallies = startTallies();
 // Saved with the app data, so this device's counts and what it knows of others' always match it.
 connectLibrarySync(() => ({ ...agreedBase, tallies }));
+/** The base as last asked to be saved, so a sync that found nothing new doesn't save the whole app record again. */
+let savedBase: { rev: number; text: string } | null = null;
 function writeBase(base: Base) {
   agreedBase = base;
-  flushPersist();
+  // Compared by content as well as revision: a music server whose library was reset counts its revisions
+  // from the start again, and a stale saved base would make a later merge undo another device's changes.
+  const text = stable(base.data);
+  if (savedBase?.rev === base.rev && savedBase.text === text) return;
+  savedBase = { rev: base.rev, text };
+  // What the server holds is safe there, so it's saved within a minute rather than at once; while music
+  // plays, each sync carries new listening counts, and saving the whole record every 30 seconds added up.
+  // Every save writes the base together with the app data, so the two always match.
+  persistLater();
 }
 
 async function request(init?: RequestInit) {
@@ -583,7 +593,9 @@ type Remote = { conflict: boolean; rev: number; data: LibraryData | null };
  * it changes here isn't news to send back to the account (see `adopting`).
  */
 async function mergeWith(remoteNow: Remote, save: (baseRev: number, data: LibraryData) => Promise<Remote>, base: () => Base, setBase: (b: Base) => void, fromAccount = false) {
-  const taking = <T>(take: () => T): T => (fromAccount ? adopt(take) : take());
+  // What a merge takes in is already safe in the copy it came from, so the app saves it within a minute
+  // (see savingLater); changes made here are saved at once when they're made.
+  const taking = <T>(take: () => T): T => savingLater(() => (fromAccount ? adopt(take) : take()));
   let remote = remoteNow;
   for (let tries = 0; tries < 4; tries++) {
     const merged = taking(() => {

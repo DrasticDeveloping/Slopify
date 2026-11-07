@@ -5,7 +5,7 @@ import { announce } from "../lib/announce";
 import { openTrackMenu } from "../lib/menus";
 import { isPlayable, moveInPlaylist, navigate, playList, toggleLike, togglePlay } from "../state/actions";
 import { PROVIDERS, trackPlatform } from "../state/importer";
-import { getState, setState, snoozedUntil, useStore, type Route } from "../state/store";
+import { getState, setState, snoozedUntil, useStore, type AppState, type Route } from "../state/store";
 import { snoozeEnds } from "../state/snooze";
 import { ArtistLinks } from "./ArtistLinks";
 import { TrackArt } from "./Artwork";
@@ -149,6 +149,14 @@ export function PlatformBadge({ track }: { track: Track }) {
 
 /** A phone or tablet, without a mouse. */
 const touchOnly = () => window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+/** Liked Songs as a set, made once per change to the playlists rather than searched by every row on every app change. */
+let liked: { playlists: AppState["playlists"]; ids: Set<string> } | null = null;
+function likedIds(playlists: AppState["playlists"]) {
+  if (liked?.playlists !== playlists) liked = { playlists, ids: new Set(playlists.find((p) => p.id === "liked")?.trackIds) };
+  return liked.ids;
+}
+/** Rows past this one appear without sliding in: they start off screen, and every row animating at once made a long list slow to open. */
+const ENTERING = 18;
 
 const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, showAdded, showPlays, draggableReorder, dropBefore, dropAfter, onDragOverRow, onDropRow }: RowProps) {
   const track = useStore((s) => s.tracks[id]);
@@ -156,11 +164,14 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
   const current = useStore((s) => s.currentId === id);
   const playing = useStore((s) => s.currentId === id && s.isPlaying);
   const selected = useStore((s) => s.selection.includes(id));
-  const liked = useStore((s) => Boolean(s.playlists.find((p) => p.id === "liked")?.trackIds.includes(id)));
+  const liked = useStore((s) => likedIds(s.playlists).has(id));
   const downloading = useStore((s) => s.server.downloads[id]);
   const playable = useStore((s) => isPlayable(s.tracks[id], s));
   const hasClip = useStore((s) => Boolean(s.clips[id]));
   const snoozed = useStore((s) => snoozedUntil(s, id));
+  // Settled once its entrance is over (or if it starts too far down for one). Sorting moves rows in the page,
+  // and a moved element would otherwise play its entrance again.
+  const [settled, setSettled] = useState(index > ENTERING);
   if (!track) return null;
 
   const play = () => {
@@ -271,7 +282,7 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
 
   return (
     <div
-      className={`tl-row${current ? " current" : ""}${selected ? " selected" : ""}${playable ? "" : " unavailable"}${dropBefore ? " drop-before" : ""}${dropAfter ? " drop-after" : ""}`}
+      className={`tl-row${current ? " current" : ""}${selected ? " selected" : ""}${playable ? "" : " unavailable"}${dropBefore ? " drop-before" : ""}${dropAfter ? " drop-after" : ""}${settled ? " settled" : ""}`}
       role="row"
       data-id={id}
       tabIndex={0}
@@ -285,7 +296,10 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
       onDragStart={dragStart}
       onDragOver={dragOver}
       onDrop={drop}
-      style={{ "--i": Math.min(index, 18) } as CSSProperties}
+      onAnimationEnd={settled ? undefined : (e) => {
+        if (e.target === e.currentTarget && e.animationName === "row-in") setSettled(true);
+      }}
+      style={{ "--i": Math.min(index, ENTERING) } as CSSProperties}
     >
       <span className="td num" role="cell">
         <span className="num-label">{current ? <Bars paused={!playing} /> : index + 1}</span>

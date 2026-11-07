@@ -112,22 +112,24 @@ h1, h2, h3, p { margin: 0; }
   position: absolute;
   width: 60vmax;
   height: 60vmax;
-  border-radius: 50%;
-  filter: blur(90px);
   opacity: 0.16;
-  background: var(--accent);
-  animation: drift 38s ease-in-out infinite alternate;
+  /* Soft-edged by its gradient rather than a blur filter, so it's drawn once instead of filtered every frame. */
+  background: radial-gradient(closest-side, var(--glow) 55%, transparent);
+  --glow: var(--accent);
 }
 .ambient i:nth-child(1) { left: -20vmax; top: -25vmax; }
-.ambient i:nth-child(2) { right: -25vmax; top: 10vmax; background: var(--accent-2); animation-duration: 46s; animation-delay: -12s; }
-.ambient i:nth-child(3) { left: 20vmax; bottom: -35vmax; background: var(--accent-3); opacity: 0.35; animation-duration: 52s; }
-@keyframes drift { to { transform: translate(6vmax, 4vmax) scale(1.12); } }
+.ambient i:nth-child(2) { right: -25vmax; top: 10vmax; --glow: var(--accent-2); }
+.ambient i:nth-child(3) { left: 20vmax; bottom: -35vmax; --glow: var(--accent-3); opacity: 0.35; }
 /*
- * The slow drifts and zooms hold still unless music is playing: each frame they move, every blurred
- * glass panel above them has to be blurred again, which kept an idle app busy. They freeze in place,
- * so pausing never jumps. A window hidden in the tray stops all of them.
+ * The glow behind the app and the artist and full-player backdrops hold still: each frame they moved, every
+ * blurred glass panel above them had to be blurred again, which kept a playing window at a core of CPU and
+ * another of GPU for a drift of a few pixels a second. A window hidden in the tray stops every animation.
+ *
+ * The app's big panels (sidebar, main, player bar, right panel) don't blur what's behind them either: mostly
+ * that's only this still, already soft glow, so the blur showed nothing, yet it was recomputed for every frame
+ * drawn (while scrolling, about a third of the CPU and nearly half the GPU process's work). Where a narrow
+ * window floats the right panel over the page, the panel is nearly solid instead (see the @media rules).
  */
-:root:not([data-playing]) :is(.ambient i, .artist-hero-bg .art, .fp-backdrop .art) { animation-play-state: paused; }
 :root[data-window="hidden"] *, :root[data-window="hidden"] *::before, :root[data-window="hidden"] *::after { animation-play-state: paused !important; }
 
 .sidebar, .main, .right-panel, .playerbar { position: relative; z-index: 1; }
@@ -140,7 +142,6 @@ h1, h2, h3, p { margin: 0; }
   border: 1px solid var(--line);
   border-radius: var(--r-xl);
   overflow: hidden;
-  backdrop-filter: blur(30px) saturate(1.2);
   min-width: 0;
 }
 .main-scroll { height: 100%; overflow-y: auto; overflow-x: hidden; container: main / inline-size; scroll-behavior: auto; }
@@ -292,7 +293,8 @@ select.input option, .select select option { background: var(--panel-solid); }
 .slider { --p: 0; position: relative; height: 16px; flex: 1; display: flex; align-items: center; cursor: pointer; touch-action: none; min-width: 60px; }
 .slider-track { position: relative; width: 100%; height: 4px; border-radius: 99px; background: rgb(255 255 255 / 0.16); overflow: hidden; transition: height 160ms var(--ease-out); }
 .slider-fill { position: absolute; inset: 0; background: var(--text); transform-origin: left; transform: scaleX(var(--p)); border-radius: inherit; }
-.slider-thumb { position: absolute; left: calc(var(--p) * 100%); top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgb(0 0 0 / 0.5); transform: scale(0); transition: transform 180ms var(--ease-spring); }
+.slider-rail { position: absolute; inset: 0; pointer-events: none; transform: translateX(calc(var(--p) * 100%)); }
+.slider-thumb { position: absolute; left: 0; top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgb(0 0 0 / 0.5); transform: scale(0); transition: transform 180ms var(--ease-spring); }
 .slider:hover .slider-track, .slider.dragging .slider-track, .slider:focus-visible .slider-track { height: 6px; }
 .slider:hover .slider-fill, .slider.dragging .slider-fill, .slider:focus-visible .slider-fill { background: var(--accent); }
 .slider:hover .slider-thumb, .slider.dragging .slider-thumb, .slider:focus-visible .slider-thumb { transform: scale(1); }
@@ -305,12 +307,13 @@ select.input option, .select select option { background: var(--panel-solid); }
 
 /* Animated equalizer */
 .eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; width: 16px; }
-.eq i { width: 2.5px; border-radius: 2px; background: var(--accent-ink); animation: eq 900ms ease-in-out infinite; height: 40%; }
+/* The bars scale rather than change height: a height animation re-laid out and repainted the page every frame. */
+.eq i { width: 2.5px; height: 100%; border-radius: 2px; background: var(--accent-ink); transform-origin: bottom; transform: scaleY(0.4); animation: eq 900ms ease-in-out infinite; }
 .eq i:nth-child(2) { animation-delay: -300ms; animation-duration: 760ms; }
 .eq i:nth-child(3) { animation-delay: -520ms; animation-duration: 1040ms; }
 .eq i:nth-child(4) { animation-delay: -150ms; animation-duration: 840ms; }
-.eq.paused i { animation-play-state: paused; }
-@keyframes eq { 0%, 100% { height: 25%; } 50% { height: 100%; } }
+.eq.paused i, :root[data-away] .eq i { animation-play-state: paused; }
+@keyframes eq { 0%, 100% { transform: scaleY(0.25); } 50% { transform: scaleY(1); } }
 
 /* ───────────────────────── Artwork ───────────────────────── */
 
@@ -347,7 +350,6 @@ select.input option, .select select option { background: var(--panel-solid); }
   border: 1px solid var(--line);
   border-radius: var(--r-xl);
   padding: 14px 10px 10px;
-  backdrop-filter: blur(30px) saturate(1.2);
   overflow: hidden;
 }
 .brand { display: flex; align-items: center; gap: 11px; padding: 2px 6px 10px; }
@@ -429,7 +431,8 @@ select.input option, .select select option { background: var(--panel-solid); }
 }
 .topbar:has(.search-box:focus-within) { grid-template-columns: minmax(76px, 1fr) minmax(0, 480px) minmax(76px, 1fr); }
 .topbar-start { display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden; }
-.topbar.scrolled { background: color-mix(in oklab, var(--panel-solid) 78%, transparent); backdrop-filter: blur(20px) saturate(1.3); box-shadow: 0 1px 0 var(--line); }
+/* Nearly solid rather than blurred: a blur over the scrolling page is redone on every scrolled frame. */
+.topbar.scrolled { background: color-mix(in oklab, var(--panel-solid) 94%, transparent); box-shadow: 0 1px 0 var(--line); }
 .topbar.titled { background: color-mix(in oklab, var(--tint, var(--panel-solid)) 38%, var(--panel-solid)); }
 .history-btns { display: flex; gap: 8px; flex: none; }
 .history-btns .icon-btn { width: 34px; height: 34px; }
@@ -599,7 +602,7 @@ select.input option, .select select option { background: var(--panel-solid); }
 .tracklist.no-added { --cols: 44px minmax(0, 6fr) minmax(0, 2fr) 40px 58px 40px; }
 .tracklist.no-album.no-added { --cols: 44px minmax(0, 1fr) 40px 58px 40px; }
 .tl-head, .tl-row { display: grid; grid-template-columns: var(--cols); align-items: center; gap: 12px; padding: 0 12px; }
-.tl-head { height: 36px; border-bottom: 1px solid var(--line); margin-bottom: 8px; color: var(--text-3); font-size: 12.5px; font-weight: 600; position: sticky; top: 64px; z-index: 5; background: color-mix(in oklab, var(--panel-solid) 88%, transparent); backdrop-filter: blur(16px); margin-inline: -12px; padding-inline: 24px; }
+.tl-head { height: 36px; border-bottom: 1px solid var(--line); margin-bottom: 8px; color: var(--text-3); font-size: 12.5px; font-weight: 600; position: sticky; top: 64px; z-index: 5; background: color-mix(in oklab, var(--panel-solid) 96%, transparent); margin-inline: -12px; padding-inline: 24px; }
 .th-cell { display: contents; }
 .th { display: flex; align-items: center; gap: 4px; text-align: left; color: inherit; min-width: 0; white-space: nowrap; }
 button.th:not(:disabled):hover { color: var(--text); }
@@ -619,6 +622,7 @@ button.th:not(:disabled):hover { color: var(--text); }
   animation-delay: calc(var(--i) * 16ms);
 }
 @keyframes row-in { from { opacity: 0; transform: translateY(6px); } }
+.tl-row.settled { animation: none; }
 .tl-row:hover { background: var(--hover); }
 .tl-row.selected { background: color-mix(in oklab, var(--accent) 14%, transparent); }
 .tl-row.selected:hover { background: color-mix(in oklab, var(--accent) 20%, transparent); }
@@ -791,8 +795,7 @@ button.th:not(:disabled):hover { color: var(--text); }
 
 .artist-hero { position: relative; margin: -64px -28px 0; height: clamp(300px, 42cqi, 420px); display: flex; align-items: flex-end; padding: 0 28px 28px; overflow: hidden; }
 .artist-hero-bg { position: absolute; inset: 0; }
-.artist-hero-bg .art { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; transform: scale(1.1); animation: slow-zoom 30s ease-in-out infinite alternate; }
-@keyframes slow-zoom { to { transform: scale(1.22) translate(-2%, 2%); } }
+.artist-hero-bg .art { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; transform: scale(1.1); }
 .artist-hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 20%, rgb(0 0 0 / 0.55) 100%); }
 .artist-hero-copy { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 4px; }
 .artist-hero-copy p { font-weight: 560; color: rgb(255 255 255 / 0.85); }
@@ -991,7 +994,6 @@ button.th:not(:disabled):hover { color: var(--text); }
   border-radius: var(--r-xl);
   background: color-mix(in oklab, var(--panel-solid) 70%, transparent);
   border: 1px solid var(--line);
-  backdrop-filter: blur(30px) saturate(1.4);
 }
 .pb-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .pb-art { position: relative; width: 60px; height: 60px; border-radius: 10px; overflow: hidden; flex: none; box-shadow: 0 6px 18px rgb(0 0 0 / 0.4); transition: transform 300ms var(--ease-spring); }
@@ -1054,7 +1056,6 @@ button.th:not(:disabled):hover { color: var(--text); }
   border: 1px solid var(--line);
   border-radius: var(--r-xl);
   overflow: hidden;
-  backdrop-filter: blur(30px) saturate(1.2);
   animation: panel-in 420ms var(--ease-out);
 }
 @keyframes panel-in { from { opacity: 0; transform: translateX(16px); } }
@@ -1130,8 +1131,8 @@ button.th:not(:disabled):hover { color: var(--text); }
 .full-player.closing { animation: fp-out 280ms ease-in both; }
 @keyframes fp-in { from { opacity: 0; transform: translateY(6%) scale(0.98); } }
 @keyframes fp-out { to { opacity: 0; transform: translateY(5%) scale(0.98); } }
-.fp-backdrop { position: absolute; inset: -10%; opacity: 0.55; filter: blur(80px) saturate(1.4); pointer-events: none; }
-.fp-backdrop .art { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; animation: slow-zoom 40s ease-in-out infinite alternate; }
+/* Already blurred (see BlurredTrackArt), so the stretched canvas needs no filter; it stays still for the same reason as .ambient. */
+.fp-backdrop { position: absolute; left: -10%; top: -10%; width: 120%; height: 120%; object-fit: cover; opacity: 0.55; pointer-events: none; }
 .full-player::before { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgb(0 0 0 / 0.15), rgb(0 0 0 / 0.55)); pointer-events: none; }
 .fp-body { position: relative; z-index: 1; }
 /* The header always paints above the stage, whatever the stage does. */
@@ -1144,9 +1145,16 @@ button.th:not(:disabled):hover { color: var(--text); }
 .fp-body { flex: 1; min-height: 0; display: flex; gap: 32px; justify-content: center; padding: 0 32px 120px; }
 .fp-stage { display: flex; flex-direction: column; align-items: stretch; justify-content: safe center; gap: 18px; width: min(520px, 100%); min-height: 0; }
 /* The art takes whatever height the controls leave, so the stage never overflows into the header. */
-.fp-art-slot { flex: 0 1 460px; min-height: 96px; container-type: size; display: grid; place-items: center; }
-.fp-art { --energy: 0; aspect-ratio: 1; width: min(100cqw, 100cqh, 460px); border-radius: 18px; overflow: hidden; box-shadow: 0 30px 80px rgb(0 0 0 / 0.55), 0 0 calc(40px + var(--energy) * 90px) color-mix(in oklab, var(--a) calc(20% + var(--energy) * 50%), transparent); transform: scale(0.86); transition: transform 700ms var(--ease-spring); animation: art-in 600ms var(--ease-out); }
+.fp-art-slot { --energy: 0; flex: 0 1 460px; min-height: 96px; container-type: size; display: grid; place-items: center; }
+.fp-art-slot > * { grid-area: 1 / 1; }
+.fp-art { aspect-ratio: 1; width: min(100cqw, 100cqh, 460px); border-radius: 18px; overflow: hidden; box-shadow: 0 30px 80px rgb(0 0 0 / 0.55); transform: scale(0.86); transition: transform 700ms var(--ease-spring); animation: art-in 600ms var(--ease-out); }
 .fp-art.playing { transform: scale(calc(0.97 + var(--energy) * 0.05)); transition: transform 120ms linear; }
+/*
+ * The coloured glow that swells with the bass. Its shadow never changes; only how strongly it shows does,
+ * which the GPU handles alone. Growing the shadow itself repainted a large blur every frame.
+ */
+.fp-glow { aspect-ratio: 1; width: min(100cqw, 100cqh, 460px); border-radius: 18px; pointer-events: none; box-shadow: 0 0 110px color-mix(in oklab, var(--a) 70%, transparent); opacity: 0.3; transform: scale(0.86); transition: transform 700ms var(--ease-spring); will-change: opacity, transform; }
+.fp-art-slot.playing .fp-glow { opacity: calc(0.3 + var(--energy) * 0.7); transform: scale(calc(0.97 + var(--energy) * 0.05)); transition: transform 120ms linear; }
 .fp-art { position: relative; flex: none; }
 .fp-art .art { width: 100%; height: 100%; aspect-ratio: 1; border-radius: 0; }
 .fp-watch { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: rgb(0 0 0 / 0.38); opacity: 0; transition: opacity 180ms; color: white; font-weight: 650; }
@@ -1404,7 +1412,8 @@ button.th:not(:disabled):hover { color: var(--text); }
 .clip-shade.left { left: 0; width: calc(var(--s) * 100%); border-radius: 8px 0 0 8px; }
 .clip-shade.right { right: 0; width: calc((1 - var(--e)) * 100%); border-radius: 0 8px 8px 0; }
 .clip-window { position: absolute; top: -4px; bottom: -4px; left: calc(var(--s) * 100%); width: calc((var(--e) - var(--s)) * 100%); border: 2px solid var(--accent); border-radius: 8px; pointer-events: none; box-shadow: 0 0 24px color-mix(in oklab, var(--accent) 30%, transparent); }
-.clip-head { position: absolute; top: -8px; bottom: -8px; width: 2px; margin-left: -1px; background: #fff; border-radius: 2px; pointer-events: none; box-shadow: 0 0 10px rgb(255 255 255 / 0.6); transition: opacity 200ms; }
+.clip-head-rail { position: absolute; inset: -8px 0; pointer-events: none; opacity: 0; transition: opacity 200ms; }
+.clip-head { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; margin-left: -1px; background: #fff; border-radius: 2px; box-shadow: 0 0 10px rgb(255 255 255 / 0.6); }
 .clip-handle { position: absolute; top: -6px; bottom: -6px; width: 18px; margin-left: -9px; display: grid; place-items: center; cursor: ew-resize; touch-action: none; z-index: 2; }
 .clip-handle.start { left: calc(var(--s) * 100%); }
 .clip-handle.end { left: calc(var(--e) * 100%); }
@@ -1531,11 +1540,11 @@ button.th:not(:disabled):hover { color: var(--text); }
 /* ───────────────────────── Reduced motion ───────────────────────── */
 
 :root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; animation-delay: 0ms !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
-:root[data-motion="reduce"] .eq i { animation: none !important; height: 60%; }
+:root[data-motion="reduce"] .eq i { animation: none !important; transform: scaleY(0.6); }
 :root[data-motion="reduce"] .fp-art.playing { transform: scale(0.97); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; animation-delay: 0ms !important; transition-duration: 1ms !important; }
-  .eq i { animation: none !important; height: 60%; }
+  .eq i { animation: none !important; transform: scaleY(0.6); }
 }
 
 /* Full player queue on narrow screens: swap the stage for the queue. */
@@ -1611,12 +1620,9 @@ button.th:not(:disabled):hover { color: var(--text); }
 .full-player.video-mode::before { display: none; }
 .full-player:focus { outline: none; }
 .fp-video { position: absolute; inset: 0; z-index: 0; cursor: pointer; }
-.fp-video.ambient { inset: -10%; filter: blur(70px) saturate(1.25); opacity: 0.5; pointer-events: none; }
-.fp-video.ambient .video-host video { object-fit: cover; }
-.fp-video.ambient .video-surface > .art { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
 .fp-video .video-surface { display: grid; place-items: center; }
 /* An all-but-transparent layer keeps the video covered once the controls fade out, so browsers don't move it to a hardware overlay (where it can freeze). */
-.fp-video:not(.ambient)::after { content: ""; position: absolute; inset: 0; z-index: 3; background: rgb(0 0 0 / 0.004); pointer-events: none; }
+.fp-video::after { content: ""; position: absolute; inset: 0; z-index: 3; background: rgb(0 0 0 / 0.004); pointer-events: none; }
 /* Cover art stands in until the video has loaded. */
 .fp-video .video-surface > .art { width: min(84vw, calc(56vh * 16 / 9)); height: auto; aspect-ratio: 16 / 9; border-radius: 14px; }
 .video-mode .fp-head { background: linear-gradient(180deg, rgb(0 0 0 / 0.7), transparent); padding-bottom: 40px; }
@@ -1627,7 +1633,12 @@ button.th:not(:disabled):hover { color: var(--text); }
 .fp-vbar-side { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .fp-vbar-side.end { justify-content: flex-end; }
 .fp-vbar .volume { width: 170px; }
-.full-player.video-mode .fp-queue { position: absolute; z-index: 3; top: 76px; right: 16px; bottom: 230px; width: min(380px, calc(100% - 32px)); height: auto; display: flex; align-self: auto; max-height: none; background: rgb(10 10 14 / 0.78); }
+/*
+ * Nothing over a playing video blurs what's behind it: a blur there is redone for every frame of the video.
+ * The pane is nearly solid instead, and the header's buttons sit on its dark fade.
+ */
+.full-player.video-mode .fp-queue { position: absolute; z-index: 3; top: 76px; right: 16px; bottom: 230px; width: min(380px, calc(100% - 32px)); height: auto; display: flex; align-self: auto; max-height: none; background: rgb(10 10 14 / 0.92); backdrop-filter: none; }
+.video-mode .fp-head .icon-btn.glass { background: rgb(255 255 255 / 0.12); backdrop-filter: none; }
 .fp-video-paused { position: absolute; left: 50%; top: 50%; z-index: 1; width: 88px; height: 88px; margin: -44px 0 0 -44px; display: grid; place-items: center; border-radius: 50%; background: rgb(0 0 0 / 0.45); backdrop-filter: blur(8px); color: #fff; pointer-events: none; animation: art-in 240ms var(--ease-out); }
 .full-player.video-mode.idle, .video-mode.idle .fp-video { cursor: none; }
 .video-mode.idle .fp-head, .video-mode.idle .fp-vcontrols { opacity: 0; pointer-events: none; }

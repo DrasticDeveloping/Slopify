@@ -128,7 +128,8 @@ export function Slider({ value, max, step, poll, onInput, onCommit, label, forma
       <div className="slider-track">
         <div className="slider-fill" />
       </div>
-      <div className="slider-thumb" />
+      {/* The rail is as wide as the slider and slides the thumb along by transform, so following playback never re-lays out the page. */}
+      <div className="slider-rail"><div className="slider-thumb" /></div>
       {showTooltip ? <span ref={tip} className="slider-tip" aria-hidden="true" /> : null}
     </div>
   );

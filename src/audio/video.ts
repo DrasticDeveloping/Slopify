@@ -82,5 +82,10 @@ export function useHasVideo() {
   return useSyncExternalStore(subscribe, () => current !== null);
 }
 
+/** The video element playing right now, if any (it changes with the song, or a switch to another copy). */
+export function useCurrentVideo() {
+  return useSyncExternalStore(subscribe, () => current);
+}
+
 // Live audio and app state cannot be swapped in place: when this module (or anything it imports) changes, reload the page.
 if (import.meta.hot) import.meta.hot.accept(() => location.reload());
