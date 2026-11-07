@@ -43,12 +43,8 @@ export function HomeView() {
   const touch = useMediaQuery("(hover: none) and (pointer: coarse)");
   // Only changes that can move suggestions (not every listening progress save) re-rank the shelves.
   const tasteRev = useStore((s) => s.taste.rev);
-  // Library and taste changes can make a new mix; the timer catches midnight and Monday.
-  useEffect(() => {
-    ensureMixes();
-    const timer = window.setInterval(() => ensureMixes(), 60_000);
-    return () => clearInterval(timer);
-  }, [tasteRev, tracks]);
+  // Library and taste changes can make a new mix (App's minute timer catches midnight and Monday).
+  useEffect(() => ensureMixes(), [tasteRev, tracks]);
 
   // By default "Recommended for you" is new songs from the web; library songs only when Settings asks for them.
   const includeLibrary = useStore((s) => s.settings.recommendLibrary);

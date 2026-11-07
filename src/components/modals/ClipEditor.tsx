@@ -113,7 +113,8 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
     if (head.current) {
       const live = engine.loadedTrackId === id && duration;
       head.current.style.opacity = live ? "1" : "0";
-      if (live) head.current.style.left = `${(engine.position / duration) * 100}%`;
+      // The rail is as wide as the waveform, so a percentage of its own width places the line without re-laying out the page.
+      if (live) head.current.style.transform = `translateX(${(engine.position / duration) * 100}%)`;
     }
   }), [id, duration]);
 
@@ -258,7 +259,7 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
           <span className="clip-shade left" aria-hidden="true" />
           <span className="clip-shade right" aria-hidden="true" />
           <span className="clip-window" aria-hidden="true" />
-          <span ref={head} className="clip-head" aria-hidden="true" />
+          <span ref={head} className="clip-head-rail" aria-hidden="true"><span className="clip-head" /></span>
           {(["start", "end"] as const).map((which) => (
             <button
               key={which}

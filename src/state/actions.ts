@@ -467,10 +467,11 @@ let retriedError: string | null = null;
 const failedInRow = new Set<string>();
 let lastListenSave = 0;
 
-function saveListening(end: Listen["end"] = "playing") {
+/** `later`: the regular progress save while a song plays, which can wait to reach storage (see setState). */
+function saveListening(end: Listen["end"] = "playing", later = false) {
   const listen = collector.listen;
   if (!listen || listen.heard <= 0) return;
-  setState((s) => ({ taste: recordListen(s.taste, { ...listen, end }) }));
+  setState((s) => ({ taste: recordListen(s.taste, { ...listen, end }) }), { saveLater: later });
   lastListenSave = performance.now();
 }
 
@@ -1461,7 +1462,7 @@ export function wireEngine() {
       collector.listen.span = Math.max(1, range.end - range.start);
     }
     collector.sample(position, clock, rate, audible);
-    if (clock - lastListenSave >= 10_000) saveListening();
+    if (clock - lastListenSave >= 10_000) saveListening("playing", true);
   };
   engine.onDiscontinuity = () => collector.resetAnchor();
   engine.onEnded = () => {
@@ -1552,7 +1553,7 @@ export function wireEngine() {
     const st = getState();
     if (!st.isPlaying || !engine.playing) return;
     const key = todayKey();
-    setState({ listenLog: { ...st.listenLog, [key]: (st.listenLog[key] ?? 0) + 5 * st.speed } });
+    setState({ listenLog: { ...st.listenLog, [key]: (st.listenLog[key] ?? 0) + 5 * st.speed } }, { saveLater: true });
   }, 5000);
 }
 

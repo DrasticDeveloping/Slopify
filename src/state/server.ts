@@ -111,6 +111,8 @@ let quietBatch = false;
 /** When each song last failed to download (this session), so automatic downloads don't retry it on every sync. */
 const failedAt = new Map<string, number>();
 const RETRY_FAILED = 6 * 3600_000;
+/** Milliseconds between progress updates for one download. */
+const PROGRESS_EVERY = 250;
 
 function setProgress(id: string, progress: number | null) {
   setState((s) => {
@@ -147,12 +149,18 @@ async function fetchToDevice(id: string, serverId: string, signal: AbortSignal) 
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
   let received = 0;
+  let shownAt = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(value);
     received += value.byteLength;
-    if (total) setProgress(id, Math.min(0.99, received / total));
+    // A few times a second is plenty for a progress bar; each update reaches every part of the app.
+    const now = performance.now();
+    if (total && now - shownAt >= PROGRESS_EVERY) {
+      shownAt = now;
+      setProgress(id, Math.min(0.99, received / total));
+    }
   }
   const blob = new Blob(chunks as BlobPart[], { type: res.headers.get("content-type") || "application/octet-stream" });
   if (total && blob.size !== total) throw new Error("The download was incomplete.");

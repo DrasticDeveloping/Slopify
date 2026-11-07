@@ -340,14 +340,42 @@ export function getState() {
 
 let persistTimer = 0;
 let persistenceStopped = false;
-function schedulePersist() {
+/** How long playback's own bookkeeping (listening minutes and progress) can wait to be saved. */
+const SAVE_LATER = 60_000;
+/**
+ * A change is saved shortly after it's made. Playback's bookkeeping, which changes every few seconds, is
+ * saved at most once a minute instead (or sooner, with the next other change), since each save writes the
+ * whole record. Closing the page saves at once (actions.ts), so only a crash can lose that last minute.
+ */
+function schedulePersist(later: boolean) {
+  if (later) {
+    if (!persistTimer) persistTimer = window.setTimeout(flushPersist, SAVE_LATER);
+    return;
+  }
   clearTimeout(persistTimer);
   persistTimer = window.setTimeout(flushPersist, 400);
 }
 
+let savingLaterDepth = 0;
+/**
+ * Runs `change` with any save it causes made later (see schedulePersist): for state that's already safe
+ * elsewhere, like what a sync just agreed with the music server. Each save still writes everything current.
+ */
+export function savingLater<T>(change: () => T): T {
+  savingLaterDepth++;
+  try {
+    return change();
+  } finally {
+    savingLaterDepth--;
+  }
+}
+/** A save within a minute (or with the next other change), for data kept outside the app state (sync.ts). */
+export const persistLater = () => schedulePersist(true);
+
 /** Saves now instead of after the usual short delay (e.g. when the page is closing). */
 export function flushPersist() {
   clearTimeout(persistTimer);
+  persistTimer = 0;
   if (persistenceStopped) return;
   const s = state;
   const data: Persisted = {
@@ -380,10 +408,24 @@ export function flushPersist() {
   }
 }
 
-export function setState(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
+/** What a save is made from (flushPersist): only a change to one of these is worth writing the whole record again. */
+const PERSISTED_FROM = new Set<keyof AppState>([
+  "playlists", "settings", "clips", "volume", "muted", "shuffle", "smartShuffle", "repeat", "speed", "sidebarCollapsed",
+  "panel", "listenLog", "listenElsewhere", "listens", "taste", "trackIds", "tracks", "artists", "albums",
+]);
+
+/** `saveLater`: playback's frequent bookkeeping, saved within a minute rather than at once (see schedulePersist). */
+export function setState(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>), { saveLater = false } = {}) {
   const next = typeof patch === "function" ? patch(state) : patch;
+  const prev = state;
   state = { ...state, ...next };
-  schedulePersist();
+  // A save serializes the library twice (with its sync base), so menus, toasts and buffering don't cause one.
+  for (const key in next) {
+    if (PERSISTED_FROM.has(key as keyof AppState) && state[key as keyof AppState] !== prev[key as keyof AppState]) {
+      schedulePersist(saveLater || savingLaterDepth > 0);
+      break;
+    }
+  }
   listeners.forEach((l) => l());
 }
 

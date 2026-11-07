@@ -1,5 +1,7 @@
-import { memo, useState, type CSSProperties } from "react";
+import { memo, useEffect, useRef, useState, type CSSProperties } from "react";
 import type { Palette, Playlist } from "../data/types";
+import { useCurrentVideo } from "../audio/video";
+import { onLiveFrame } from "../lib/live";
 import { useStore } from "../state/store";
 import { Icon } from "./Icon";
 
@@ -60,6 +62,123 @@ export function TrackArt({ trackId, className, label }: { trackId: string; class
   const album = useStore((s) => (track ? s.albums[track.albumId] : undefined));
   if (!track || !album) return <div className={`art ${className ?? ""}`} />;
   return <Art palette={album.palette} glyph={album.glyph} image={album.artworkUrl} className={className} label={label ? `${album.title} artwork` : undefined} />;
+}
+
+/** Pixels down the backdrop's canvas: heavily blurred, it needs no more, and stretching it costs nothing. */
+const BACKDROP_SIZE = 96;
+/** New frames a second for a video's backdrop: blurred this much, more would look no different. */
+const VIDEO_BACKDROP_FPS = 10;
+/** Slack for the frame loop, which lands on display refreshes: a frame due a few ms from now is taken now. */
+const EARLY_FRAME = 4;
+
+/** Draws `source` over the whole canvas and `pad` past each edge, cropped from its middle to fit (as object-fit: cover). */
+function drawCovered(ctx: CanvasRenderingContext2D, source: CanvasImageSource, sw: number, sh: number, pad: number) {
+  const w = ctx.canvas.width + pad * 2;
+  const h = ctx.canvas.height + pad * 2;
+  const scale = Math.max(w / sw, h / sh);
+  ctx.drawImage(source, (sw - w / scale) / 2, (sh - h / scale) / 2, w / scale, h / scale, -pad, -pad, w, h);
+}
+
+/**
+ * A song's art as a soft wash of colour (the full player's backdrop). It's blurred once, into a small canvas
+ * stretched to fill, because a CSS blur that size was recomputed on every frame the player drew.
+ *
+ * With `video`, the playing video shows through instead, a few frames a second. Blurring the video itself
+ * meant blurring the whole screen again for every frame of the video.
+ */
+export function BlurredTrackArt({ trackId, className, video = false }: { trackId: string; className?: string; video?: boolean }) {
+  const track = useStore((s) => s.tracks[trackId]);
+  const album = useStore((s) => (track ? s.albums[track.albumId] : undefined));
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const palette = album?.palette;
+  const image = album?.artworkUrl;
+  const playing = useCurrentVideo();
+  const source = video ? playing : null;
+  const height = BACKDROP_SIZE;
+  // A video's wash is as wide as the video, so it fills the screen as the video would.
+  const width = video ? Math.round((height * 16) / 9) : height;
+
+  useEffect(() => {
+    const ctx = canvas.current?.getContext("2d");
+    if (!ctx || !palette) return;
+    // Blurred past its edges as well as inside, so the wash stays solid to the canvas edge.
+    const pad = height * 0.25;
+    const filter = `blur(${height / 18}px) saturate(1.4)`;
+    let showingVideo = false;
+    const paint = (cover?: HTMLImageElement) => {
+      // Once the video shows, a cover that loads late doesn't cover it up again.
+      if (showingVideo) return;
+      const w = width;
+      const h = height;
+      const r = Math.max(w, h);
+      ctx.clearRect(0, 0, w, h);
+      ctx.filter = filter;
+      // The generated art (see .art in app.css), beneath any cover.
+      const clear = (color: string) => {
+        ctx.fillStyle = color;
+        const solid = ctx.fillStyle;
+        // Normalised to #rrggbb or rgba(): the same colour, fully transparent, so gradients fade without greying.
+        return solid.startsWith("#") ? `${solid}00` : solid.replace(/[\d.]+\)$/, "0)");
+      };
+      const base = ctx.createLinearGradient(-pad, -pad, w + pad, h + pad);
+      base.addColorStop(0, palette.b);
+      base.addColorStop(1, palette.c);
+      ctx.fillStyle = base;
+      ctx.fillRect(-pad, -pad, w + pad * 2, h + pad * 2);
+      const corner = ctx.createRadialGradient(w, h, 0, w, h, r * 0.7);
+      corner.addColorStop(0, palette.c);
+      corner.addColorStop(1, clear(palette.c));
+      ctx.fillStyle = corner;
+      ctx.fillRect(-pad, -pad, w + pad * 2, h + pad * 2);
+      const glow = ctx.createRadialGradient(w * 0.15, h * 0.1, 0, w * 0.15, h * 0.1, r * 0.72);
+      glow.addColorStop(0, palette.a);
+      glow.addColorStop(1, clear(palette.a));
+      ctx.fillStyle = glow;
+      ctx.fillRect(-pad, -pad, w + pad * 2, h + pad * 2);
+      // Cropped from its middle, as the cover shows elsewhere.
+      if (cover) drawCovered(ctx, cover, cover.naturalWidth, cover.naturalHeight, pad);
+      ctx.filter = "none";
+    };
+    paint();
+
+    let last = -Infinity;
+    const frame = () => {
+      if (!source || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !source.videoWidth) return;
+      last = performance.now();
+      showingVideo = true;
+      ctx.filter = filter;
+      drawCovered(ctx, source, source.videoWidth, source.videoHeight, pad);
+      ctx.filter = "none";
+    };
+    // Follows playback on the shared frame loop, taking every few frames; a seek or a first frame shows at once.
+    const stopFrames = source
+      ? onLiveFrame(() => {
+          if (performance.now() - last >= 1000 / VIDEO_BACKDROP_FPS - EARLY_FRAME) frame();
+        })
+      : undefined;
+    source?.addEventListener("loadeddata", frame);
+    source?.addEventListener("seeked", frame);
+
+    // Covers from elsewhere still draw (the canvas is only shown, never read back).
+    const cover = image ? new Image() : null;
+    let live = true;
+    if (cover && image) {
+      cover.decoding = "async";
+      cover.onload = () => {
+        if (live) paint(cover);
+      };
+      cover.src = image;
+    }
+    return () => {
+      live = false;
+      if (cover) cover.onload = null;
+      stopFrames?.();
+      source?.removeEventListener("loadeddata", frame);
+      source?.removeEventListener("seeked", frame);
+    };
+  }, [palette, image, source, width, height]);
+
+  return <canvas ref={canvas} width={width} height={height} className={className} aria-hidden="true" />;
 }
 
 export function PlaylistArt({ playlist, className }: { playlist: Playlist; className?: string }) {

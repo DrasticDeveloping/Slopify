@@ -4,7 +4,7 @@ import { Hero } from "../components/Hero";
 import { PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { paletteFromSeed } from "../data/library";
-import { ensureMixes, fillMix, mixIds, mixSeed, mixSongs, useMixes, type Mix } from "../recommend/mixes";
+import { fillMix, mixIds, mixSeed, mixSongs, useMixes, type Mix } from "../recommend/mixes";
 import { registerStreams } from "../state/importer";
 import { useStore, type Route } from "../state/store";
 import { Missing } from "./Collection";
@@ -20,12 +20,6 @@ export function MixView({ id }: { id: string }) {
   const tracks = useStore((s) => s.tracks);
   const tasteRev = useStore((s) => s.taste.rev);
   const [loading, setLoading] = useState(false);
-
-  // An open mix still turns over at midnight (or Monday).
-  useEffect(() => {
-    const timer = window.setInterval(() => ensureMixes(), 60_000);
-    return () => clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     let live = true;
