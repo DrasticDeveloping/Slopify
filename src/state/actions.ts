@@ -34,7 +34,13 @@ export function effectiveRange(id: string, s: AppState = getState()): ClipRange 
   const r = s.clipDraft?.trackId === id ? s.clipDraft : s.clips[id];
   // A clip that no longer fits (e.g. the length was corrected to something shorter) plays the whole song.
   if (!r || r.end <= r.start || r.start >= duration) return { start: 0, end: duration };
-  return { start: Math.max(0, Math.min(r.start, duration)), end: Math.min(duration, Math.max(r.end, r.start + 1)) };
+  const start = Math.max(0, Math.min(r.start, duration));
+  const end = Math.min(duration, Math.max(r.end, r.start + 0.5));
+  // Fades fit inside the clip, together taking at most all of it.
+  const span = end - start;
+  const fadeIn = Math.min(Math.max(0, r.fadeIn ?? 0), span);
+  const fadeOut = Math.min(Math.max(0, r.fadeOut ?? 0), span - fadeIn);
+  return { start, end, ...(fadeIn ? { fadeIn } : {}), ...(fadeOut ? { fadeOut } : {}), ...((fadeIn || fadeOut) && r.fadeShape && r.fadeShape !== "smooth" ? { fadeShape: r.fadeShape } : {}) };
 }
 
 export function likedIds(s: AppState) {
@@ -598,7 +604,7 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
   const readyStream = streamUrls.get(id);
   if (t.stream && readyStream) readyStream.usable = false;
   const range = effectiveRange(id, s);
-  engine.load(engineTrack(id), { start: range.start, end: range.end || t.duration || 1e9, autoplay, crossfade });
+  engine.load(engineTrack(id), { start: range.start, end: range.end || t.duration || 1e9, fadeIn: range.fadeIn, fadeOut: range.fadeOut, fadeShape: range.fadeShape, autoplay, crossfade });
   if (cued?.id === id) engine.seek(cued.position);
   cued = null;
   startListening(id);
@@ -1005,6 +1011,7 @@ export function syncEngineEnd() {
   const t = s.tracks[s.currentId];
   const r = effectiveRange(s.currentId, s);
   engine.setRange(r.start, r.end || t.duration || 1e9);
+  engine.setFades(r.fadeIn ?? 0, r.fadeOut ?? 0, r.fadeShape);
 }
 
 export function applyEngineSettings() {

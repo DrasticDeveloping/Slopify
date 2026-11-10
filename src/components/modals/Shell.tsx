@@ -33,7 +33,8 @@ export function Shell({ title, subtitle, children, size = "md", footer, icon, ar
     const previous = recorded && recorded !== document.body ? recorded : (document.activeElement as HTMLElement | null);
     const el = ref.current;
     // React handles autoFocus itself (no attribute is left), so a dialog marks its default with data-autofocus.
-    const first = el?.querySelector<HTMLElement>("[data-autofocus],input:not([type=checkbox]):not([type=radio]):not([type=range])") ?? el?.querySelector<HTMLElement>(FOCUSABLE);
+    // That comes first (one selector list would take whichever is first on the page), then the first text field.
+    const first = el?.querySelector<HTMLElement>("[data-autofocus]") ?? el?.querySelector<HTMLElement>("input:not([type=checkbox]):not([type=radio]):not([type=range])") ?? el?.querySelector<HTMLElement>(FOCUSABLE);
     first?.focus();
     return () => {
       if (layer === "confirm") return;
