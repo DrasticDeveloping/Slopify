@@ -184,22 +184,7 @@ function DetailsView() {
         </button>
       </div>
 
-      <div className="info-card">
-        <h3>Details</h3>
-        <dl className="kv">
-          <dt>Album</dt><dd><button type="button" className="link" onClick={() => navigate({ name: "album", id: album.id })}>{album.title}</button>{album.year ? ` · ${album.year}` : ""}</dd>
-          <dt>Format</dt><dd>{track.kind === "video" ? "Video" : "Audio"} · {track.stream ? "Streaming online" : track.storage === "server" ? "From your music server" : track.storage === "downloads" ? "Downloaded" : "File on this device"}</dd>
-          <dt>Plays</dt><dd>{track.plays.toLocaleString("en")}</dd>
-          <dt>Clip</dt>
-          <dd>
-            {clipped ? `${formatTime(range.start)} – ${formatTime(range.end)}` : "Full song"}{" "}
-            <button type="button" className="text-btn" onClick={() => openModal({ type: "clipEditor", trackId: track.id })}>Edit</button>
-          </dd>
-        </dl>
-      </div>
-
-      <ArtistCard key={artist.id} artist={artist} detail={`${plural(albumCount, "song")} on “${album.title}”`} />
-
+      {/* What's next and who it's by come first, as in Spotify's Now Playing view; the song's details last. */}
       <div className="info-card">
         <h3>
           Next up
@@ -217,6 +202,22 @@ function DetailsView() {
         ) : (
           <p className="muted small">End of queue. Turn on repeat or add more songs.</p>
         )}
+      </div>
+
+      <ArtistCard key={artist.id} artist={artist} detail={`${plural(albumCount, "song")} on “${album.title}”`} />
+
+      <div className="info-card">
+        <h3>Details</h3>
+        <dl className="kv">
+          <dt>Album</dt><dd><button type="button" className="link" onClick={() => navigate({ name: "album", id: album.id })}>{album.title}</button>{album.year ? ` · ${album.year}` : ""}</dd>
+          <dt>Format</dt><dd>{track.kind === "video" ? "Video" : "Audio"} · {track.stream ? "Streaming online" : track.storage === "server" ? "From your music server" : track.storage === "downloads" ? "Downloaded" : "File on this device"}</dd>
+          <dt>Plays</dt><dd>{track.plays.toLocaleString("en")}</dd>
+          <dt>Clip</dt>
+          <dd>
+            {clipped ? `${formatTime(range.start)} – ${formatTime(range.end)}` : "Full song"}{" "}
+            <button type="button" className="text-btn" onClick={() => openModal({ type: "clipEditor", trackId: track.id })}>Edit</button>
+          </dd>
+        </dl>
       </div>
     </div>
   );

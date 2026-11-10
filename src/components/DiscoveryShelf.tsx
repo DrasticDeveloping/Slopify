@@ -9,7 +9,7 @@ import { getState, useStore, type Route } from "../state/store";
 import type { ReasonKind } from "../recommend/taste";
 import { Art, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
-import { Shelf } from "./Shelf";
+import { Shelf, SkeletonCards } from "./Shelf";
 
 const SUBTITLE = "Songs outside your library, picked from what you play. Play any of them in full, or add it to your library.";
 
@@ -61,9 +61,10 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
         {songs.map((song) => (
           <DiscoveryCard key={song.key} song={song} onPlay={() => play(song)} menuContext={{ label: title, route, ids }} showReason={song.reason !== shared} />
         ))}
-        {!songs.length ? <p className="muted shelf-empty" role="status">{loading ? "Finding songs for you…" : note || "No new songs found right now. Try Find more."}</p> : null}
+        {loading ? <SkeletonCards count={songs.length ? 2 : 6} label={songs.length ? "Finding more…" : "Finding songs for you…"} /> : null}
+        {!songs.length && !loading ? <p className="muted shelf-empty" role="status">{note || "No new songs found right now. Try Find more."}</p> : null}
       </Shelf>
-      {songs.length && (note || loading) ? <p className="muted small discovery-note" role="status">{loading ? "Finding more…" : note}</p> : null}
+      {songs.length && note && !loading ? <p className="muted small discovery-note" role="status">{note}</p> : null}
     </section>
   );
 }

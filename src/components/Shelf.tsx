@@ -35,18 +35,39 @@ export function Shelf({ title, subtitle, action, children }: { title: string; su
         </div>
         <div className="shelf-actions">
           {action}
-          <button type="button" className="icon-btn round" onClick={() => page(-1)} disabled={edges.start} aria-label={`Scroll ${title} back`}>
-            <Icon name="chevronLeft" size={18} />
-          </button>
-          <button type="button" className="icon-btn round" onClick={() => page(1)} disabled={edges.end} aria-label={`Scroll ${title} forward`}>
-            <Icon name="chevronRight" size={18} />
-          </button>
+          {/* Arrows only when there's more to scroll to, so a short or loading shelf isn't cluttered with dead buttons. */}
+          {edges.start && edges.end ? null : (
+            <>
+              <button type="button" className="icon-btn round" onClick={() => page(-1)} disabled={edges.start} aria-label={`Scroll ${title} back`}>
+                <Icon name="chevronLeft" size={18} />
+              </button>
+              <button type="button" className="icon-btn round" onClick={() => page(1)} disabled={edges.end} aria-label={`Scroll ${title} forward`}>
+                <Icon name="chevronRight" size={18} />
+              </button>
+            </>
+          )}
         </div>
       </header>
       <div className={`shelf-row${edges.start ? "" : " fade-start"}${edges.end ? "" : " fade-end"}`} ref={scroller}>
         {children}
       </div>
     </section>
+  );
+}
+
+/** Card-shaped placeholders that shimmer while a shelf's songs load, in place of a bare "Loading…" line. */
+export function SkeletonCards({ count = 6, label }: { count?: number; label?: string }) {
+  return (
+    <>
+      {label ? <span className="sr-only" role="status">{label}</span> : null}
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="card skeleton" aria-hidden="true">
+          <span className="sk sk-art" />
+          <span className="sk sk-line" />
+          <span className="sk sk-line short" />
+        </div>
+      ))}
+    </>
   );
 }
 

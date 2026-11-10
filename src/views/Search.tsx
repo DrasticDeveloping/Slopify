@@ -119,10 +119,8 @@ export function SearchView({ q }: { q: string }) {
           ))}
         </div>
       ) : null}
-      {/* Under "All", online artists only show when some are found. */}
-      {artistSearch && mode !== "music" ? <ExternalArtists query={q.trim()} showStatus={mode === "artists"} /> : null}
-      {showMusic ? <ExternalSearch query={q.trim()} /> : null}
-      {showMusic && !nothing ? <><h2 className="section-title">In your library</h2><div className="search-top">
+      {/* Your own matches lead, as Spotify's top result and songs do; music found online follows. */}
+      {showMusic && !nothing ? <div className="search-top">
         <section>
           <h2 className="section-title">Top result</h2>
           {top || topSong ? (
@@ -140,16 +138,19 @@ export function SearchView({ q }: { q: string }) {
           ) : null}
         </section>
         <section className="search-songs">
-          <h2 className="section-title">Songs</h2>
+          <h2 className="section-title">In your library</h2>
           <TrackList ids={results.songs.slice(0, 5)} context={{ label: searchLabel(q), route: { name: "search", q } }} showAlbum={false} showAdded={false} sortable={false} />
         </section>
-      </div></> : null}
+      </div> : null}
       {showMusic && results.songs.length > 5 ? (
         <section>
           <h2 className="section-title">All songs <span className="muted">{results.songs.length}</span></h2>
           <TrackList ids={results.songs} context={{ label: searchLabel(q), route: { name: "search", q } }} showAdded={false} />
         </section>
       ) : null}
+      {/* Under "All", online artists only show when some are found. */}
+      {artistSearch && mode !== "music" ? <ExternalArtists query={q.trim()} showStatus={mode === "artists"} /> : null}
+      {showMusic ? <ExternalSearch query={q.trim()} /> : null}
       {mode !== "music" && results.artists.length ? (
         <Shelf title="Artists in your library">
           {results.artists.map((a) => (

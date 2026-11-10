@@ -123,27 +123,6 @@ export function Sidebar() {
 
   return (
     <aside className={`sidebar library-sidebar${collapsed ? " collapsed" : ""}`} aria-label="Your library">
-      <div className="side-head library-head">
-        <button type="button" className="icon-btn collapse-btn" onClick={() => setState({ sidebarCollapsed: !collapsed })} aria-label={collapseLabel} title={collapseLabel}>
-          <Icon name="sidebar" size={20} />
-        </button>
-        <button type="button" className="library-title" onClick={() => navigate({ name: "library" })}>Your Library</button>
-        <button type="button" className="btn sm library-create" onClick={() => openModal({ type: "createPlaylist" })} aria-label="Create playlist" title="Create playlist">
-          <Icon name="plus" size={18} />
-          <span>Create</span>
-        </button>
-      </div>
-
-      <div className="library-controls">
-        <div className="chips library-filters" role="group" aria-label="Filter your library">
-          {FILTERS.map(([value, label]) => (
-            <button key={value} type="button" className={`chip${filter === value ? " on" : ""}`} aria-pressed={filter === value} onClick={() => setFilter(filter === value ? "all" : value)}>
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
       <nav className="nav">
         {nav.map((item) => {
           const active = item.match.includes(route.name);
@@ -167,6 +146,28 @@ export function Sidebar() {
       </nav>
 
       <div className="side-section">
+        {/* Spotify-style: the library's header and filters sit right on top of the list they filter. */}
+        <div className="side-head library-head">
+          <button type="button" className="icon-btn collapse-btn" onClick={() => setState({ sidebarCollapsed: !collapsed })} aria-label={collapseLabel} title={collapseLabel}>
+            <Icon name="sidebar" size={20} />
+          </button>
+          <button type="button" className="library-title" onClick={() => navigate({ name: "library" })}>Your Library</button>
+          <button type="button" className="btn sm library-create" onClick={() => openModal({ type: "createPlaylist" })} aria-label="Create playlist" title="Create playlist">
+            <Icon name="plus" size={18} />
+            <span>Create</span>
+          </button>
+        </div>
+
+        <div className="library-controls">
+          <div className="chips library-filters" role="group" aria-label="Filter your library">
+            {FILTERS.map(([value, label]) => (
+              <button key={value} type="button" className={`chip${filter === value ? " on" : ""}`} aria-pressed={filter === value} onClick={() => setFilter(filter === value ? "all" : value)}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="side-list" role={shown.length ? "list" : undefined}>
           {shown.map((entry) => {
             const active = showsEntry(route, entry);

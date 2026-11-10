@@ -2,7 +2,7 @@ import { hashString, paletteFromSeed } from "../data/library";
 import { useReleaseShelves, type Release } from "../recommend/releases";
 import { navigate } from "../state/actions";
 import { Art } from "./Artwork";
-import { Card, Shelf } from "./Shelf";
+import { Card, Shelf, SkeletonCards } from "./Shelf";
 
 const TYPES: Record<string, string> = { album: "Album", single: "Single", ep: "EP", compile: "Compilation" };
 
@@ -34,7 +34,7 @@ export function ReleaseShelves() {
     if (!loading && !error) return null;
     return (
       <Shelf title="Release Radar" subtitle="New music from artists you play">
-        <p className="muted shelf-empty" role="status">{loading ? "Looking for new releases…" : error}</p>
+        {loading ? <SkeletonCards label="Looking for new releases…" /> : <p className="muted shelf-empty" role="status">{error}</p>}
       </Shelf>
     );
   }
