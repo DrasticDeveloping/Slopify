@@ -2,7 +2,9 @@ import { useEffect, useMemo } from "react";
 import { PlaylistArt } from "../components/Artwork";
 import { ChooseFiles } from "../components/ChooseFiles";
 import { Icon } from "../components/Icon";
-import { Card, PlayFab } from "../components/Shelf";
+import { Card, PlayFab, Shelf } from "../components/Shelf";
+import { MixCard } from "../components/MixArt";
+import { useMixes } from "../recommend/mixes";
 import { TrackList } from "../components/TrackList";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu } from "../lib/menus";
@@ -107,6 +109,7 @@ export function LibraryView({ filter: routeFilter }: { filter?: string }) {
 
 export function PlaylistsView() {
   const playlists = useStore((s) => s.playlists);
+  const mixes = useMixes();
   const tracks = useStore((s) => s.tracks);
   return (
     <div className="view">
@@ -145,6 +148,11 @@ export function PlaylistsView() {
           <span>Start a fresh collection</span>
         </button>
       </div>
+      {mixes.length ? (
+        <Shelf title="Made for you" subtitle="Mixes from what you play, refreshed daily and every Monday">
+          {mixes.map((mix) => <MixCard key={mix.id} mix={mix} />)}
+        </Shelf>
+      ) : null}
     </div>
   );
 }

@@ -220,7 +220,8 @@ export function ExternalSearch({ query }: { query: string }) {
       <div className="section-head">
         <div>
           <h2 className="section-title">Find music online</h2>
-          <p className="muted small">Search YouTube, Spotify and SoundCloud, or paste a song or playlist link.</p>
+          {/* Once results are in, they explain themselves; the line only helps while waiting. */}
+          {r ? null : <p className="muted small">Search YouTube, Spotify and SoundCloud, or paste a song or playlist link.</p>}
         </div>
         <div className="segmented sm" role="group" aria-label="Search media type">
           {(["audio", "video"] as const).map((k) => (
@@ -250,7 +251,7 @@ export function ExternalSearch({ query }: { query: string }) {
           {r.playlist?.unavailableCount ? <p className="muted small">{r.playlist.unavailableCount} songs unavailable from this playlist.</p> : null}
           {r.unavailableProviders?.length ? <p className="muted small">{r.unavailableProviders.map((p) => ({ spotify: "Spotify", soundcloud: "SoundCloud", youtube: "YouTube" })[p] ?? p).join(" and ")} search isn't responding right now, so these results come from the others.</p> : null}
           {kind === "video" ? <p className="muted small">YouTube results play and save as videos. SoundCloud and Spotify have no video, so theirs play as audio.</p> : null}
-          {r.kind === "search_results" ? <ProviderFilter resolution={r} value={provider} onChange={setProvider} /> : null}
+          {r.kind === "search_results" && new Set(r.candidates.map(platformFor)).size > 1 ? <ProviderFilter resolution={r} value={provider} onChange={setProvider} /> : null}
           {playlist ? (
             <>
               <div className="search-playlist-actions">
@@ -260,13 +261,14 @@ export function ExternalSearch({ query }: { query: string }) {
               <div className="online-song-list">{results.map(row)}</div>
             </>
           ) : (
-            // One section per platform, the top result's platform first.
+            // One section per platform, the top result's platform first. With only one platform answering,
+            // the filter above already names it, so its section drops the repeated heading.
             [...PROVIDERS].sort(([a], [b]) => Number(b === topPlatform) - Number(a === topPlatform)).map(([p, name]) => {
               const songs = results.filter(({ c }) => platformFor(c) === p);
               if (!songs.length) return null;
               return (
                 <section className="online-platform" key={p} aria-label={`${name} results`}>
-                  <h3><span className={`prov-dot ${p}`} aria-hidden="true" />{name}</h3>
+                  {PROVIDERS.filter(([q]) => results.some(({ c }) => platformFor(c) === q)).length > 1 ? <h3><span className={`prov-dot ${p}`} aria-hidden="true" />{name}</h3> : null}
                   <div className={`online-song-list${p === "youtube" ? " youtube-grid" : ""}`}>{songs.map(row)}</div>
                 </section>
               );

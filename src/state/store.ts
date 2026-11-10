@@ -146,6 +146,8 @@ export interface AppState {
   menu: MenuState | null;
   toasts: Toast[];
   sidebarCollapsed: boolean;
+  /** This session, keep the library open even beside the right panel (where it otherwise folds to a rail). */
+  sidebarKeepOpen: boolean;
   selection: string[];
   searchFocusNonce: number;
   header: HeaderInfo | null;
@@ -313,6 +315,7 @@ function initialState(): AppState {
     menu: null,
     toasts: [],
     sidebarCollapsed: saved.sidebarCollapsed ?? false,
+    sidebarKeepOpen: false,
     selection: [],
     searchFocusNonce: 0,
     header: null,

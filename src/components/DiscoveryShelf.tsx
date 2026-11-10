@@ -23,10 +23,12 @@ interface Props {
   route?: Route;
   /** Include songs already in the library, which play from the library. */
   withOwned?: boolean;
+  /** Leave the shelf out entirely once a search finds nothing (rather than saying so). */
+  hideWhenEmpty?: boolean;
 }
 
 /** Songs outside the library, as cards that play in full, and can be dismissed or added to the library. */
-export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false }: Props) {
+export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false }: Props) {
   const { songs, loading, note, refresh } = useDiscovery(title, { queries, limit, withOwned });
   const tracks = useStore((s) => s.tracks);
   // Suggestions become songs the player knows, so they play, queue and show like library songs.
@@ -46,6 +48,7 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
     else void addDiscoveredSong(song.candidate, song.kind);
   };
 
+  if (hideWhenEmpty && !loading && !songs.length) return null;
   return (
     <section className="discovery" aria-label={title}>
       <Shelf

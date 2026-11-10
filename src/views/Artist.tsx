@@ -65,7 +65,7 @@ function ArtistPage({ artist }: { artist: Artist }) {
           <TrackList ids={popular.slice(0, 10)} context={{ label: name, route }} showAlbum={false} sortable={false} />
         </>
       ) : null}
-      <DiscoveryShelf title="Popular" subtitle="Their best-known songs, from your library and online" queries={popularQueries(name, profiles)} limit={12} route={route} withOwned />
+      <DiscoveryShelf title="Popular" subtitle="Their best-known songs, from your library and online" queries={popularQueries(name, profiles)} limit={12} route={route} withOwned hideWhenEmpty />
       <Discography profiles={profiles} loading={metadata.loading} />
       <FansAlsoLike name={name} />
     </div>

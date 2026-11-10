@@ -7,6 +7,9 @@ import { Art, PlaylistArt, TrackArt } from "../components/Artwork";
 import { Card, PlayFab, Shelf } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { plural } from "../lib/format";
+import { hashString } from "../data/library";
+import { mixSeed, useMixes } from "../recommend/mixes";
+import { MixArt } from "../components/MixArt";
 import { isPlayable, navigate } from "../state/actions";
 import { ChooseFiles } from "../components/ChooseFiles";
 import { openTrackMenu } from "../lib/menus";
@@ -35,6 +38,16 @@ export function SearchView({ q }: { q: string }) {
   const albums = useStore((s) => s.albums);
   const playlists = useStore((s) => s.playlists);
   const needle = q.trim().toLowerCase();
+  const mixes = useMixes();
+  // Browse's artist tiles: the artists you play most that have a picture.
+  const topArtists = useMemo(() => {
+    const plays = new Map<string, number>();
+    for (const id of trackIds) {
+      const t = tracks[id];
+      if (t && !t.stream) plays.set(t.artistId, (plays.get(t.artistId) ?? 0) + t.plays + 1);
+    }
+    return [...plays].filter(([id]) => artists[id]?.image && id !== "ar_local").sort((a, b) => b[1] - a[1]).slice(0, 5).map(([id]) => artists[id]);
+  }, [trackIds, tracks, artists]);
 
   const results = useMemo(() => {
     if (!needle) return null;
@@ -96,6 +109,34 @@ export function SearchView({ q }: { q: string }) {
             <Art palette={{ a: "hsl(160 70% 50%)", b: "hsl(190 70% 40%)", c: "hsl(220 60% 25%)" }} icon="stats" className="browse-art" />
           </button>
         </div>
+        {mixes.length ? (
+          <>
+            <h2 className="section-title browse-section">Made for you</h2>
+            <div className="browse-grid">
+              {mixes.map((m) => (
+                <button key={m.id} type="button" className="browse-tile" style={{ "--h": mixSeed(m) % 360 } as CSSProperties} onClick={() => navigate({ name: "mix", id: m.id })}>
+                  <strong>{m.name}</strong>
+                  <span className="browse-sub">{m.kind === "weekly" ? "New every Monday" : m.kind === "repeat" ? "Your most-played lately" : "Updated daily"}</span>
+                  <MixArt mix={m} bare className="browse-art" />
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
+        {topArtists.length ? (
+          <>
+            <h2 className="section-title browse-section">Your artists</h2>
+            <div className="browse-grid">
+              {topArtists.map((a) => (
+                <button key={a.id} type="button" className="browse-tile" style={{ "--h": hashString(a.id) % 360 } as CSSProperties} onClick={() => navigate({ name: "artist", id: a.id })}>
+                  <strong>{a.name}</strong>
+                  <span className="browse-sub">Artist</span>
+                  <Art palette={a.palette} glyph={4} image={a.image} className="browse-art" />
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
       </div>
     );
   }
@@ -120,7 +161,13 @@ export function SearchView({ q }: { q: string }) {
         </div>
       ) : null}
       {/* Your own matches lead, as Spotify's top result and songs do; music found online follows. */}
-      {showMusic && !nothing ? <div className="search-top">
+      {showMusic && !nothing && !top && results.songs.length < 3 ? (
+        <section className="search-songs search-few">
+          <h2 className="section-title">In your library</h2>
+          <TrackList ids={results.songs} context={{ label: searchLabel(q), route: { name: "search", q } }} showAlbum={false} showAdded={false} sortable={false} />
+        </section>
+      ) : null}
+      {showMusic && !nothing && (top || results.songs.length >= 3) ? <div className="search-top">
         <section>
           <h2 className="section-title">Top result</h2>
           {top || topSong ? (
@@ -148,9 +195,9 @@ export function SearchView({ q }: { q: string }) {
           <TrackList ids={results.songs} context={{ label: searchLabel(q), route: { name: "search", q } }} showAdded={false} />
         </section>
       ) : null}
-      {/* Under "All", online artists only show when some are found. */}
-      {artistSearch && mode !== "music" ? <ExternalArtists query={q.trim()} showStatus={mode === "artists"} /> : null}
+      {/* Songs you can play come before artist cards; under "All", online artists only show when some are found. */}
       {showMusic ? <ExternalSearch query={q.trim()} /> : null}
+      {artistSearch && mode !== "music" ? <ExternalArtists query={q.trim()} showStatus={mode === "artists"} /> : null}
       {mode !== "music" && results.artists.length ? (
         <Shelf title="Artists in your library">
           {results.artists.map((a) => (

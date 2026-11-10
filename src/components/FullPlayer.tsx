@@ -51,7 +51,8 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
   const reduced = useReducedMotion();
   const menuOpen = useStore((s) => s.menu !== null);
   /** The side pane beside the player: the queue or the lyrics (each replaces the controls on narrow screens). */
-  const [pane, setPane] = useState<"queue" | "lyrics" | null>(null);
+  // A wide screen has room for what's next beside the art (as Apple Music and Tidal show), so it opens there.
+  const [pane, setPane] = useState<"queue" | "lyrics" | null>(() => (window.matchMedia("(min-width: 1280px)").matches ? "queue" : null));
   const queue = pane === "queue";
   const pulse = useRef<HTMLDivElement>(null);
   const close = () => setState({ fullPlayer: false });

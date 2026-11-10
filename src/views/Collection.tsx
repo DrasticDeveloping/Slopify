@@ -1,10 +1,10 @@
 import { creditLine } from "../lib/credits";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Art, PlaylistArt } from "../components/Artwork";
+import { Art, BlurredTrackArt, PlaylistArt } from "../components/Artwork";
 import { ChooseFiles } from "../components/ChooseFiles";
 import { Hero } from "../components/Hero";
 import { Icon } from "../components/Icon";
-import { PlayFab } from "../components/Shelf";
+import { Card, PlayFab, Shelf } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { PlaylistSuggestions } from "../components/PlaylistSuggestions";
 import { formatLongDuration, plural } from "../lib/format";
@@ -72,6 +72,7 @@ export function PlaylistView({ id }: { id: string }) {
   const playlist = useStore((s) => s.playlists.find((p) => p.id === id));
   const tracks = useStore((s) => s.tracks);
   const libraryCount = useStore((s) => libraryIds(s).length);
+  const profileName = useStore((s) => s.settings.profileName);
   const social = useSocial();
   const [q, setQ] = useState("");
   const ids = useMemo(() => playlist?.trackIds.filter((t) => tracks[t]) ?? [], [playlist, tracks]);
@@ -93,11 +94,15 @@ export function PlaylistView({ id }: { id: string }) {
         tint={playlist.palette.b}
         play={{ ids, label: playlist.name, route }}
         onTitleClick={editable ? () => openModal({ type: "editPlaylist", id }) : undefined}
-        meta={<><span className="avatar-dot">D</span><strong>You</strong><span>{plural(ids.length, "song")}</span>{total ? <span>{formatLongDuration(total)}</span> : null}</>}
+        meta={<><span className="avatar-dot">{(profileName || "You").slice(0, 1).toUpperCase()}</span><strong>{profileName || "You"}</strong><span>{plural(ids.length, "song")}</span>{total ? <span>{formatLongDuration(total)}</span> : null}</>}
       />
-      <div className="action-bar">
-        <PlayFab ids={ids} label={playlist.name} route={route} size="lg" />
-        <ShuffleToggle />
+      {ids.length || editable ? <div className="action-bar">
+        {ids.length ? (
+          <>
+            <PlayFab ids={ids} label={playlist.name} route={route} size="lg" />
+            <ShuffleToggle />
+          </>
+        ) : null}
         {editable ? (
           <button type="button" className="icon-btn lg" onClick={() => openModal({ type: "addSongs", playlistId: id })} aria-label="Add songs" title="Add songs">
             <Icon name="plus" size={24} />
@@ -118,14 +123,16 @@ export function PlaylistView({ id }: { id: string }) {
         </button>
         <span className="spacer" />
         {ids.length ? <Filter value={q} onChange={setQ} /> : null}
-      </div>
+      </div> : null}
       <TrackList
         ids={shown}
         context={{ label: playlist.name, route }}
         playlistId={id}
         reorderable={!q.trim()}
         empty={
-          q ? <Empty icon="search" title="No matches" body={`Nothing in “${playlist.name}” matches “${q}”.`} /> : (
+          q ? <Empty icon="search" title="No matches" body={`Nothing in “${playlist.name}” matches “${q}”.`} /> : id === "liked" && libraryCount ? (
+            <p className="muted liked-empty"><Icon name="heart" size={16} /> Songs you like will appear here.</p>
+          ) : (
             <Empty
               icon={playlist.system ? "heart" : "playlists"}
               title={playlist.system ? "Songs you like will appear here" : "Let's find something for your playlist"}
@@ -142,6 +149,7 @@ export function PlaylistView({ id }: { id: string }) {
         }
       />
       {editable && ids.length ? <PlaylistSuggestions id={id} name={playlist.name} seedIds={ids} /> : null}
+      {id === "liked" && !ids.length && !q ? <StarterSongs /> : null}
     </div>
   );
 }
@@ -151,6 +159,14 @@ export function AlbumView({ id }: { id: string }) {
   const artist = useStore((s) => (album ? s.artists[album.artistId] : undefined));
   const trackMap = useStore((s) => s.tracks);
   const ids = useMemo(() => Object.values(trackMap).filter((t) => t.albumId === id).map((t) => t.id), [trackMap, id]);
+  const albumMap = useStore((s) => s.albums);
+  // The artist's other albums in your library, so a single isn't a dead end.
+  const more = useMemo(() => {
+    if (!album) return [];
+    const seen = new Set<string>();
+    for (const t of Object.values(trackMap)) if (!t.stream && t.artistId === album.artistId && t.albumId !== id && albumMap[t.albumId]) seen.add(t.albumId);
+    return [...seen];
+  }, [trackMap, albumMap, album, id]);
   if (!album || !artist) return <Missing what="album" />;
   const route: Route = { name: "album", id };
   const total = ids.reduce((sum, t) => sum + (trackMap[t]?.duration ?? 0), 0);
@@ -162,8 +178,9 @@ export function AlbumView({ id }: { id: string }) {
         kind={ids.length < 3 ? "Single" : "Album"}
         title={album.title}
         tint={album.palette.b}
+        wash={ids[0] && album.artworkUrl ? <BlurredTrackArt trackId={ids[0]} /> : undefined}
         play={{ ids, label: album.title, route }}
-        meta={<><Art palette={artist.palette} round className="meta-avatar" /><button type="button" className="link strong" onClick={() => navigate({ name: "artist", id: artist.id })}>{artist.name}</button>{album.year ? <span>{album.year}</span> : null}<span>{plural(ids.length, "song")}, {formatLongDuration(total)}</span></>}
+        meta={<><Art palette={artist.palette} round className="meta-avatar" image={artist.image} /><button type="button" className="link strong" onClick={() => navigate({ name: "artist", id: artist.id })}>{artist.name}</button>{album.year ? <span>{album.year}</span> : null}<span>{plural(ids.length, "song")}, {formatLongDuration(total)}</span></>}
       />
       <div className="action-bar">
         <PlayFab ids={ids} label={album.title} route={route} size="lg" />
@@ -183,7 +200,29 @@ export function AlbumView({ id }: { id: string }) {
       </div>
       <TrackList ids={ids} context={{ label: album.title, route }} showAlbum={false} showAdded={false} sortable={false} />
       {album.released ? <p className="fine-print">Released {new Date(`${album.released}T12:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}</p> : null}
+      {more.length ? (
+        <Shelf title={`More by ${artist.name}`} action={<button type="button" className="text-btn" onClick={() => navigate({ name: "artist", id: artist.id })}>See artist</button>}>
+          {more.map((albumId) => {
+            const a = albumMap[albumId];
+            return <Card key={albumId} art={<Art palette={a.palette} glyph={a.glyph} image={a.artworkUrl} />} title={a.title} subtitle={a.year ? String(a.year) : artist.name} onOpen={() => navigate({ name: "album", id: albumId })} />;
+          })}
+        </Shelf>
+      ) : null}
     </div>
+  );
+}
+
+/** An empty Liked Songs: your most-played songs, each a heart away from being in it. */
+function StarterSongs() {
+  const tracks = useStore((s) => s.tracks);
+  const ids = useMemo(() => Object.values(tracks).filter((t) => !t.stream).sort((a, b) => b.plays - a.plays || b.addedAt - a.addedAt).slice(0, 8).map((t) => t.id), [tracks]);
+  if (!ids.length) return null;
+  return (
+    <section className="starter-songs">
+      <h2 className="section-title">Start with what you play most</h2>
+      <p className="muted small">Tap the heart on a song to add it to Liked Songs.</p>
+      <TrackList ids={ids} context={{ label: "Your library", route: { name: "library" } }} showAdded={false} sortable={false} />
+    </section>
   );
 }
 

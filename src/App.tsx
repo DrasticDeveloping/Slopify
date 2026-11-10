@@ -5,7 +5,7 @@ import { Icon } from "./components/Icon";
 import { ModalHost } from "./components/modals/ModalHost";
 import { PlayerBar } from "./components/PlayerBar";
 import { RightPanel, usePanel } from "./components/RightPanel";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, useLibraryRail } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { TopBar } from "./components/TopBar";
@@ -290,7 +290,7 @@ function useInertBackground() {
 export function App() {
   const route = useStore((s) => s.route);
   const panel = usePanel();
-  const collapsed = useStore((s) => s.sidebarCollapsed);
+  const collapsed = useLibraryRail().rail;
   const scroller = useRef<HTMLDivElement>(null);
   const [scrolled, setScrolled] = useState(false);
   const dropping = useFileDrop();
