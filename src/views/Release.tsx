@@ -6,9 +6,9 @@ import { PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { hashString, paletteFromSeed } from "../data/library";
 import { formatLongDuration, plural } from "../lib/format";
-import { fetchRelease, useReleaseTracks, type ReleaseDetail } from "../recommend/releases";
+import { fetchRelease, knownRelease, useReleaseTracks, type ReleaseDetail } from "../recommend/releases";
 import { openArtist } from "../recommend/artist";
-import { extendContext } from "../state/actions";
+import { extendContext, goBack, shufflePlay } from "../state/actions";
 import type { Route } from "../state/store";
 import { Empty } from "./Collection";
 
@@ -18,6 +18,7 @@ const TYPES: Record<string, string> = { album: "Album", single: "Single", ep: "E
 export function ReleaseView({ id }: { id: string }) {
   const [release, setRelease] = useState<ReleaseDetail | null>(null);
   const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let live = true;
     setRelease(null);
@@ -26,15 +27,51 @@ export function ReleaseView({ id }: { id: string }) {
     return () => {
       live = false;
     };
-  }, [id]);
+  }, [id, attempt]);
   const status = useReleaseTracks(release);
   const ids = useMemo(() => status.flatMap((s) => (s.state === "ready" ? [s.id] : [])), [status]);
   const route: Route = { name: "release", id };
   // Songs found after playback started join the queue, in album order.
   useEffect(() => extendContext(route, ids), [ids.join()]);
 
-  if (error) return <div className="view"><Empty icon="help" title="This release couldn't be loaded" body={error} /></div>;
-  if (!release) return <div className="view"><p className="muted" role="status">Loading…</p></div>;
+  if (!release) {
+    // Its cover and title from the shelf it was opened from, while its songs load (or if they can't).
+    const summary = knownRelease(id);
+    const friendly = /failed to fetch|networkerror|load failed/i.test(error) ? "The music catalog didn't answer." : error;
+    const retry = <button type="button" className="btn sm" onClick={() => setAttempt((n) => n + 1)}><Icon name="sync" size={15} />Try again</button>;
+    if (!summary) {
+      return (
+        <div className="view">
+          {error ? (
+            <Empty icon="music" title="This release couldn't be loaded" body={`${friendly} Your connection may have dropped, or the catalog is busy.`} action={<>{retry}<button type="button" className="btn ghost sm" onClick={goBack}>Go back</button></>} />
+          ) : <p className="muted release-loading" role="status"><span className="spinner" />Loading release…</p>}
+        </div>
+      );
+    }
+    const p = paletteFromSeed(hashString(summary.id));
+    return (
+      <div className="view">
+        <Hero
+          art={<Art palette={p} glyph={hashString(summary.id) % 6} image={summary.artwork} label={`${summary.title} cover`} />}
+          kind={TYPES[summary.type] ?? "Album"}
+          title={summary.title}
+          tint={p.b}
+          meta={<><button type="button" className="link strong" onClick={() => openArtist({ name: summary.artist })}>{summary.artist}</button><span>{summary.released.slice(0, 4)}</span></>}
+        />
+        {error ? (
+          <div className="inline-error" role="alert">
+            <Icon name="help" size={18} />
+            <span><strong>Couldn't load the songs</strong><small>{friendly}</small></span>
+            {retry}
+          </div>
+        ) : (
+          <div className="skeleton-list" role="status" aria-label="Loading songs">
+            {Array.from({ length: 5 }, (_, i) => <span key={i} className="sk sk-row" />)}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const seed = hashString(release.id);
   const palette = paletteFromSeed(seed);
@@ -62,9 +99,11 @@ export function ReleaseView({ id }: { id: string }) {
       />
       <div className="action-bar">
         <PlayFab ids={ids} label={release.title} route={route} size="lg" />
-        <a className="btn" href={release.sourceUrl} target="_blank" rel="noreferrer">
-          <Icon name="external" size={18} />
-          Deezer
+        <button type="button" className="icon-btn lg" disabled={!ids.length} onClick={() => shufflePlay(ids, { label: release.title, route })} aria-label={`Shuffle ${release.title}`} title="Shuffle play">
+          <Icon name="shuffle" size={24} />
+        </button>
+        <a className="icon-btn lg" href={release.sourceUrl} target="_blank" rel="noreferrer" aria-label="Open in Deezer" title="Open in Deezer">
+          <Icon name="external" size={22} />
         </a>
       </div>
       <TrackList ids={ids} context={{ label: release.title, route }} showAlbum={false} showAdded={false} sortable={false} empty={finding ? <p className="muted" role="status">Finding these songs…</p> : null} />

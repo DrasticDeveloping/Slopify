@@ -1,11 +1,14 @@
 import { creditLine } from "../lib/credits";
 import { useMemo, useState, type CSSProperties } from "react";
 import { Art, TrackArt } from "../components/Artwork";
+import { Icon } from "../components/Icon";
 import { recentDays } from "../data/library";
 import { formatLongDuration, plural, todayKey } from "../lib/format";
 import { navigate, playList } from "../state/actions";
 import { Empty } from "./Collection";
 import { useStore } from "../state/store";
+import { useMediaQuery } from "../lib/hooks";
+import { allTimePlays, topArtistPlays } from "../lib/plays";
 
 const RANGES = [7, 30, 90] as const;
 
@@ -158,6 +161,7 @@ function StatsView() {
 
   // When and what: each play's heard time in the chosen range (the history keeps the latest 500 plays).
   const listens = useStore((s) => s.taste.listens);
+  const touch = useMediaQuery("(hover: none) and (pointer: coarse)");
   const since = new Date(`${days[0].date}T00:00:00`).getTime();
   const detail = useMemo(() => {
     const hours = Array<number>(24).fill(0);
@@ -187,19 +191,47 @@ function StatsView() {
   const busiestHour = detail.hours.indexOf(Math.max(...detail.hours));
   const maxSong = detail.bySong[0]?.[1].seconds || 1;
 
-  const topTracks = useMemo(() => Object.values(tracks).sort((a, b) => b.plays - a.plays).slice(0, 5), [tracks]);
-  const topArtists = useMemo(() => {
-    const plays: Record<string, number> = {};
-    for (const t of Object.values(tracks)) plays[t.artistId] = (plays[t.artistId] ?? 0) + t.plays;
-    return Object.entries(plays).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  }, [tracks]);
+  // All-time plays: a song's play counter, or its plays in the listening history if that has more
+  // (songs found online count only there), so the rankings agree with the songs list above.
+  const allPlays = useMemo(() => allTimePlays(tracks, listens), [tracks, listens]);
+  const playsOf = (id: string) => allPlays.get(id) ?? 0;
+  const topTracks = useMemo(() => Object.values(tracks).filter((t) => playsOf(t.id) > 0).sort((a, b) => playsOf(b.id) - playsOf(a.id)).slice(0, 5), [tracks, allPlays]);
+  const topArtists = useMemo(() => topArtistPlays(tracks, allPlays, 5), [tracks, allPlays]);
   const maxArtistPlays = topArtists[0]?.[1] || 1;
 
   const fmtDay = (iso: string, opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" }) => new Date(`${iso}T12:00:00`).toLocaleDateString("en", opts);
   const labelEvery = range === 7 ? 1 : range === 30 ? 7 : 15;
 
+  const leadArtist = topArtists[0] ? artists[topArtists[0][0]] : undefined;
+  const leadSong = topTracks[0];
   return (
     <>
+      {leadArtist || leadSong ? (
+        // A recap first, like Spotify Wrapped's cards: who and what you've played most, with their pictures.
+        <section className="recap" aria-label="Your top picks">
+          {leadArtist ? (
+            <button type="button" className="recap-card artist" onClick={() => navigate({ name: "artist", id: leadArtist.id })}>
+              <Art palette={leadArtist.palette} glyph={4} image={leadArtist.image} className="recap-bg" />
+              <span className="recap-copy">
+                <span className="spot-eyebrow">Your top artist</span>
+                <strong>{leadArtist.name}</strong>
+                <small>{plural(topArtists[0][1], "play")} all time</small>
+              </span>
+            </button>
+          ) : null}
+          {leadSong ? (
+            <button type="button" className="recap-card song" onClick={() => playList(topTracks.map((x) => x.id), leadSong.id, { label: "Top songs", route: { name: "history" } })}>
+              <TrackArt trackId={leadSong.id} className="recap-bg" />
+              <span className="recap-copy">
+                <span className="spot-eyebrow">Your top song</span>
+                <strong>{leadSong.title}</strong>
+                <small>{creditLine(leadSong, artists)} · {plural(playsOf(leadSong.id), "play")}</small>
+              </span>
+              <span className="play-fab md recap-fab" aria-hidden="true"><Icon name="play" size={20} /></span>
+            </button>
+          ) : null}
+        </section>
+      ) : null}
       <div className="stats-bar">
         <p className="muted">{fmtDay(days[0].date)} – {fmtDay(days[days.length - 1].date)}</p>
         <div className="segmented sm" role="group" aria-label="Time range">
@@ -221,7 +253,7 @@ function StatsView() {
       <section className="panel chart-panel" aria-labelledby="minutes-title">
         <div className="chart-head">
           <h2 id="minutes-title">Minutes listened per day</h2>
-          <span className="muted small">Hover or focus a bar for details</span>
+          <span className="muted small">{touch ? "Tap a bar for details" : "Hover or focus a bar for details"}</span>
         </div>
         <div className="chart" style={{ "--n": days.length } as CSSProperties}>
           <div className="chart-grid" aria-hidden="true">
@@ -312,7 +344,7 @@ function StatsView() {
 
       <div className="two-col">
         <section className="panel">
-          <h2 className="panel-title">Top songs</h2>
+          <h2 className="panel-title">Top songs <span className="muted small">All time</span></h2>
           <ol className="rank-list">
             {topTracks.map((t, i) => (
               <li key={t.id}>
@@ -323,13 +355,13 @@ function StatsView() {
                   <span className="t-name">{t.title}</span>
                   <span className="t-sub">{creditLine(t, artists)}</span>
                 </span>
-                <span className="muted small">{plural(t.plays, "play")}</span>
+                <span className="muted small">{plural(playsOf(t.id), "play")}</span>
               </li>
             ))}
           </ol>
         </section>
         <section className="panel">
-          <h2 className="panel-title">Top artists</h2>
+          <h2 className="panel-title">Top artists <span className="muted small">All time</span></h2>
           <ol className="rank-list">
             {topArtists.map(([id, plays], i) => {
               const a = artists[id];
@@ -338,7 +370,7 @@ function StatsView() {
                 <li key={id}>
                   <span className="rank">{i + 1}</span>
                   <button type="button" className="rank-hit" onClick={() => navigate({ name: "artist", id })} aria-label={`Open ${a.name}`} />
-                  <Art palette={a.palette} glyph={4} round className="row-art" />
+                  <Art palette={a.palette} glyph={4} round image={a.image} className="row-art" />
                   <span className="title-text">
                     <span className="t-name">{a.name}</span>
                     <span className="mini-bar"><i style={{ "--w": plays / maxArtistPlays } as CSSProperties} /></span>

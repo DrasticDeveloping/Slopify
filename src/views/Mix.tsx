@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Art } from "../components/Artwork";
+import { BlurredTrackArt } from "../components/Artwork";
+import { MixArt } from "../components/MixArt";
 import { Hero } from "../components/Hero";
 import { PlayFab } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { paletteFromSeed } from "../data/library";
 import { fillMix, mixIds, mixSeed, mixSongs, useMixes, type Mix } from "../recommend/mixes";
 import { registerStreams } from "../state/importer";
+import { shufflePlay } from "../state/actions";
+import { Icon } from "../components/Icon";
 import { useStore, type Route } from "../state/store";
 import { Missing } from "./Collection";
 
@@ -18,6 +21,7 @@ function emptyText(mix: Mix, loading: boolean) {
 export function MixView({ id }: { id: string }) {
   const mix = useMixes().find((m) => m.id === id);
   const tracks = useStore((s) => s.tracks);
+  const albums = useStore((s) => s.albums);
   const tasteRev = useStore((s) => s.taste.rev);
   const [loading, setLoading] = useState(false);
 
@@ -40,24 +44,29 @@ export function MixView({ id }: { id: string }) {
   if (!mix) return <Missing what="mix" />;
   const route: Route = { name: "mix", id };
   const palette = paletteFromSeed(mixSeed(mix));
+  const washId = mix.libraryIds.find((t) => tracks[t] && albums[tracks[t].albumId]?.artworkUrl);
   return (
     <div className="view">
       <Hero
-        art={<Art palette={palette} glyph={mix.kind === "weekly" ? 5 : 2} />}
+        art={<MixArt mix={mix} bare />}
         kind="Made for you"
         title={mix.name}
         description={mix.description}
         tint={palette.b}
+        wash={washId ? <BlurredTrackArt trackId={washId} /> : undefined}
         meta={
           <>
             <span>{ids.length} songs</span>
-            <span>Next edition {new Date(mix.expires).toLocaleDateString()}</span>
+            <span>New edition {new Date(mix.expires).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}</span>
           </>
         }
         play={{ ids, label: mix.name, route }}
       />
       <div className="action-bar">
         <PlayFab ids={ids} label={mix.name} route={route} size="lg" />
+        <button type="button" className="icon-btn lg" disabled={!ids.length} onClick={() => shufflePlay(ids, { label: mix.name, route })} aria-label={`Shuffle ${mix.name}`} title="Shuffle play">
+          <Icon name="shuffle" size={24} />
+        </button>
         <span className="muted">{loading ? "Finding songs for this edition…" : mix.note}</span>
       </div>
       <TrackList ids={ids} context={{ label: mix.name, route }} sortable={false} empty={<p className="mix-empty muted">{emptyText(mix, loading)}</p>} />

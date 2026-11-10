@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useState, type CSSProperties, type ReactNode, useRef } from "react";
 import { isNativeApp, ThisDevice, thisDevice } from "../../lib/native";
 import { plural } from "../../lib/format";
 import { rovingKey } from "../../lib/roving";
@@ -461,6 +461,13 @@ function installDescription(pwa: { installed: boolean; canInstall: boolean }) {
 
 export function SettingsModal({ initial }: { initial?: SettingsTab }) {
   const [tab, setTab] = useState<SettingsTab>(initial ?? "general");
+  const nav = useRef<HTMLElement>(null);
+  // On a phone the tabs are one scrolling row: the open one is kept in view (only the row scrolls).
+  useEffect(() => {
+    const row = nav.current;
+    const on = row?.querySelector<HTMLElement>("button.on");
+    if (row && on && row.scrollWidth > row.clientWidth) row.scrollTo({ left: on.offsetLeft - (row.clientWidth - on.offsetWidth) / 2, behavior: "smooth" });
+  }, [tab]);
   const settings = useStore((s) => s.settings);
   const pwa = usePwa();
   const status = useStore((s) => s.server.status);
@@ -480,9 +487,15 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
   return (
     <Shell title="Settings" subtitle="Kept in step through your music server" size="xl" className="settings-modal">
       <div className="settings-layout">
-        <nav className="settings-nav" aria-label="Settings sections">
+        <nav className="settings-nav" aria-label="Settings sections" ref={nav}>
           {tabs.map(([id, label, icon]) => (
-            <button key={id} type="button" className={tab === id ? "on" : ""} aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)}>
+            <button
+              key={id}
+              type="button"
+              className={tab === id ? "on" : ""}
+              aria-current={tab === id ? "page" : undefined}
+              onClick={() => setTab(id)}
+            >
               <Icon name={icon} size={18} />
               {label}
             </button>

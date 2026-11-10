@@ -29,29 +29,23 @@ function ReleaseCard({ release, subtitle }: { release: Release; subtitle: string
 
 /** Release Radar and Albums for you, from the music catalog. Nothing shows until there's something to show. */
 export function ReleaseShelves() {
-  const { shelves, loading, error } = useReleaseShelves();
+  const { shelves, loading } = useReleaseShelves();
   if (!shelves) {
-    if (!loading && !error) return null;
+    if (!loading) return null;
     return (
       <Shelf title="Release Radar" subtitle="New music from artists you play">
-        {loading ? <SkeletonCards label="Looking for new releases…" /> : <p className="muted shelf-empty" role="status">{error}</p>}
+        <SkeletonCards label="Looking for new releases…" />
       </Shelf>
     );
   }
-  // Nothing at all, and some artists couldn't be looked up: that's the catalog failing, not a quiet week.
-  if (shelves.partial && !shelves.radar.length && !shelves.albums.length) {
-    return (
-      <Shelf title="Release Radar" subtitle="New music from artists you play">
-        <p className="muted shelf-empty" role="status">The music catalog couldn't be reached. Try again later.</p>
-      </Shelf>
-    );
-  }
+  // Nothing at all (the catalog failing, or a quiet week): Home moves on to what it has.
   return (
     <>
-      <Shelf title="Release Radar" subtitle="New music from artists you play, from the last eight weeks">
-        {shelves.radar.map((r) => <ReleaseCard key={r.id} release={r} subtitle={`${TYPES[r.type] ?? "Release"} · ${r.artist} · ${since(r.released)}`} />)}
-        {!shelves.radar.length ? <p className="muted shelf-empty">Nothing new from your artists lately. Check back soon.</p> : null}
-      </Shelf>
+      {shelves.radar.length ? (
+        <Shelf title="Release Radar" subtitle="New music from artists you play, from the last eight weeks">
+          {shelves.radar.map((r) => <ReleaseCard key={r.id} release={r} subtitle={`${TYPES[r.type] ?? "Release"} · ${r.artist} · ${since(r.released)}`} />)}
+        </Shelf>
+      ) : null}
       {shelves.albums.length ? (
         <Shelf title="Albums for you" subtitle="Albums by artists you play, and by artists like them">
           {shelves.albums.map((r) => <ReleaseCard key={r.id} release={r} subtitle={`${r.artist} · ${r.released.slice(0, 4)}`} />)}

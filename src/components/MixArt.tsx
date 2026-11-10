@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { paletteFromSeed } from "../data/library";
 import { mixSeed, mixSongs, type Mix } from "../recommend/mixes";
 import { useStore } from "../state/store";
@@ -34,7 +34,8 @@ export function useMixFaces(mix: Mix) {
       if (t) add(albums[t.albumId]?.artworkUrl, artists[t.artistId]?.name);
     }
     for (const song of mixSongs(mix)) add(song.artwork, song.artist);
-    return { images: images.slice(0, 4), names };
+    // A few spare covers, so one that won't load can be swapped out of a collage.
+    return { images: images.slice(0, 8), names };
   }, [mix, tracks, albums, artists]);
 }
 
@@ -50,15 +51,24 @@ export function featuring(names: string[], max = 3) {
  * with a band in the mix's colour carrying its name, as Spotify's Daily Mix covers do.
  * `bare` leaves the name off (where the name is set beside the cover).
  */
+/** Covers that failed to load this session, so no collage shows a broken image (some sources expire). */
+const failedCovers = new Set<string>();
+
 export function MixArt({ mix, bare, className }: { mix: Mix; bare?: boolean; className?: string }) {
-  const { images } = useMixFaces(mix);
+  const faces = useMixFaces(mix).images;
+  const [, setFailures] = useState(0);
+  const images = faces.filter((src) => !failedCovers.has(src)).slice(0, 4);
+  const fail = (src: string) => {
+    failedCovers.add(src);
+    setFailures((n) => n + 1);
+  };
   const palette = paletteFromSeed(mixSeed(mix));
   const glyph = mix.kind === "weekly" ? 5 : 2;
   return (
     <div className={`mix-cover${className ? ` ${className}` : ""}`} style={{ "--band": palette.b, "--band-2": palette.c } as CSSProperties}>
       {images.length >= 4 ? (
         <div className="mix-collage" aria-hidden="true">
-          {images.map((src) => <img key={src} src={src} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" />)}
+          {images.map((src) => <img key={src} src={src} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => fail(src)} />)}
         </div>
       ) : (
         <Art palette={palette} glyph={glyph} image={images[0]} />

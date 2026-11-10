@@ -886,10 +886,12 @@ let again = false;
 /** The sync failure last told, so each problem is said once rather than on every try. Cleared by a sync that works. */
 let toldError = "";
 function syncFailed(error: unknown) {
-  const message = error instanceof Error ? error.message : "Couldn't reach your music server.";
+  const raw = error instanceof Error ? error.message : "";
+  // The browser's own wording for a dropped connection ("Failed to fetch") says nothing useful.
+  const message = !raw || /failed to fetch|networkerror|load failed/i.test(raw) ? "Your music server didn't answer. Changes stay here and sync when it's back." : raw;
   if (message === toldError) return;
   toldError = message;
-  toast("Couldn't sync your library", { tone: "error", detail: message, duration: 8000 });
+  toast("Couldn't sync your library", { tone: "error", detail: message, duration: 6000 });
 }
 
 /** Brings this browser and the server into step: fetch, merge, save, and save again if someone else saved meanwhile. */

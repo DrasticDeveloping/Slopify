@@ -74,10 +74,12 @@ export function ServerView() {
         <div className="server-id">
           <span className="status-orb connected" aria-hidden="true" />
           <div>
-            <span className="eyebrow">Connected · {downloadMode === "stream_only" ? "Stream only" : "Device copies"} · Songs saved as links</span>
+            <span className="eyebrow">Connected</span>
+            <h1 className="server-title">Music server</h1>
             <button type="button" className="server-url" onClick={() => openModal({ type: "settings", tab: "server" })} title="Connection settings">
               <span className="server-url-text">{url.replace(/^https?:\/\//, "")}</span>
-              <Icon name="edit" size={16} />
+              <span className="server-mode">· {downloadMode === "stream_only" ? "Streams only" : "Keeps copies on this device"}</span>
+              <Icon name="edit" size={14} />
             </button>
           </div>
         </div>
@@ -148,11 +150,10 @@ export function ServerView() {
                   <span className="t-name">{current ? <Bars paused={!isPlaying} /> : null}{t.title}</span>
                   <span className="t-sub">{creditLine(t, artists)}</span>
                 </span>
-                <span className="album-col muted">{albums[t.albumId]?.title}</span>
                 <span className="dur muted">{formatTime(t.duration)}</span>
                 <span className="status-col">
                   {t.storage === "downloads" ? (
-                    <span className="status-chip ok"><Icon name="downloaded" size={15} />On device</span>
+                    <span className="status-done" title="On this device" aria-label="On this device"><Icon name="downloaded" size={17} /></span>
                   ) : progress !== undefined ? (
                     <span className="status-chip"><span className="ring" style={{ "--p": progress } as CSSProperties} />{Math.round(progress * 100)}%</span>
                   ) : canDownload ? (

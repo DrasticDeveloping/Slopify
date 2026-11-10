@@ -616,7 +616,7 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
 }
 
 /** Starts playing `ids` from `startId`, remembering where playback came from. */
-export function playList(ids: string[], startId?: string, ctx?: { label: string; route?: Route; picks?: Record<string, ReasonKind>; radioKey?: string }) {
+export function playList(ids: string[], startId?: string, ctx?: { label: string; route?: Route; picks?: Record<string, ReasonKind>; radioKey?: string }, opts: { shuffle?: boolean } = {}) {
   const s = getState();
   if (listenLocked()) return;
   const playable = ids.filter((id) => isPlayable(s.tracks[id], s));
@@ -630,12 +630,15 @@ export function playList(ids: string[], startId?: string, ctx?: { label: string;
     toast(playable.length === 1 ? "This song is snoozed" : "Every song here is snoozed", { detail: "Play one yourself, or stop snoozing them from its menu." });
     return;
   }
-  const first = startId && playable.includes(startId) ? startId : s.shuffle ? awake[Math.floor(Math.random() * awake.length)] : awake[0];
-  const order = s.shuffle ? shuffled(playable, first) : playable;
+  // Shuffle play turns shuffle on with the new order, only once there's something to play.
+  const shuffle = s.shuffle || Boolean(opts.shuffle);
+  const first = startId && playable.includes(startId) ? startId : shuffle ? awake[Math.floor(Math.random() * awake.length)] : awake[0];
+  const order = shuffle ? shuffled(playable, first) : playable;
   setState({
     context: { label: ctx?.label ?? "Library", route: ctx?.route, ids: playable, picks: ctx?.picks, radioKey: ctx?.radioKey },
     order,
     index: order.indexOf(first),
+    ...(shuffle !== s.shuffle ? { shuffle } : {}),
   });
   load(first);
 }
@@ -753,6 +756,15 @@ function peekNext(s: AppState) {
 
 export function nextTrackId() {
   return peekNext(getState())?.id ?? null;
+}
+
+/** Plays exactly the song nextTrackId() names (a "Next up" card), never a slip-in in front of it. */
+export function playPreviewedNext() {
+  const s = getState();
+  const n = peekNext(s);
+  if (!n) return;
+  if (n.upNextSkip > 0 && s.upNext[n.upNextSkip - 1] === n.id) jumpToUpNext(n.upNextSkip - 1);
+  else jumpToOrderIndex(n.index);
 }
 
 function stopAtEnd(s: AppState) {
@@ -905,6 +917,14 @@ export function playNext(ids: string[]) {
   if (!ok.length) return;
   setState({ upNext: [...ok, ...s.upNext] });
   toast(ok.length === 1 ? "Playing next" : `${ok.length} songs playing next`, { tone: "success" });
+}
+
+/**
+ * Shuffle play (a collection's shuffle button): turns shuffle on and plays the collection from a random song,
+ * so songs that join it later (a release still finding its songs) are added to the shuffled order, not reset it.
+ */
+export function shufflePlay(ids: string[], ctx: { label: string; route?: Route }) {
+  playList(ids, undefined, ctx, { shuffle: true });
 }
 
 export function toggleShuffle() {

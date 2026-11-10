@@ -89,7 +89,7 @@ export function SearchView({ q }: { q: string }) {
           </div>
           <div className="browse-files">
             <ChooseFiles label="Add local files" note={false} />
-            <span className="browse-files-note">Cleared when you reload</span>
+            <span className="browse-files-note">Play here until you reload</span>
           </div>
         </header>
         <div className="browse-grid">

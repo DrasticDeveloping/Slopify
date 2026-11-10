@@ -11,6 +11,7 @@ import { DiscoveryShelf } from "../components/DiscoveryShelf";
 import { ReleaseShelves } from "../components/ReleaseShelves";
 import { Card, PlayFab, Shelf, useContextPlaying } from "../components/Shelf";
 import { greeting, plural } from "../lib/format";
+import { allTimePlays, topArtistPlays } from "../lib/plays";
 import { useMediaQuery } from "../lib/hooks";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
 import { hasTaste } from "../recommend/rank";
@@ -154,11 +155,9 @@ export function HomeView() {
     return out;
   }, [history, currentId, tracks, albums, library]);
 
-  const topArtists = useMemo(() => {
-    const plays: Record<string, number> = {};
-    for (const t of library) plays[t.artistId] = (plays[t.artistId] ?? 0) + t.plays;
-    return Object.keys(plays).filter((id) => artists[id] && id !== "ar_local").sort((a, b) => plays[b] - plays[a]).slice(0, 10);
-  }, [library, artists]);
+  // The same all-time ranking as Your stats.
+  const listens = useStore((s) => s.taste.listens);
+  const topArtists = useMemo(() => topArtistPlays(tracks, allTimePlays(tracks, listens), 10).map(([id]) => id).filter((id) => artists[id]), [tracks, listens, artists]);
 
   const featured = mixes.find((m) => m.kind === "weekly") ?? mixes[0];
   // Not the album that's playing: that's already in the player bar (and the Now Playing panel).
@@ -247,10 +246,10 @@ export function HomeView() {
           {!forYou.length ? <p className="muted shelf-empty">Nothing to suggest yet. Add songs, or bring back hidden ones in Settings → Recommendations.</p> : null}
         </Shelf>
       ) : (
-        <DiscoveryShelf title="Recommended for you" subtitle="New songs picked from what you play, none of them in your library yet. Play any of them in full, or add it to your library." />
+        <DiscoveryShelf title="Recommended for you" subtitle="New songs picked from what you play, none of them in your library yet. Play any of them in full, or add it to your library." hideWhenEmpty />
       )}
 
-      {includeLibrary ? <DiscoveryShelf /> : null}
+      {includeLibrary ? <DiscoveryShelf hideWhenEmpty /> : null}
 
       {recent.length ? <ReleaseShelves /> : null}
 

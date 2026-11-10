@@ -25,10 +25,12 @@ interface Props {
   withOwned?: boolean;
   /** Leave the shelf out entirely once a search finds nothing (rather than saying so). */
   hideWhenEmpty?: boolean;
+  /** Keep this subtitle even when every song gives the same reason (an artist's Popular shelf, where it'd only repeat the title). */
+  fixedSubtitle?: boolean;
 }
 
 /** Songs outside the library, as cards that play in full, and can be dismissed or added to the library. */
-export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false }: Props) {
+export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false, fixedSubtitle = false }: Props) {
   const { songs, loading, note, refresh } = useDiscovery(title, { queries, limit, withOwned });
   const tracks = useStore((s) => s.tracks);
   // Suggestions become songs the player knows, so they play, queue and show like library songs.
@@ -53,7 +55,7 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
     <section className="discovery" aria-label={title}>
       <Shelf
         title={title}
-        subtitle={shared ? shared.replace(/ also play this\b/u, " also play these") : subtitle}
+        subtitle={shared && !fixedSubtitle ? shared.replace(/ also play this\b/u, " also play these") : subtitle}
         action={
           <>
             <button type="button" className="text-btn" disabled={!ids.length} onClick={() => playList(ids, ids[0], context)}>Play all</button>
