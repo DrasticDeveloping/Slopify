@@ -3,6 +3,7 @@ import { ContextMenu } from "./components/ContextMenu";
 import { FullPlayer } from "./components/FullPlayer";
 import { Icon } from "./components/Icon";
 import { ModalHost } from "./components/modals/ModalHost";
+import { ConfirmHost } from "./components/modals/Confirm";
 import { PlayerBar } from "./components/PlayerBar";
 import { RightPanel, usePanel } from "./components/RightPanel";
 import { Sidebar, useLibraryRail } from "./components/Sidebar";
@@ -11,7 +12,7 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { TopBar } from "./components/TopBar";
 import { activeCustomTheme, builtinThemes, onAccent } from "./state/themes";
 import {
-  closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume, takeScrollRestore, trackScroll,
+  answerConfirm, closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume, takeScrollRestore, trackScroll,
   toggleLike, toggleMute, togglePlay, cycleShuffle, wireEngine,
 } from "./state/actions";
 import { prepareMixes } from "./recommend/mixes";
@@ -152,7 +153,8 @@ function useShortcuts() {
         return;
       }
       if (e.key === "Escape") {
-        if (s.menu) closeMenu();
+        if (s.confirm) answerConfirm(false);
+        else if (s.menu) closeMenu();
         else if (s.modal) closeModal();
         else if (s.fullPlayer && document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
         else if (s.fullPlayer) setState({ fullPlayer: false });
@@ -279,12 +281,15 @@ const mobileTabs: Array<{ route: Route; label: string; icon: string }> = [
 function useInertBackground() {
   const full = useStore((s) => s.fullPlayer);
   const modal = useStore((s) => Boolean(s.modal));
+  const confirm = useStore((s) => Boolean(s.confirm));
   const panel = useStore((s) => s.panel);
   useEffect(() => {
-    const blocked = full || modal;
+    const blocked = full || modal || confirm;
     document.querySelectorAll(".sidebar, .main, .right-panel, .playerbar, .mobile-nav").forEach((el) => el.toggleAttribute("inert", blocked));
-    document.querySelector(".full-player")?.toggleAttribute("inert", modal);
-  }, [full, modal, panel]);
+    document.querySelector(".full-player")?.toggleAttribute("inert", modal || confirm);
+    // A question asked from inside a dialog sits above it.
+    document.querySelector(".modal-layer:not(.confirm-layer)")?.toggleAttribute("inert", confirm);
+  }, [full, modal, confirm, panel]);
 }
 
 export function App() {
@@ -396,6 +401,7 @@ export function App() {
       </nav>
       <FullPlayer />
       <ModalHost />
+      <ConfirmHost />
       <ContextMenu />
       <Toasts />
       <UpdateBanner />

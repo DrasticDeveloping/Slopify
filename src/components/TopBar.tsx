@@ -50,17 +50,20 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
   const shownProfile = useRef<{ el: HTMLElement; menu: MenuState } | null>(null);
   const profileMenu = (el: HTMLElement) => {
     const r = el.getBoundingClientRect();
+    const shownName = account.status === "signedIn" ? account.profile?.displayName ?? name : name;
     const menu: MenuState = {
       x: r.right - 240,
       y: r.bottom + 8,
+      // Signed out, no initial: the menu is saying no account is signed in.
+      art: avatar ? { image: avatar, round: true } : account.status === "signedIn" || account.status === "disabled" ? { initial: (shownName || "Y").slice(0, 1).toUpperCase(), round: true } : { icon: "user", round: true },
       // Signed out, the name is only this device's: say plainly that no account is signed in.
       title: account.status === "signedIn" ? account.profile?.displayName ?? name ?? "You" : account.status === "disabled" ? name || "You" : "Not signed in",
       subtitle: account.status === "signedIn"
         ? account.profile?.username ? `@${account.profile.username}` : account.email ?? "Signed in"
         : account.status === "loading" ? "Checking your account…"
-        : account.status === "signedOut" ? account.error ?? "Sign in to sync your library and add friends" : `On ${thisDevice}`,
+        : account.status === "signedOut" ? account.error ?? "Sync your library and add friends" : `On ${thisDevice}`,
       items: [
-        ...(account.status === "signedOut" ? [{ label: "Sign in", icon: "user", run: signIn }, { separator: true }] : []),
+        ...(account.status === "signedOut" ? [{ label: "Sign in", icon: "user", accent: true, run: signIn }, { separator: true }] : []),
         ...(cloudEnabled ? [{ label: "Friends", icon: "users", run: () => navigate({ name: "friends" }) }] : []),
         { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
         { label: "Song storage", icon: "storage", run: () => navigate({ name: "storage" }) },

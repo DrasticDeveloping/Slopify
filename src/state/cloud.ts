@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { thisDevice } from "../lib/native";
-import { toast } from "./actions";
+import { toast, ask } from "./actions";
 import { checkForUpdates } from "./desktop";
 import { flushPersist, getState, setState } from "./store";
 
@@ -98,9 +98,11 @@ export function clerkUnavailable() {
 }
 export function signIn() {
   if (clerkReady && !clerkFailed) return void clerk?.openSignIn();
-  if (!window.confirm("Slopify's sign-in couldn't load, probably because the connection dropped. Reload Slopify to try again?")) return;
-  flushPersist();
-  location.reload();
+  void ask({ title: "Sign-in couldn't load", body: "Probably because the connection dropped. Reload Slopify to try again? Your music and playlists are kept.", confirmLabel: "Reload", icon: "sync" }).then((ok) => {
+    if (!ok) return;
+    flushPersist();
+    location.reload();
+  });
 }
 export const manageAccount = () => clerk?.openUserProfile();
 export async function signOut() {

@@ -9,7 +9,7 @@ export function Toasts() {
     <div className="toasts" role="status" aria-live="polite">
       {toasts.map((t) => (
         <div key={t.id} className={`toast ${t.tone ?? "default"}`}>
-          {t.tone === "success" ? <Icon name="checkCircle" size={20} className="toast-icon" /> : t.tone === "error" ? <Icon name="help" size={20} className="toast-icon" /> : null}
+          {t.tone === "success" ? <Icon name="checkCircle" size={20} className="toast-icon" /> : t.tone === "error" ? <Icon name="help" size={20} className="toast-icon" /> : t.progress !== undefined ? <Icon name="download" size={20} className="toast-icon" /> : null}
           <div className="toast-body">
             <strong>{t.message}</strong>
             {t.detail ? <small>{t.detail}</small> : null}

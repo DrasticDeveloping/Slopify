@@ -1,9 +1,11 @@
 import { useState } from "react";
-import { closeModal } from "../../state/actions";
+import { closeModal, ask } from "../../state/actions";
 import { signIn, useAccount } from "../../state/cloud";
 import { copyText, sendShared, sharePlaylist, shareLink, shareOf, stopSharing, useSocial } from "../../state/social";
 import { useStore } from "../../state/store";
+import { PlaylistArt } from "../Artwork";
 import { Icon } from "../Icon";
+import { plural } from "../../lib/format";
 import { Shell, Toggle } from "./Shell";
 
 /** Share a playlist: its link, whether friends see it on your profile, sending it to friends, and stopping. */
@@ -17,12 +19,24 @@ export function ShareModal({ id }: { id: string }) {
 
   if (!playlist) return null;
   const title = `Share “${playlist.name}”`;
+  // The dialog shows what's being shared, washed in its colour.
+  const look = { art: <PlaylistArt playlist={playlist} />, tint: playlist.palette.b };
 
   if (account.status !== "signedIn") {
     return (
-      <Shell title={title} icon="link" size="sm">
-        <p className="muted">{account.status === "disabled" ? "Sharing needs Slopify's online service, which this copy of Slopify isn't set up with." : "Sign in to share playlists with a link or with your friends."}</p>
-        {account.status !== "disabled" ? <div className="form-actions"><button type="button" className="btn primary" disabled={account.status === "loading"} onClick={signIn}>Sign in</button></div> : null}
+      <Shell title={title} subtitle={`Playlist · ${plural(playlist.trackIds.length, "song")}`} {...look} size="sm">
+        <ul className="feature-rows">
+          <li><span className="feature-icon"><Icon name="link" size={17} /></span><span><strong>One link, always current</strong><small>Anyone signed in to Slopify can play and follow it.</small></span></li>
+          <li><span className="feature-icon"><Icon name="user" size={17} /></span><span><strong>On your profile</strong><small>Friends can find it there, if you choose.</small></span></li>
+          <li><span className="feature-icon"><Icon name="users" size={17} /></span><span><strong>Send it to friends</strong><small>It lands in their Slopify, ready to play.</small></span></li>
+        </ul>
+        {account.status === "disabled" ? (
+          <p className="muted small">Sharing needs Slopify's online service, which this copy of Slopify isn't set up with.</p>
+        ) : (
+          <div className="form-actions">
+            <button type="button" className="btn primary wide" disabled={account.status === "loading"} onClick={signIn}><Icon name="user" size={17} />Sign in to share</button>
+          </div>
+        )}
       </Shell>
     );
   }
@@ -38,11 +52,11 @@ export function ShareModal({ id }: { id: string }) {
 
   if (!share) {
     return (
-      <Shell title={title} subtitle="Anyone signed in to Slopify with the link can play and follow it." icon="link" size="sm">
-        <ul className="share-points muted small">
-          <li>It stays up to date: changes you make here show for everyone.</li>
-          <li>Only you can change it. Others can follow it or save their own copy.</li>
-          <li>Songs that are only files on this device aren't shared.</li>
+      <Shell title={title} subtitle="Anyone signed in to Slopify with the link can play and follow it." {...look} size="sm">
+        <ul className="feature-rows">
+          <li><span className="feature-icon"><Icon name="sync" size={17} /></span><span><strong>Always up to date</strong><small>Changes you make here show for everyone.</small></span></li>
+          <li><span className="feature-icon"><Icon name="user" size={17} /></span><span><strong>Yours to change</strong><small>Others can follow it, or save their own copy.</small></span></li>
+          <li><span className="feature-icon"><Icon name="folder" size={17} /></span><span><strong>Device files stay private</strong><small>Songs that are only files on this device aren't shared.</small></span></li>
         </ul>
         <div className="form-actions">
           <button type="button" className="btn" onClick={closeModal}>Cancel</button>
@@ -65,7 +79,7 @@ export function ShareModal({ id }: { id: string }) {
   const link = shareLink(share.shareId);
   const friends = social?.friends ?? [];
   return (
-    <Shell title={title} subtitle="Shared. It updates as you change it." icon="link" size="sm">
+    <Shell title={title} subtitle={<><span className="live-dot share-live" />Shared · updates as you change it</>} {...look} size="sm">
       <div className="share-link">
         <input className="input mono sm" value={link} readOnly aria-label="Playlist link" onFocus={(e) => e.currentTarget.select()} />
         <button type="button" className="btn sm" onClick={() => void copyText(link)}><Icon name="copy" size={16} />Copy</button>
@@ -107,8 +121,9 @@ export function ShareModal({ id }: { id: string }) {
           type="button"
           className="btn danger"
           disabled={busy}
-          onClick={() => {
-            if (!window.confirm(`Stop sharing “${playlist.name}”? Its link stops working and it's removed for everyone following it.`)) return;
+          onClick={async () => {
+            const ok = await ask({ title: `Stop sharing “${playlist.name}”?`, body: "Its link stops working, and it's removed for everyone following it. Your playlist stays.", confirmLabel: "Stop sharing", danger: true, icon: "link" });
+            if (!ok) return;
             void run(async () => {
               await stopSharing(id);
               closeModal();

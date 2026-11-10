@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { closeModal, modalOpenerElement } from "../../state/actions";
 import { Icon } from "../Icon";
 
@@ -6,17 +6,37 @@ export const ClosingContext = createContext(false);
 
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-export function Shell({ title, subtitle, children, size = "md", footer, icon, className }: { title: string; subtitle?: ReactNode; children: ReactNode; size?: "sm" | "md" | "lg" | "xl"; footer?: ReactNode; icon?: string; className?: string }) {
+interface ShellProps {
+  title: string;
+  subtitle?: ReactNode;
+  children: ReactNode;
+  size?: "sm" | "md" | "lg" | "xl";
+  footer?: ReactNode;
+  icon?: string;
+  /** A cover beside the title (a playlist's, a song's): the dialog is about that thing, and shows it. */
+  art?: ReactNode;
+  /** A colour the dialog is washed in from the top, usually the art's. */
+  tint?: string;
+  className?: string;
+  /** What closing does (the close button, Escape, clicking outside); closing the current dialog by default. */
+  onClose?: () => void;
+  /** A second layer over a dialog (a confirmation): it hands focus back to what had it, not to the dialog's opener. */
+  layer?: "modal" | "confirm";
+}
+
+export function Shell({ title, subtitle, children, size = "md", footer, icon, art, tint, className, onClose = closeModal, layer = "modal" }: ShellProps) {
   const closing = useContext(ClosingContext);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const recorded = modalOpenerElement();
+    const recorded = layer === "modal" ? modalOpenerElement() : null;
     const previous = recorded && recorded !== document.body ? recorded : (document.activeElement as HTMLElement | null);
     const el = ref.current;
-    const first = el?.querySelector<HTMLElement>("[autofocus], input:not([type=checkbox]):not([type=radio]):not([type=range])") ?? el?.querySelector<HTMLElement>(FOCUSABLE);
+    // React handles autoFocus itself (no attribute is left), so a dialog marks its default with data-autofocus.
+    const first = el?.querySelector<HTMLElement>("[data-autofocus],input:not([type=checkbox]):not([type=radio]):not([type=range])") ?? el?.querySelector<HTMLElement>(FOCUSABLE);
     first?.focus();
     return () => {
+      if (layer === "confirm") return;
       if (previous?.isConnected && previous !== document.body) previous.focus();
     };
   }, []);
@@ -25,7 +45,7 @@ export function Shell({ title, subtitle, children, size = "md", footer, icon, cl
     e.stopPropagation();
     if (e.key === "Escape") {
       e.preventDefault();
-      closeModal();
+      onClose();
     }
     if (e.key === "Tab" && ref.current) {
       const items = [...ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((x) => x.offsetParent !== null);
@@ -43,15 +63,24 @@ export function Shell({ title, subtitle, children, size = "md", footer, icon, cl
   };
 
   return (
-    <div className={`modal-layer${closing ? " closing" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && closeModal()}>
-      <div ref={ref} className={`modal ${size}${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-label={title} onKeyDown={onKey}>
+    <div className={`modal-layer${layer === "confirm" ? " confirm-layer" : ""}${closing ? " closing" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div
+        ref={ref}
+        className={`modal ${size}${art ? " has-art" : ""}${tint ? " tinted" : ""}${className ? ` ${className}` : ""}`}
+        style={tint ? ({ "--modal-tint": tint } as CSSProperties) : undefined}
+        role={layer === "confirm" ? "alertdialog" : "dialog"}
+        aria-modal="true"
+        aria-label={title}
+        onKeyDown={onKey}
+      >
+        <span className="sheet-grip" aria-hidden="true" />
         <header className="modal-head">
-          {icon ? <span className="modal-icon"><Icon name={icon} size={22} /></span> : null}
+          {art ? <span className="modal-art">{art}</span> : icon ? <span className="modal-icon"><Icon name={icon} size={22} /></span> : null}
           <div>
             <h2>{title}</h2>
             {subtitle ? <p className="muted small">{subtitle}</p> : null}
           </div>
-          <button type="button" className="icon-btn round" onClick={closeModal} aria-label="Close">
+          <button type="button" className="icon-btn round" onClick={onClose} aria-label="Close">
             <Icon name="close" size={18} />
           </button>
         </header>

@@ -6,7 +6,7 @@ import { Card, PlayFab, Shelf } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { hashString, paletteFromSeed } from "../data/library";
 import { formatLongDuration, plural } from "../lib/format";
-import { navigate, openModal, playList } from "../state/actions";
+import { navigate, openModal, playList, ask } from "../state/actions";
 import { cloudEnabled, signIn, useAccount } from "../state/cloud";
 import { joinRoom } from "../state/listen";
 import {
@@ -107,9 +107,7 @@ function FriendRow({ friend, index }: { friend: Friend; index: number }) {
         <button
           type="button"
           className="icon-btn sm"
-          onClick={() => {
-            if (window.confirm(`Remove ${friend.displayName} from your friends?`)) void removeFriend(friend);
-          }}
+          onClick={() => void ask({ title: `Remove ${friend.displayName}?`, body: "You'll stop seeing each other's shared playlists and listening. You can add each other again later.", confirmLabel: "Remove friend", danger: true, icon: "users" }).then((ok) => ok && void removeFriend(friend))}
           aria-label={`Remove ${friend.displayName}`}
           title="Remove friend"
         >

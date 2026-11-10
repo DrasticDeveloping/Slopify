@@ -10,7 +10,7 @@ import {
 } from "../recommend/taste";
 import { deviceUrl, dropFromDevice } from "./device";
 import { deleteSong, saveSongChanges } from "./song-api";
-import { defaultSettings, flushPersist, getState, setState, snoozedUntil, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast } from "./store";
+import { defaultSettings, flushPersist, getState, setState, snoozedUntil, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast, type ConfirmState } from "./store";
 
 /* ───────────────────────── selectors ───────────────────────── */
 
@@ -390,6 +390,38 @@ export function takeMenuOpener() {
   return el;
 }
 export const closeMenu = () => setState({ menu: null });
+
+let confirmSeq = 0;
+let confirmAnswer: ((ok: boolean) => void) | null = null;
+let confirmOpener: HTMLElement | null = null;
+/**
+ * Asks before something that can't be undone, in the app's own dialog (the browser's confirm box
+ * looked like a different program and stopped the music's visuals while open). Resolves true on confirm.
+ */
+export function ask(question: Omit<ConfirmState, "id" | "confirmLabel"> & { confirmLabel?: string }): Promise<boolean> {
+  confirmAnswer?.(false);
+  if (!getState().confirm) {
+    const active = document.activeElement as HTMLElement | null;
+    confirmOpener = active?.closest(".menu-layer") ? menuOpener : active;
+  }
+  return new Promise((resolve) => {
+    confirmAnswer = resolve;
+    setState({ menu: null, confirm: { confirmLabel: "OK", ...question, id: ++confirmSeq } });
+  });
+}
+export function answerConfirm(ok: boolean) {
+  const answer = confirmAnswer;
+  const opener = confirmOpener;
+  confirmAnswer = null;
+  confirmOpener = null;
+  setState({ confirm: null });
+  answer?.(ok);
+  // After the dialog under it stops being inert (App's effect), and unless the answer moved focus on.
+  requestAnimationFrame(() => {
+    const active = document.activeElement;
+    if (opener?.isConnected && opener !== document.body && (!active || active === document.body || active.closest(".confirm-layer"))) opener.focus();
+  });
+}
 
 /** Finding new music happens in Search (songs, artists and pasted links), so this opens it with the search box focused. */
 export function findMusic() {

@@ -40,6 +40,8 @@ export interface MenuItem {
   icon?: string;
   hint?: string;
   danger?: boolean;
+  /** The menu's main action, shown as a highlighted row. */
+  accent?: boolean;
   disabled?: boolean;
   checked?: boolean;
   separator?: boolean;
@@ -47,12 +49,33 @@ export interface MenuItem {
   submenu?: MenuItem[];
 }
 
+/** The picture at the top of a menu: a song's or playlist's cover, an image, or an initial. */
+export interface MenuArt {
+  trackId?: string;
+  playlistId?: string;
+  image?: string;
+  initial?: string;
+  icon?: string;
+  round?: boolean;
+}
+
 export interface MenuState {
   x: number;
   y: number;
   title?: string;
   subtitle?: string;
+  art?: MenuArt;
   items: MenuItem[];
+}
+
+/** A question the app asks before something it can't undo (see ask() in actions). */
+export interface ConfirmState {
+  id: number;
+  title: string;
+  body?: string;
+  confirmLabel: string;
+  danger?: boolean;
+  icon?: string;
 }
 
 export interface Toast {
@@ -144,6 +167,7 @@ export interface AppState {
   fullPlayer: boolean;
   modal: Modal | null;
   menu: MenuState | null;
+  confirm: ConfirmState | null;
   toasts: Toast[];
   sidebarCollapsed: boolean;
   /** This session, keep the library open even beside the right panel (where it otherwise folds to a rail). */
@@ -313,6 +337,7 @@ function initialState(): AppState {
     fullPlayer: false,
     modal: null,
     menu: null,
+    confirm: null,
     toasts: [],
     sidebarCollapsed: saved.sidebarCollapsed ?? false,
     sidebarKeepOpen: false,
