@@ -80,7 +80,7 @@ export function useLibraryRail() {
   const panel = usePanel();
   const tight = useMediaQuery("(max-width: 1560px)");
   const auto = Boolean(panel) && tight && !keepOpen;
-  return { rail: folded || auto, auto: auto && !folded };
+  return { rail: folded || auto };
 }
 
 const showsEntry = (route: Route | undefined, entry: Entry) => route?.name === entry.type && "id" in route && route.id === entry.id;
@@ -92,7 +92,7 @@ export function Sidebar() {
   const trackIds = useStore((s) => s.trackIds);
   const albums = useStore((s) => s.albums);
   const artists = useStore((s) => s.artists);
-  const { rail: collapsed, auto } = useLibraryRail();
+  const { rail: collapsed } = useLibraryRail();
   const contextRoute = useStore((s) => s.context?.route);
   const isPlaying = useStore((s) => s.isPlaying);
   const listen = useStore((s) => s.listen);
@@ -164,7 +164,7 @@ export function Sidebar() {
       <div className="side-section">
         {/* Spotify-style: the library's header and filters sit right on top of the list they filter. */}
         <div className="side-head library-head">
-          <button type="button" className="icon-btn collapse-btn" onClick={() => setState(auto ? { sidebarKeepOpen: true } : collapsed ? { sidebarCollapsed: false } : { sidebarCollapsed: true, sidebarKeepOpen: false })} aria-label={collapseLabel} title={collapseLabel}>
+          <button type="button" className="icon-btn collapse-btn" onClick={() => setState(collapsed ? { sidebarCollapsed: false, sidebarKeepOpen: true } : { sidebarCollapsed: true, sidebarKeepOpen: false })} aria-label={collapseLabel} title={collapseLabel}>
             <Icon name="sidebar" size={20} />
           </button>
           <button type="button" className="library-title" onClick={() => navigate({ name: "library" })}>Your Library</button>

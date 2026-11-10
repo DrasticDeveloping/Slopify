@@ -41,8 +41,6 @@ function FeaturedMix({ mix }: { mix: Mix }) {
   const route: Route = { name: "mix", id: mix.id };
   const state = useContextPlaying(route);
   const { names } = useMixFaces(mix);
-  // Its new songs become tracks the player knows, as on the mix's own page, so Play can start them.
-  useEffect(() => registerStreams(mixSongs(mix)), [mix]);
   const ids = useMemo(() => mixIds(mix).filter((id) => tracks[id]), [mix, tracks, tasteRev]);
   const palette = paletteFromSeed(mixSeed(mix));
   const albums = useStore((s) => s.albums);
@@ -113,6 +111,11 @@ export function HomeView() {
   const tasteRev = useStore((s) => s.taste.rev);
   // Library and taste changes can make a new mix (App's minute timer catches midnight and Monday).
   useEffect(() => ensureMixes(), [tasteRev, tracks]);
+  // Every mix's new songs become tracks the player knows, as on a mix's own page, so the featured card
+  // and the mix shortcuts play the whole mix (not just its library songs).
+  useEffect(() => {
+    for (const mix of mixes) registerStreams(mixSongs(mix));
+  }, [mixes]);
 
   // By default "Recommended for you" is new songs from the web; library songs only when Settings asks for them.
   const includeLibrary = useStore((s) => s.settings.recommendLibrary);
