@@ -151,6 +151,7 @@ export function openTrackMenu(e: ReactMouseEvent | HTMLElement, ids: string[], o
     ...menuPosition(e),
     title: single ? single.title : plural(ids.length, "song"),
     subtitle: single ? s.artists[single.artistId]?.name : "Selected",
+    art: single ? { trackId: single.id } : undefined,
     items: trackMenu(ids, opts),
   });
 }
@@ -175,7 +176,8 @@ export function openPlaylistMenu(e: ReactMouseEvent | HTMLElement, playlistId: s
   openMenu({
     ...menuPosition(e),
     title: p.name,
-    subtitle: plural(p.trackIds.length, "song"),
+    subtitle: `${p.system ? "Collection" : "Playlist"} · ${plural(p.trackIds.length, "song")}`,
+    art: { playlistId: p.id },
     items: [
       { label: "Play", icon: "play", disabled: !p.trackIds.length, run: () => playList(p.trackIds, undefined, { label: p.name, route }) },
       { label: "Add to queue", icon: "list", disabled: !p.trackIds.length, run: () => addToQueue(p.trackIds) },

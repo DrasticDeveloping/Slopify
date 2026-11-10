@@ -1,14 +1,17 @@
 import { creditLine, creditsArtist } from "../lib/credits";
-import { useEffect, useMemo, type MouseEvent, type ReactNode } from "react";
-import { ensureMixes, mixSeed, useMixes } from "../recommend/mixes";
+import { useEffect, useMemo, type CSSProperties, type MouseEvent, type ReactNode } from "react";
+import { ensureMixes, mixIds, mixSeed, mixSongs, useMixes, type Mix } from "../recommend/mixes";
+import { registerStreams } from "../state/importer";
+import { featuring, MixArt, MixCard, useMixFaces } from "../components/MixArt";
 import { paletteFromSeed } from "../data/library";
-import { Art, PlaylistArt, TrackArt } from "../components/Artwork";
+import { Art, BlurredTrackArt, PlaylistArt, TrackArt } from "../components/Artwork";
 import { Bars, Icon } from "../components/Icon";
 import { ChooseFiles } from "../components/ChooseFiles";
 import { DiscoveryShelf } from "../components/DiscoveryShelf";
 import { ReleaseShelves } from "../components/ReleaseShelves";
 import { Card, PlayFab, Shelf, useContextPlaying } from "../components/Shelf";
 import { greeting, plural } from "../lib/format";
+import { allTimePlays, topArtistPlays } from "../lib/plays";
 import { useMediaQuery } from "../lib/hooks";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
 import { hasTaste } from "../recommend/rank";
@@ -29,6 +32,70 @@ function QuickTile({ title, art, route, ids, onMenu }: { title: string; art: Rea
   );
 }
 
+/**
+ * The top of Home: this week's featured mix, big and made of its own music, ready to play,
+ * beside an album to jump back into. (What's playing already has the player bar and the Now Playing panel.)
+ */
+function FeaturedMix({ mix }: { mix: Mix }) {
+  const tracks = useStore((s) => s.tracks);
+  const tasteRev = useStore((s) => s.taste.rev);
+  const route: Route = { name: "mix", id: mix.id };
+  const state = useContextPlaying(route);
+  const { names } = useMixFaces(mix);
+  const ids = useMemo(() => mixIds(mix).filter((id) => tracks[id]), [mix, tracks, tasteRev]);
+  const palette = paletteFromSeed(mixSeed(mix));
+  const albums = useStore((s) => s.albums);
+  const washId = mix.libraryIds.find((id) => tracks[id] && albums[tracks[id].albumId]?.artworkUrl);
+  const open = () => navigate(route);
+  return (
+    <div className="spot-feature" style={{ "--a": palette.a, "--b": palette.b, "--c": palette.c } as CSSProperties}>
+      {washId ? <BlurredTrackArt trackId={washId} className="spot-wash" /> : null}
+      <button type="button" className="spot-art" onClick={open} aria-label={`Open ${mix.name}`}>
+        <MixArt mix={mix} bare />
+      </button>
+      <div className="spot-copy">
+        <span className="spot-eyebrow">{state.playing ? <><Bars /> Playing</> : "Made for you"}</span>
+        <h2 className="spot-title">
+          <button type="button" className="link" onClick={open}>{mix.name}</button>
+        </h2>
+        <span className="spot-artist">{names.length ? `Featuring ${featuring(names)}` : mix.description}</span>
+        <div className="spot-actions">
+          <button
+            type="button"
+            className={`spot-play${state.playing ? " is-playing" : ""}`}
+            disabled={!ids.length}
+            onClick={() => (state.active ? togglePlay() : playList(ids, ids[0], { label: mix.name, route }))}
+            aria-label={state.playing ? `Pause ${mix.name}` : `Play ${mix.name}`}
+          >
+            <Icon name={state.playing ? "pause" : "play"} size={22} />
+            <span>{state.playing ? "Pause" : "Play"}</span>
+          </button>
+          <button type="button" className="spot-context" onClick={open}>{ids.length ? plural(ids.length, "song") : "Open mix"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** An album from your recent listening, full-bleed, to pick up again. */
+function JumpBack({ albumId, ids }: { albumId: string; ids: string[] }) {
+  const album = useStore((s) => s.albums[albumId]);
+  const artist = useStore((s) => (album ? s.artists[album.artistId] : undefined));
+  if (!album) return null;
+  const route: Route = { name: "album", id: albumId };
+  return (
+    <div className="spot-jump">
+      <Art palette={album.palette} glyph={album.glyph} image={album.artworkUrl} />
+      <button type="button" className="spot-jump-copy" onClick={() => navigate(route)}>
+        <span className="spot-eyebrow">Jump back in</span>
+        <strong>{album.title}</strong>
+        <span>{artist?.name}</span>
+      </button>
+      <PlayFab ids={ids} label={album.title} route={route} className="spot-jump-fab" />
+    </div>
+  );
+}
+
 export function HomeView() {
   const mixes = useMixes();
   const playlists = useStore((s) => s.playlists);
@@ -45,6 +112,11 @@ export function HomeView() {
   const tasteRev = useStore((s) => s.taste.rev);
   // Library and taste changes can make a new mix (App's minute timer catches midnight and Monday).
   useEffect(() => ensureMixes(), [tasteRev, tracks]);
+  // Every mix's new songs become tracks the player knows, as on a mix's own page, so the featured card
+  // and the mix shortcuts play the whole mix (not just its library songs).
+  useEffect(() => {
+    for (const mix of mixes) registerStreams(mixSongs(mix));
+  }, [mixes]);
 
   // By default "Recommended for you" is new songs from the web; library songs only when Settings asks for them.
   const includeLibrary = useStore((s) => s.settings.recommendLibrary);
@@ -83,13 +155,14 @@ export function HomeView() {
     return out;
   }, [history, currentId, tracks, albums, library]);
 
-  const topArtists = useMemo(() => {
-    const plays: Record<string, number> = {};
-    for (const t of library) plays[t.artistId] = (plays[t.artistId] ?? 0) + t.plays;
-    return Object.keys(plays).filter((id) => artists[id] && id !== "ar_local").sort((a, b) => plays[b] - plays[a]).slice(0, 10);
-  }, [library, artists]);
+  // The same all-time ranking as Your stats.
+  const listens = useStore((s) => s.taste.listens);
+  const topArtists = useMemo(() => topArtistPlays(tracks, allTimePlays(tracks, listens), 10).map(([id]) => id).filter((id) => artists[id]), [tracks, listens, artists]);
 
-  const quick = playlists.slice(0, 6);
+  const featured = mixes.find((m) => m.kind === "weekly") ?? mixes[0];
+  // Not the album that's playing: that's already in the player bar (and the Now Playing panel).
+  const playingAlbum = currentId ? tracks[currentId]?.albumId : undefined;
+  const spotAlbum = jumpBack.find((albumId) => albumId !== playingAlbum) ?? jumpBack[0];
   const albumTracks = (albumId: string) => library.filter((t) => t.albumId === albumId && isPlayable(t)).map((t) => t.id);
 
   return (
@@ -99,10 +172,21 @@ export function HomeView() {
         {greeting()}
         {name && <>, <span className="grad-text">{name}</span></>}
       </h1>
+      {featured || spotAlbum ? (
+        <section className={`spotlight${featured && spotAlbum ? "" : " solo"}`} aria-label="Spotlight">
+          {featured ? <FeaturedMix mix={featured} /> : null}
+          {spotAlbum ? <JumpBack albumId={spotAlbum} ids={albumTracks(spotAlbum)} /> : null}
+        </section>
+      ) : null}
       <div className="quick-grid">
-        {quick.map((p) => (
-          <QuickTile key={p.id} title={p.name} art={<PlaylistArt playlist={p} />} route={{ name: "playlist", id: p.id }} ids={p.trackIds} onMenu={(e) => openPlaylistMenu(e, p.id)} />
-        ))}
+        {[
+          ...playlists.filter((p) => p.trackIds.length).map((p) => <QuickTile key={p.id} title={p.name} art={<PlaylistArt playlist={p} />} route={{ name: "playlist", id: p.id }} ids={p.trackIds} onMenu={(e) => openPlaylistMenu(e, p.id)} />),
+          ...jumpBack.filter((albumId) => albumId !== spotAlbum).map((albumId) => {
+            const a = albums[albumId];
+            return <QuickTile key={albumId} title={a.title} art={<Art palette={a.palette} glyph={a.glyph} image={a.artworkUrl} />} route={{ name: "album", id: albumId }} ids={albumTracks(albumId)} />;
+          }),
+          ...mixes.filter((m) => m !== featured).map((m) => <QuickTile key={m.id} title={m.name} art={<MixArt mix={m} bare />} route={{ name: "mix", id: m.id }} ids={mixIds(m).filter((id) => tracks[id])} />),
+        ].slice(0, 8)}
       </div>
 
       {!recent.length ? (
@@ -162,23 +246,15 @@ export function HomeView() {
           {!forYou.length ? <p className="muted shelf-empty">Nothing to suggest yet. Add songs, or bring back hidden ones in Settings → Recommendations.</p> : null}
         </Shelf>
       ) : (
-        <DiscoveryShelf title="Recommended for you" subtitle="New songs picked from what you play, none of them in your library yet. Play any of them in full, or add it to your library." />
+        <DiscoveryShelf title="Recommended for you" subtitle="New songs picked from what you play, none of them in your library yet. Play any of them in full, or add it to your library." hideWhenEmpty />
       )}
 
-      {includeLibrary ? <DiscoveryShelf /> : null}
+      {includeLibrary ? <DiscoveryShelf hideWhenEmpty /> : null}
 
       {recent.length ? <ReleaseShelves /> : null}
 
       <Shelf title="Made for you" subtitle="Daily and weekly editions, kept across visits">
-        {mixes.map((mix) => (
-          <Card
-            key={mix.id}
-            art={<Art palette={paletteFromSeed(mixSeed(mix))} glyph={mix.kind === "weekly" ? 5 : 2} />}
-            title={mix.name}
-            subtitle={mix.description}
-            onOpen={() => navigate({ name: "mix", id: mix.id })}
-          />
-        ))}
+        {mixes.map((mix) => <MixCard key={mix.id} mix={mix} />)}
       </Shelf>
 
       {jumpBack.length ? (

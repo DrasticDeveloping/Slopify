@@ -6,7 +6,7 @@ import { onLiveFrame } from "../lib/live";
 import { cycleRepeat, isLiked, navigate, next, openMenu, positionOf, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, cycleShuffle } from "../state/actions";
 import { setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
-import { TrackArt } from "./Artwork";
+import { BlurredTrackArt, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 import { Slider } from "./Slider";
 
@@ -120,6 +120,7 @@ export function PlayerBar() {
 
   return (
     <footer className="playerbar" aria-label="Player">
+      {track ? <BlurredTrackArt trackId={track.id} className="pb-wash" /> : null}
       <div className="pb-left">
         {track ? (
           <>

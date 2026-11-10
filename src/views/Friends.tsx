@@ -6,7 +6,7 @@ import { Card, PlayFab, Shelf } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { hashString, paletteFromSeed } from "../data/library";
 import { formatLongDuration, plural } from "../lib/format";
-import { navigate, openModal, playList } from "../state/actions";
+import { navigate, openModal, playList, ask } from "../state/actions";
 import { cloudEnabled, signIn, useAccount } from "../state/cloud";
 import { joinRoom } from "../state/listen";
 import {
@@ -27,18 +27,43 @@ function Avatar({ person, className = "person-art" }: { person: Person; classNam
   return <Art palette={personPalette(person)} round className={className} image={person.avatarUrl ?? undefined} label={person.displayName} />;
 }
 
-/** Signed out, or no online service: what this page needs. While the account loads, or if it couldn't, it says that instead. */
-function NeedsAccount({ what }: { what: string }) {
+/** Signed out, or no online service: what this page would show, and one way in. While the account loads it says that instead. */
+function NeedsAccount({ what }: { what: "friends" | "shared" }) {
   const account = useAccount();
-  if (account.status === "loading") return <div className="view"><p className="muted"><span className="spinner" />Connecting to your account…</p></div>;
+  if (account.status === "loading") return <div className="view"><p className="muted metadata-loading"><span className="spinner" />Connecting to your account…</p></div>;
+  const shared = what === "shared";
   return (
     <div className="view">
-      <Empty
-        icon="users"
-        title={what}
-        body={!cloudEnabled ? "This needs Slopify's online service, which this copy of Slopify isn't set up with." : "Sign in to add friends, share playlists and see what your friends are playing."}
-        action={cloudEnabled ? <button type="button" className="btn primary" onClick={signIn}>Sign in</button> : undefined}
-      />
+      <section className="social-intro">
+        <div className="listen-hero" aria-hidden="true">
+          <span className="listen-orbit">
+            <i style={{ "--h": 268 } as CSSProperties} />
+            <i style={{ "--h": 330 } as CSSProperties} />
+            <i style={{ "--h": 190 } as CSSProperties} />
+          </span>
+          <span className="listen-wave"><Icon name={shared ? "playlists" : "users"} size={24} /></span>
+        </div>
+        <span className="eyebrow">{shared ? "Shared playlist" : "Friends"}</span>
+        <h1>{shared ? "Sign in to open this playlist" : "Music is better together"}</h1>
+        <p className="muted">{shared ? "Someone shared a playlist with you. Sign in to play it, follow it, or save your own copy." : "See what your friends are playing, share playlists, and listen along in real time."}</p>
+        <ul className="feature-rows">
+          {shared ? (
+            <>
+              <li><span className="feature-icon"><Icon name="play" size={17} /></span><span><strong>Play it in full</strong><small>Every song that was saved from the web.</small></span></li>
+              <li><span className="feature-icon"><Icon name="sync" size={17} /></span><span><strong>Follow it</strong><small>It stays up to date as they change it.</small></span></li>
+            </>
+          ) : (
+            <>
+              <li><span className="feature-icon"><Icon name="radio" size={17} /></span><span><strong>See what they're playing</strong><small>Live, with a tap to listen along.</small></span></li>
+              <li><span className="feature-icon"><Icon name="link" size={17} /></span><span><strong>Share playlists</strong><small>Send them, or show them on your profile.</small></span></li>
+              <li><span className="feature-icon"><Icon name="users" size={17} /></span><span><strong>Add friends by name</strong><small>From their Slopify username.</small></span></li>
+            </>
+          )}
+        </ul>
+        {cloudEnabled ? (
+          <button type="button" className="btn primary wide social-cta" onClick={signIn}><Icon name="user" size={17} />Sign in</button>
+        ) : <p className="muted small">This needs Slopify's online service, which this copy of Slopify isn't set up with.</p>}
+      </section>
     </div>
   );
 }
@@ -107,9 +132,7 @@ function FriendRow({ friend, index }: { friend: Friend; index: number }) {
         <button
           type="button"
           className="icon-btn sm"
-          onClick={() => {
-            if (window.confirm(`Remove ${friend.displayName} from your friends?`)) void removeFriend(friend);
-          }}
+          onClick={() => void ask({ title: `Remove ${friend.displayName}?`, body: "You'll stop seeing each other's shared playlists and listening. You can add each other again later.", confirmLabel: "Remove friend", danger: true, icon: "users" }).then((ok) => ok && void removeFriend(friend))}
           aria-label={`Remove ${friend.displayName}`}
           title="Remove friend"
         >
@@ -144,7 +167,7 @@ export function FriendsView() {
     void refreshSocial();
   }, []);
 
-  if (account.status !== "signedIn") return <NeedsAccount what="Friends" />;
+  if (account.status !== "signedIn") return <NeedsAccount what="friends" />;
   if (!social && socialError) {
     return (
       <div className="view">
@@ -289,7 +312,7 @@ export function SharedView({ id }: { id: string }) {
   }, [playlist]);
   const total = playlist?.tracks.reduce((sum, t) => sum + (t.durationSeconds ?? 0), 0) ?? 0;
 
-  if (account.status !== "signedIn") return <NeedsAccount what="Someone shared a playlist with you" />;
+  if (account.status !== "signedIn") return <NeedsAccount what="shared" />;
   if (error) return <div className="view"><Empty icon="playlists" title="Couldn't open this playlist" body={error} action={<button type="button" className="btn" onClick={() => navigate({ name: "friends" })}>Go to Friends</button>} /></div>;
   if (!playlist) return <div className="view"><p className="muted"><span className="spinner" />Opening the playlist…</p></div>;
 

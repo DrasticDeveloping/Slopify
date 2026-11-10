@@ -84,4 +84,19 @@ export interface Playlist {
 export interface ClipRange {
   start: number;
   end: number;
+  /** Seconds the clip fades in from silence, and out to silence (none when missing). */
+  fadeIn?: number;
+  fadeOut?: number;
+  /** How the fades curve: equal-power (the default), straight, or an S-curve. */
+  fadeShape?: FadeShape;
+}
+
+export type FadeShape = "smooth" | "linear" | "scurve";
+
+/** A fade's level for `x` (0–1 of the way through it) in each shape. Shared by the engine and the clip editor. */
+export function fadeLevel(x: number, shape: FadeShape = "smooth") {
+  const l = Math.max(0, Math.min(1, x));
+  if (shape === "linear") return l;
+  if (shape === "scurve") return l * l * (3 - 2 * l);
+  return Math.sin((l * Math.PI) / 2);
 }

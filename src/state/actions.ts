@@ -10,7 +10,7 @@ import {
 } from "../recommend/taste";
 import { deviceUrl, dropFromDevice } from "./device";
 import { deleteSong, saveSongChanges } from "./song-api";
-import { defaultSettings, flushPersist, getState, setState, snoozedUntil, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast } from "./store";
+import { defaultSettings, flushPersist, getState, setState, snoozedUntil, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast, type ConfirmState } from "./store";
 
 /* ───────────────────────── selectors ───────────────────────── */
 
@@ -34,7 +34,13 @@ export function effectiveRange(id: string, s: AppState = getState()): ClipRange 
   const r = s.clipDraft?.trackId === id ? s.clipDraft : s.clips[id];
   // A clip that no longer fits (e.g. the length was corrected to something shorter) plays the whole song.
   if (!r || r.end <= r.start || r.start >= duration) return { start: 0, end: duration };
-  return { start: Math.max(0, Math.min(r.start, duration)), end: Math.min(duration, Math.max(r.end, r.start + 1)) };
+  const start = Math.max(0, Math.min(r.start, duration));
+  const end = Math.min(duration, Math.max(r.end, r.start + 0.5));
+  // Fades fit inside the clip, together taking at most all of it.
+  const span = end - start;
+  const fadeIn = Math.min(Math.max(0, r.fadeIn ?? 0), span);
+  const fadeOut = Math.min(Math.max(0, r.fadeOut ?? 0), span - fadeIn);
+  return { start, end, ...(fadeIn ? { fadeIn } : {}), ...(fadeOut ? { fadeOut } : {}), ...((fadeIn || fadeOut) && r.fadeShape && r.fadeShape !== "smooth" ? { fadeShape: r.fadeShape } : {}) };
 }
 
 export function likedIds(s: AppState) {
@@ -391,6 +397,38 @@ export function takeMenuOpener() {
 }
 export const closeMenu = () => setState({ menu: null });
 
+let confirmSeq = 0;
+let confirmAnswer: ((ok: boolean) => void) | null = null;
+let confirmOpener: HTMLElement | null = null;
+/**
+ * Asks before something that can't be undone, in the app's own dialog (the browser's confirm box
+ * looked like a different program and stopped the music's visuals while open). Resolves true on confirm.
+ */
+export function ask(question: Omit<ConfirmState, "id" | "confirmLabel"> & { confirmLabel?: string }): Promise<boolean> {
+  confirmAnswer?.(false);
+  if (!getState().confirm) {
+    const active = document.activeElement as HTMLElement | null;
+    confirmOpener = active?.closest(".menu-layer") ? menuOpener : active;
+  }
+  return new Promise((resolve) => {
+    confirmAnswer = resolve;
+    setState({ menu: null, confirm: { confirmLabel: "OK", ...question, id: ++confirmSeq } });
+  });
+}
+export function answerConfirm(ok: boolean) {
+  const answer = confirmAnswer;
+  const opener = confirmOpener;
+  confirmAnswer = null;
+  confirmOpener = null;
+  setState({ confirm: null });
+  answer?.(ok);
+  // After the dialog under it stops being inert (App's effect), and unless the answer moved focus on.
+  requestAnimationFrame(() => {
+    const active = document.activeElement;
+    if (opener?.isConnected && opener !== document.body && (!active || active === document.body || active.closest(".confirm-layer"))) opener.focus();
+  });
+}
+
 /** Finding new music happens in Search (songs, artists and pasted links), so this opens it with the search box focused. */
 export function findMusic() {
   navigate({ name: "search", q: "" });
@@ -566,7 +604,7 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
   const readyStream = streamUrls.get(id);
   if (t.stream && readyStream) readyStream.usable = false;
   const range = effectiveRange(id, s);
-  engine.load(engineTrack(id), { start: range.start, end: range.end || t.duration || 1e9, autoplay, crossfade });
+  engine.load(engineTrack(id), { start: range.start, end: range.end || t.duration || 1e9, fadeIn: range.fadeIn, fadeOut: range.fadeOut, fadeShape: range.fadeShape, autoplay, crossfade });
   if (cued?.id === id) engine.seek(cued.position);
   cued = null;
   startListening(id);
@@ -584,7 +622,7 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
 }
 
 /** Starts playing `ids` from `startId`, remembering where playback came from. */
-export function playList(ids: string[], startId?: string, ctx?: { label: string; route?: Route; picks?: Record<string, ReasonKind>; radioKey?: string }) {
+export function playList(ids: string[], startId?: string, ctx?: { label: string; route?: Route; picks?: Record<string, ReasonKind>; radioKey?: string }, opts: { shuffle?: boolean } = {}) {
   const s = getState();
   if (listenLocked()) return;
   const playable = ids.filter((id) => isPlayable(s.tracks[id], s));
@@ -598,12 +636,15 @@ export function playList(ids: string[], startId?: string, ctx?: { label: string;
     toast(playable.length === 1 ? "This song is snoozed" : "Every song here is snoozed", { detail: "Play one yourself, or stop snoozing them from its menu." });
     return;
   }
-  const first = startId && playable.includes(startId) ? startId : s.shuffle ? awake[Math.floor(Math.random() * awake.length)] : awake[0];
-  const order = s.shuffle ? shuffled(playable, first) : playable;
+  // Shuffle play turns shuffle on with the new order, only once there's something to play.
+  const shuffle = s.shuffle || Boolean(opts.shuffle);
+  const first = startId && playable.includes(startId) ? startId : shuffle ? awake[Math.floor(Math.random() * awake.length)] : awake[0];
+  const order = shuffle ? shuffled(playable, first) : playable;
   setState({
     context: { label: ctx?.label ?? "Library", route: ctx?.route, ids: playable, picks: ctx?.picks, radioKey: ctx?.radioKey },
     order,
     index: order.indexOf(first),
+    ...(shuffle !== s.shuffle ? { shuffle } : {}),
   });
   load(first);
 }
@@ -721,6 +762,15 @@ function peekNext(s: AppState) {
 
 export function nextTrackId() {
   return peekNext(getState())?.id ?? null;
+}
+
+/** Plays exactly the song nextTrackId() names (a "Next up" card), never a slip-in in front of it. */
+export function playPreviewedNext() {
+  const s = getState();
+  const n = peekNext(s);
+  if (!n) return;
+  if (n.upNextSkip > 0 && s.upNext[n.upNextSkip - 1] === n.id) jumpToUpNext(n.upNextSkip - 1);
+  else jumpToOrderIndex(n.index);
 }
 
 function stopAtEnd(s: AppState) {
@@ -875,6 +925,14 @@ export function playNext(ids: string[]) {
   toast(ok.length === 1 ? "Playing next" : `${ok.length} songs playing next`, { tone: "success" });
 }
 
+/**
+ * Shuffle play (a collection's shuffle button): turns shuffle on and plays the collection from a random song,
+ * so songs that join it later (a release still finding its songs) are added to the shuffled order, not reset it.
+ */
+export function shufflePlay(ids: string[], ctx: { label: string; route?: Route }) {
+  playList(ids, undefined, ctx, { shuffle: true });
+}
+
 export function toggleShuffle() {
   const s = getState();
   const on = !s.shuffle;
@@ -953,6 +1011,7 @@ export function syncEngineEnd() {
   const t = s.tracks[s.currentId];
   const r = effectiveRange(s.currentId, s);
   engine.setRange(r.start, r.end || t.duration || 1e9);
+  engine.setFades(r.fadeIn ?? 0, r.fadeOut ?? 0, r.fadeShape);
 }
 
 export function applyEngineSettings() {

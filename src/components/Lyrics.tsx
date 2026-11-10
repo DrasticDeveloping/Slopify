@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useReducedMotion } from "../lib/hooks";
 import { onLiveFrame, wakeLive } from "../lib/live";
 import { effectiveRange, positionOf, seek } from "../state/actions";
@@ -46,10 +46,13 @@ export function LyricsView({ trackId }: { trackId: string }) {
 }
 
 function LyricsNote({ children, busy }: { children: ReactNode; busy?: boolean }) {
+  const palette = useStore((s) => (s.currentId ? s.albums[s.tracks[s.currentId]?.albumId]?.palette : undefined));
   return (
     <div className="lyrics ly-empty" aria-busy={busy || undefined}>
-      <Icon name="lyrics" size={28} />
-      <p className="muted">{children}</p>
+      <div className="ly-card" style={palette ? ({ "--a": palette.a, "--b": palette.b } as CSSProperties) : undefined}>
+        {busy ? <span className="spinner" /> : <Icon name="lyrics" size={26} />}
+        <p>{children}</p>
+      </div>
     </div>
   );
 }

@@ -9,7 +9,7 @@ import { getState, useStore, type Route } from "../state/store";
 import type { ReasonKind } from "../recommend/taste";
 import { Art, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
-import { Shelf } from "./Shelf";
+import { Shelf, SkeletonCards } from "./Shelf";
 
 const SUBTITLE = "Songs outside your library, picked from what you play. Play any of them in full, or add it to your library.";
 
@@ -23,10 +23,14 @@ interface Props {
   route?: Route;
   /** Include songs already in the library, which play from the library. */
   withOwned?: boolean;
+  /** Leave the shelf out entirely once a search finds nothing (rather than saying so). */
+  hideWhenEmpty?: boolean;
+  /** Keep this subtitle even when every song gives the same reason (an artist's Popular shelf, where it'd only repeat the title). */
+  fixedSubtitle?: boolean;
 }
 
 /** Songs outside the library, as cards that play in full, and can be dismissed or added to the library. */
-export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false }: Props) {
+export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false, fixedSubtitle = false }: Props) {
   const { songs, loading, note, refresh } = useDiscovery(title, { queries, limit, withOwned });
   const tracks = useStore((s) => s.tracks);
   // Suggestions become songs the player knows, so they play, queue and show like library songs.
@@ -46,11 +50,12 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
     else void addDiscoveredSong(song.candidate, song.kind);
   };
 
+  if (hideWhenEmpty && !loading && !songs.length) return null;
   return (
     <section className="discovery" aria-label={title}>
       <Shelf
         title={title}
-        subtitle={shared ? shared.replace(/ also play this\b/u, " also play these") : subtitle}
+        subtitle={shared && !fixedSubtitle ? shared.replace(/ also play this\b/u, " also play these") : subtitle}
         action={
           <>
             <button type="button" className="text-btn" disabled={!ids.length} onClick={() => playList(ids, ids[0], context)}>Play all</button>
@@ -61,9 +66,10 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
         {songs.map((song) => (
           <DiscoveryCard key={song.key} song={song} onPlay={() => play(song)} menuContext={{ label: title, route, ids }} showReason={song.reason !== shared} />
         ))}
-        {!songs.length ? <p className="muted shelf-empty" role="status">{loading ? "Finding songs for you…" : note || "No new songs found right now. Try Find more."}</p> : null}
+        {loading ? <SkeletonCards count={songs.length ? 2 : 6} label={songs.length ? "Finding more…" : "Finding songs for you…"} /> : null}
+        {!songs.length && !loading ? <p className="muted shelf-empty" role="status">{note || "No new songs found right now. Try Find more."}</p> : null}
       </Shelf>
-      {songs.length && (note || loading) ? <p className="muted small discovery-note" role="status">{loading ? "Finding more…" : note}</p> : null}
+      {songs.length && note && !loading ? <p className="muted small discovery-note" role="status">{note}</p> : null}
     </section>
   );
 }

@@ -64,7 +64,16 @@ const FIELDS = {
   clip: (v) => {
     if (v === null) return null;
     const ok = v && Number.isFinite(v.start) && Number.isFinite(v.end) && v.start >= 0 && v.end > v.start;
-    return ok ? { start: v.start, end: v.end } : INVALID;
+    if (!ok) return INVALID;
+    // Fades are optional: seconds, up to a minute each, within the clip.
+    const fade = (f) => (f === undefined || f === 0 ? 0 : Number.isFinite(f) && f > 0 && f <= 60 ? f : null);
+    const fadeIn = fade(v.fadeIn);
+    const fadeOut = fade(v.fadeOut);
+    if (fadeIn === null || fadeOut === null || fadeIn + fadeOut > v.end - v.start + 0.001) return INVALID;
+    const shape = v.fadeShape === undefined ? "smooth" : ["smooth", "linear", "scurve"].includes(v.fadeShape) ? v.fadeShape : null;
+    if (!shape) return INVALID;
+    // Fades are always sent back (0 for none), so an app can tell this server keeps them from one that predates them.
+    return { start: v.start, end: v.end, fadeIn, fadeOut, ...((fadeIn || fadeOut) && shape !== "smooth" ? { fadeShape: shape } : {}) };
   },
 };
 export const SONG_FIELDS = Object.keys(FIELDS);

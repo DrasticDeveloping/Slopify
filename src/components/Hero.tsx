@@ -19,13 +19,15 @@ interface HeroProps {
   play?: HeaderInfo["play"];
   round?: boolean;
   onTitleClick?: () => void;
+  /** Painted behind the header instead of the flat tint: the artwork itself, blurred. */
+  wash?: ReactNode;
 }
 
 /**
  * Large collection header. When it scrolls out of view the top bar takes over
  * its title and play button, like a native app's collapsing toolbar.
  */
-export function Hero({ art, kind, title, description, meta, tint, actions, play, round, onTitleClick }: HeroProps) {
+export function Hero({ art, kind, title, description, meta, tint, actions, play, round, onTitleClick, wash }: HeroProps) {
   const sentinel = useRef<HTMLDivElement>(null);
   const playRef = useRef(play);
   playRef.current = play;
@@ -54,7 +56,8 @@ export function Hero({ art, kind, title, description, meta, tint, actions, play,
   const size = title.length > 34 ? "xs" : title.length > 22 ? "sm" : title.length > 12 ? "md" : "lg";
 
   return (
-    <header className="hero" style={{ "--tint": tint } as CSSProperties}>
+    <header className={`hero${wash ? " has-wash" : ""}`} style={{ "--tint": tint } as CSSProperties}>
+      {wash ? <div className="hero-wash" aria-hidden="true">{wash}</div> : null}
       <div className={`hero-art${round ? " round" : ""}`}>{art}</div>
       <div className="hero-copy">
         <span className="eyebrow">{kind}</span>

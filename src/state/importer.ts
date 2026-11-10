@@ -702,7 +702,10 @@ export function addServerTrack(p: ServerSong) {
 function clipChange(clips: Record<string, ClipRange>, id: string, p: ServerSong): { clips?: Record<string, ClipRange> } {
   if (pendingSongChanges(p.id)?.clip !== undefined) return {};
   const current = clips[id];
-  if (p.clip ? current?.start === p.clip.start && current?.end === p.clip.end : !current) return {};
+  // A music server from before fades sends the clip back without them: the same range is no change, so fades set
+  // here aren't lost (they stay on this device until the server can keep them). Current servers always send them.
+  if (p.clip && current && p.clip.start === current.start && p.clip.end === current.end && p.clip.fadeIn === undefined && p.clip.fadeOut === undefined) return {};
+  if (p.clip ? current?.start === p.clip.start && current?.end === p.clip.end && (current.fadeIn ?? 0) === (p.clip.fadeIn ?? 0) && (current.fadeOut ?? 0) === (p.clip.fadeOut ?? 0) && (current.fadeShape ?? "smooth") === (p.clip.fadeShape ?? "smooth") : !current) return {};
   const next = { ...clips };
   if (p.clip) next[id] = p.clip;
   else delete next[id];

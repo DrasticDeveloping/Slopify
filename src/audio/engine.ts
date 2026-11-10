@@ -1,4 +1,5 @@
 import { releaseVideo, setCurrentVideo } from "./video";
+import { fadeLevel, type FadeShape } from "../data/types";
 
 interface Voice {
   position(): number;
@@ -7,6 +8,10 @@ interface Voice {
   seek(position: number): void;
   setRate(rate: number): void;
   fadeOut(seconds: number): void;
+  /** The clip's fade level (0–1), separate from crossfades. `now` jumps straight to it (after a seek). */
+  setLevel(level: number, now?: boolean): void;
+  /** Carries the clip's fade on by itself: through `curve` (levels, evenly spaced) over `seconds` (a voice retired mid-fade). */
+  rampLevel(curve: Float32Array, seconds: number): void;
 }
 
 /** Fades a gain node to silence and disconnects it once inaudible. */
@@ -21,6 +26,9 @@ function retire(ctx: AudioContext, node: GainNode, seconds: number) {
 class MediaVoice implements Voice {
   private el: HTMLMediaElement;
   private out: GainNode;
+  /** The clip's fade in/out, ahead of `out` (which crossfades and retiring use). */
+  private env: GainNode;
+  private level = 1;
   private ctx: AudioContext;
   private retired = false;
   /** Playback was asked for and not since paused. */
@@ -62,7 +70,9 @@ class MediaVoice implements Voice {
     this.out = ctx.createGain();
     this.out.gain.setValueAtTime(0, ctx.currentTime);
     if (!hold) this.out.gain.linearRampToValueAtTime(1, ctx.currentTime + Math.max(0.02, fadeIn));
-    ctx.createMediaElementSource(this.el).connect(this.out);
+    this.env = ctx.createGain();
+    ctx.createMediaElementSource(this.el).connect(this.env);
+    this.env.connect(this.out);
     this.out.connect(dest);
   }
 
@@ -119,6 +129,21 @@ class MediaVoice implements Voice {
   setRate(rate: number) {
     this.el.playbackRate = rate;
   }
+  rampLevel(curve: Float32Array, seconds: number) {
+    const t = this.ctx.currentTime;
+    this.env.gain.cancelScheduledValues(t);
+    this.env.gain.setValueCurveAtTime(curve, t, Math.max(0.01, seconds));
+    this.level = curve[curve.length - 1] ?? 0;
+  }
+  setLevel(level: number, now = false) {
+    if (!now && Math.abs(level - this.level) < 0.002) return;
+    this.level = level;
+    const t = this.ctx.currentTime;
+    this.env.gain.cancelScheduledValues(t);
+    if (now) this.env.gain.setValueAtTime(level, t);
+    // Followed smoothly between the monitor's 60ms looks, so a fade is a curve, not steps.
+    else this.env.gain.setTargetAtTime(level, t, 0.03);
+  }
   fadeOut(seconds: number) {
     this.retired = true;
     this.wanted = false;
@@ -135,6 +160,10 @@ class MediaVoice implements Voice {
 export interface LoadOptions {
   start?: number;
   end: number;
+  /** The clip's fade in and out, in song seconds (0 for none). */
+  fadeIn?: number;
+  fadeOut?: number;
+  fadeShape?: FadeShape;
   autoplay: boolean;
   /** Seconds to overlap with the outgoing track. */
   crossfade?: number;
@@ -167,6 +196,14 @@ export class AudioEngine {
   tone: Tone = FLAT;
   private start = 0;
   private end = 0;
+  private fadeInFor = 0;
+  private fadeOutFor = 0;
+  private fadeShape: FadeShape = "smooth";
+  /** While a clip is being edited: the song whose range plays round and round instead of moving on (see the clip editor). */
+  loopTrack: string | null = null;
+  private get looping() {
+    return this.loopTrack !== null && this.loopTrack === this.trackId;
+  }
   private monitor = 0;
   private firedNear = false;
   private firedEnd = false;
@@ -220,6 +257,12 @@ export class AudioEngine {
 
   private mediaEnded(id: string) {
     if (id !== this.trackId || !this.playing || this.firedEnd) return;
+    if (this.looping) {
+      this.seek(this.start);
+      this.voice?.play();
+      this.onChange();
+      return;
+    }
     this.firedEnd = true;
     this.captureProgress();
     this.onEnded();
@@ -311,6 +354,16 @@ export class AudioEngine {
   private retireVoice(seconds: number) {
     const v = this.voice;
     if (!v) return;
+    if (this.fadeOutFor > 0) {
+      const pos = v.position();
+      const left = Math.max(0, this.end - pos);
+      if (left > 0 && left < this.fadeOutFor + 0.05) {
+        // The rest of its fade, in its shape, sampled for the audio clock to follow.
+        const curve = new Float32Array(32);
+        for (let i = 0; i < curve.length; i++) curve[i] = fadeLevel((left - (left * i) / (curve.length - 1)) / this.fadeOutFor, this.fadeShape);
+        v.rampLevel(curve, left / (this.rate || 1));
+      }
+    }
     v.fadeOut(seconds);
     this.retiring.add(v);
     setTimeout(() => this.retiring.delete(v), seconds * 1000 + 300);
@@ -381,6 +434,7 @@ export class AudioEngine {
       this.retireVoice(0.2);
       this.voice = next;
       this.url = url;
+      this.applyLevel(true);
       next.takeOver(0.2);
     });
   }
@@ -394,6 +448,9 @@ export class AudioEngine {
     const start = options.start ?? 0;
     this.start = start;
     this.end = options.end;
+    this.fadeInFor = options.fadeIn ?? 0;
+    this.fadeOutFor = options.fadeOut ?? 0;
+    this.fadeShape = options.fadeShape ?? "smooth";
     this.firedEnd = false;
     this.firedNear = false;
     this.trackId = track.id;
@@ -428,6 +485,24 @@ export class AudioEngine {
     if (pos !== undefined && (pos < start - 0.05 || pos > end)) this.seek(start);
   }
 
+  /** A clip's fade in and out (song seconds); 0 for none. */
+  setFades(fadeIn: number, fadeOut: number, shape: FadeShape = "smooth") {
+    this.fadeInFor = Math.max(0, fadeIn);
+    this.fadeOutFor = Math.max(0, fadeOut);
+    this.fadeShape = shape;
+    this.applyLevel(true);
+  }
+
+  /** The clip's fade level where playback is: rising over the fade in, falling over the fade out. */
+  private applyLevel(now = false) {
+    if (!this.voice) return;
+    if (!this.fadeInFor && !this.fadeOutFor) return this.voice.setLevel(1, now);
+    const pos = this.voice.position();
+    const rise = this.fadeInFor ? (pos - this.start) / this.fadeInFor : 1;
+    const fall = this.fadeOutFor ? (this.end - pos) / this.fadeOutFor : 1;
+    this.voice.setLevel(fadeLevel(Math.min(rise, fall), this.fadeShape), now);
+  }
+
   setEnd(end: number) {
     this.end = end;
     if (this.position < end - this.leadPos()) this.firedNear = false;
@@ -439,6 +514,7 @@ export class AudioEngine {
     this.ensure();
     this.jumped();
     if (this.position >= this.end - 0.05 || this.position < this.start - 0.05) this.seek(this.start);
+    this.applyLevel(true);
     this.voice.play();
     this.playing = true;
     clearInterval(this.monitor);
@@ -463,6 +539,7 @@ export class AudioEngine {
     const p = Math.max(this.start, Math.min(position, Math.max(this.start, this.end - 0.05)));
     this.killRetiring();
     this.voice.seek(p);
+    this.applyLevel(true);
     if (p < this.end - this.leadPos()) this.firedNear = false;
     this.firedEnd = false;
   }
@@ -511,7 +588,14 @@ export class AudioEngine {
     if (!this.voice || !this.playing) return;
     this.captureProgress();
     const pos = this.voice.position();
-    const lead = this.leadPos();
+    // Editing a clip: round again from its start rather than ending (or crossfading into the next song).
+    if (this.looping && pos >= this.end - 0.03) {
+      this.seek(this.start);
+      this.onChange();
+      return;
+    }
+    this.applyLevel();
+    const lead = this.looping ? 0 : this.leadPos();
     if (lead > 0 && !this.firedNear && pos >= this.end - lead) {
       this.firedNear = true;
       this.onNearEnd();

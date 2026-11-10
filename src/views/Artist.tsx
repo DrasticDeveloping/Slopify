@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Art } from "../components/Artwork";
 import { DiscoveryShelf } from "../components/DiscoveryShelf";
 import { Icon } from "../components/Icon";
-import { Card, PlayFab, Shelf } from "../components/Shelf";
+import { Card, PlayFab, Shelf, SkeletonCards } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { hashString, paletteFromSeed } from "../data/library";
 import type { Artist } from "../data/types";
@@ -56,31 +56,34 @@ function ArtistPage({ artist }: { artist: Artist }) {
         </button>
       </div>
       <MetadataStatus metadata={metadata} />
-      {profiles.filter((p) => p.biography.trim()).map((p) => (
-        <About key={p.name} profile={p} heading={metadata.result?.collaboration ? `About ${p.name}` : "About"} />
-      ))}
       {popular.length ? (
         <>
           <h2 className="section-title">In your library</h2>
           <TrackList ids={popular.slice(0, 10)} context={{ label: name, route }} showAlbum={false} sortable={false} />
         </>
       ) : null}
-      <DiscoveryShelf title="Popular" subtitle="Their best-known songs, from your library and online" queries={popularQueries(name, profiles)} limit={12} route={route} withOwned />
+      <DiscoveryShelf title="Popular" subtitle="Their best-known songs, from your library and online" queries={popularQueries(name, profiles)} limit={12} route={route} withOwned hideWhenEmpty fixedSubtitle />
       <Discography profiles={profiles} loading={metadata.loading} />
+      {profiles.filter((p) => p.biography.trim()).map((p) => (
+        <About key={p.name} profile={p} heading={metadata.result?.collaboration ? `About ${p.name}` : "About"} />
+      ))}
       <FansAlsoLike name={name} />
     </div>
   );
 }
 
 function MetadataStatus({ metadata }: { metadata: { result: ArtistProfiles | null; loading: boolean; error: string; retry: () => void } }) {
-  const retry = <button type="button" className="text-btn" onClick={metadata.retry}>Retry</button>;
-  if (metadata.loading) return <p className="muted" role="status">Finding artist details online…</p>;
-  if (metadata.error || !metadata.result?.profiles.length) return <p className="muted" role="status">{metadata.error || "No verified artist profile found yet."} {retry}</p>;
-  if (metadata.result.status === "partial") return <p className="muted" role="status">Some artist details couldn't be loaded. {retry}</p>;
+  const retry = <button type="button" className="btn sm" onClick={metadata.retry}><Icon name="sync" size={15} />Try again</button>;
+  if (metadata.loading) return <p className="muted metadata-loading" role="status"><span className="spinner" />Finding artist details…</p>;
+  // No profile at all is ordinary for smaller artists: the page simply goes without one.
+  if (!metadata.error && !metadata.result?.profiles.length) return null;
+  if (metadata.error) return <div className="inline-error" role="status"><Icon name="globe" size={18} /><span><strong>Artist details aren't available right now</strong><small>Their bio and releases load from online services, which didn't answer.</small></span>{retry}</div>;
+  if (metadata.result?.status === "partial") return <p className="muted small" role="status">Some artist details couldn't be loaded. <button type="button" className="text-btn" onClick={metadata.retry}>Try again</button></p>;
   return null;
 }
 
 function About({ profile: p, heading }: { profile: ArtistMetadata; heading: string }) {
+  const [more, setMore] = useState(false);
   const formed = p.formed && p.formed !== "0" ? `${p.formedLabel ?? "Active since"} ${p.formed}` : "";
   return (
     <section className="artist-about panel">
@@ -88,7 +91,8 @@ function About({ profile: p, heading }: { profile: ArtistMetadata; heading: stri
       <div>
         <h2>{heading}</h2>
         <p className="muted">{[p.country, formed, ...p.genres].filter(Boolean).join(" · ")}</p>
-        <p className="artist-bio">{p.biography}</p>
+        <p className={`artist-bio${more ? "" : " excerpt"}`}>{p.biography}</p>
+        <button type="button" className="text-btn bio-more" onClick={() => setMore(!more)} aria-expanded={more}>{more ? "Show less" : "Read more"}</button>
         <a className="link" href={p.sourceUrl} target="_blank" rel="noreferrer">Artist metadata source</a>
         {p.biographyUrl ? (
           <p>
@@ -152,8 +156,9 @@ function Discography({ profiles, loading }: { profiles: ArtistMetadata[]; loadin
     return counts;
   }, [tracks, albums, artists]);
   const releases = profiles.flatMap((p) => p.releases);
+  if (!releases.length && !loading) return null;
   return (
-    <Shelf title="Discography" subtitle="Verified releases from online metadata">
+    <Shelf title="Discography" subtitle="Albums, EPs and singles">
       {releases.map((r) => (
         <div className="card" key={r.id}>
           <div className="card-art">
@@ -169,12 +174,12 @@ function Discography({ profiles, loading }: { profiles: ArtistMetadata[]; loadin
             }}
           >
             <strong>{r.title}</strong>
-            <span>{opening === r.id ? "Opening…" : [r.year, r.type, r.artist].filter(Boolean).join(" · ")}</span>
+            <span>{opening === r.id ? "Opening…" : [r.year, r.type].filter(Boolean).join(" · ")}</span>
           </button>
-          <span className="small muted">{owned.get(`${r.title.toLowerCase()}|${r.artist.toLowerCase()}`) ?? 0} tracks in your library</span>
+          {owned.get(`${r.title.toLowerCase()}|${r.artist.toLowerCase()}`) ? <span className="small muted rec-save"><Icon name="check" size={14} />In your library</span> : null}
         </div>
       ))}
-      {!releases.length ? <p className="muted shelf-empty">{loading ? "Finding releases…" : "No verified releases available."}</p> : null}
+      {!releases.length ? <SkeletonCards label="Finding releases…" /> : null}
     </Shelf>
   );
 }

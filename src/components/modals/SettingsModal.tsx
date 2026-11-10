@@ -1,9 +1,9 @@
-import { useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useState, type CSSProperties, type ReactNode, useRef } from "react";
 import { isNativeApp, ThisDevice, thisDevice } from "../../lib/native";
 import { plural } from "../../lib/format";
 import { rovingKey } from "../../lib/roving";
 import { qualified, reasonWeight, type ReasonKind, type TasteState } from "../../recommend/taste";
-import { resetAppData, resetRecommendations, showHiddenRecommendations, updateSettings } from "../../state/actions";
+import { resetAppData, resetRecommendations, showHiddenRecommendations, updateSettings, ask } from "../../state/actions";
 import { checkForUpdates, installUpdate, isDesktopApp, setDesktopSetting, setUpdateChannel, useDesktopSettings, useDesktopUpdates, type DesktopUpdates, type UpdateChannel } from "../../state/desktop";
 import { checkUsername, cloudEnabled, manageAccount, saveProfile, signIn, signOut, useAccount } from "../../state/cloud";
 import { toast } from "../../state/actions";
@@ -391,9 +391,12 @@ function AccountRows() {
           <button
             type="button"
             className="btn sm"
-            onClick={() => {
-              if (window.confirm(`Add ${thisDevice}'s songs and playlists to ${account.email ?? "this account"}? ${linkedElsewhere} will no longer sync with them.`)) void linkComputer(true);
-            }}
+            onClick={() => void ask({
+              title: `Use ${thisDevice}'s library with this account?`,
+              body: `Its songs and playlists are added to ${account.email ?? "this account"}. ${linkedElsewhere} will no longer sync with them.`,
+              confirmLabel: "Use with this account",
+              icon: "sync",
+            }).then((ok) => ok && void linkComputer(true))}
           >
             Use with this account
           </button>
@@ -426,8 +429,14 @@ function AccountRows() {
           type="button"
           className="btn danger sm"
           disabled={deleting}
-          onClick={() => {
-            if (!window.confirm(`Delete the Slopify account ${account.email ?? ""}? Your profile, synced library and sign-in are deleted for good. ${ThisDevice} keeps its songs and playlists.`)) return;
+          onClick={async () => {
+            const ok = await ask({
+              title: "Delete your Slopify account?",
+              body: `${account.email ? `${account.email}: your` : "Your"} profile, synced library and sign-in are deleted for good. ${ThisDevice} keeps its songs and playlists.`,
+              confirmLabel: "Delete account",
+              danger: true,
+            });
+            if (!ok) return;
             setDeleting(true);
             deleteAccount()
               .then((note) => (note ? toast("Account deleted, with a problem", { tone: "error", detail: note, sticky: true }) : toast("Account deleted", { tone: "success", detail: `Your library stays on ${thisDevice}.` })))
@@ -452,6 +461,13 @@ function installDescription(pwa: { installed: boolean; canInstall: boolean }) {
 
 export function SettingsModal({ initial }: { initial?: SettingsTab }) {
   const [tab, setTab] = useState<SettingsTab>(initial ?? "general");
+  const nav = useRef<HTMLElement>(null);
+  // On a phone the tabs are one scrolling row: the open one is kept in view (only the row scrolls).
+  useEffect(() => {
+    const row = nav.current;
+    const on = row?.querySelector<HTMLElement>("button.on");
+    if (row && on && row.scrollWidth > row.clientWidth) row.scrollTo({ left: on.offsetLeft - (row.clientWidth - on.offsetWidth) / 2, behavior: "smooth" });
+  }, [tab]);
   const settings = useStore((s) => s.settings);
   const pwa = usePwa();
   const status = useStore((s) => s.server.status);
@@ -471,9 +487,15 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
   return (
     <Shell title="Settings" subtitle="Kept in step through your music server" size="xl" className="settings-modal">
       <div className="settings-layout">
-        <nav className="settings-nav" aria-label="Settings sections">
+        <nav className="settings-nav" aria-label="Settings sections" ref={nav}>
           {tabs.map(([id, label, icon]) => (
-            <button key={id} type="button" className={tab === id ? "on" : ""} aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)}>
+            <button
+              key={id}
+              type="button"
+              className={tab === id ? "on" : ""}
+              aria-current={tab === id ? "page" : undefined}
+              onClick={() => setTab(id)}
+            >
               <Icon name={icon} size={18} />
               {label}
             </button>
@@ -507,9 +529,13 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
               <h3 className="set-section">Data & privacy</h3>
               <div className="set-group">
                 <Row icon="sync" title="Reset app data" desc="Clears your playlists, likes, recently played, settings and recommendations, wherever your library syncs. Your songs and play counts stay.">
-                  <button type="button" className="btn danger sm" onClick={() => {
-                    if (window.confirm("Reset app data? Your playlists, likes, recently played, settings and recommendations are cleared here and wherever your library syncs. Your songs and play counts stay. Slopify reloads afterwards.")) resetAppData();
-                  }} aria-label="Reset app data">Reset</button>
+                  <button type="button" className="btn danger sm" onClick={() => void ask({
+                    title: "Reset app data?",
+                    body: "Your playlists, likes, recently played, settings and recommendations are cleared here and wherever your library syncs. Your songs and play counts stay. Slopify reloads afterwards.",
+                    confirmLabel: "Reset",
+                    danger: true,
+                    icon: "sync",
+                  }).then((ok) => ok && resetAppData())} aria-label="Reset app data">Reset</button>
                 </Row>
                 <Row icon="help" title="Privacy and terms" desc="What Slopify keeps, where, and how to delete it.">
                   <a className="btn sm" href={`${DOCS}/PRIVACY.md`} target="_blank" rel="noreferrer">Privacy</a>

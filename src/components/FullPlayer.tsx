@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { useCurrent, useReducedMotion } from "../lib/hooks";
 import { focusFirstVisible, focusIsVisible } from "../lib/focus";
 import { openTrackMenu } from "../lib/menus";
-import { isLiked, navigate, toggleLike, togglePlay } from "../state/actions";
+import { isLiked, navigate, nextTrackId, playPreviewedNext, toggleLike, togglePlay } from "../state/actions";
+import { formatTime } from "../lib/format";
 import { getState, setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
 import { BlurredTrackArt, TrackArt } from "./Artwork";
@@ -51,7 +52,8 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
   const reduced = useReducedMotion();
   const menuOpen = useStore((s) => s.menu !== null);
   /** The side pane beside the player: the queue or the lyrics (each replaces the controls on narrow screens). */
-  const [pane, setPane] = useState<"queue" | "lyrics" | null>(null);
+  // A wide screen has room for what's next beside the art (as Apple Music and Tidal show), so it opens there.
+  const [pane, setPane] = useState<"queue" | "lyrics" | null>(() => (window.matchMedia("(min-width: 1280px)").matches ? "queue" : null));
   const queue = pane === "queue";
   const pulse = useRef<HTMLDivElement>(null);
   const close = () => setState({ fullPlayer: false });
@@ -218,6 +220,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
         </button>
       </div>
       {pane === "queue" ? <QueueView /> : <LyricsView trackId={track.id} />}
+      <div className="fp-pane-transport"><Transport /></div>
     </aside>
   ) : null;
   const lyricsBtn = (
@@ -325,12 +328,44 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
                   </button>
                 </div>
               </div>
+              <PhoneExtras onQueue={() => togglePane("queue")} />
             </div>
             {queuePanel}
           </div>
           <Visualizer pulseTarget={pulse} reduced={reduced} bars={72} />
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Below the controls on a phone (scroll down), as Spotify's and Apple Music's players have: what's next.
+ * Hidden on larger screens, where the queue opens beside the art. (No lyrics card: whether a song has
+ * lyrics is only known by looking it up, which the Lyrics button does when asked.)
+ */
+function PhoneExtras({ onQueue }: { onQueue: () => void }) {
+  const nextId = useStore((s) => (s.currentId ? nextTrackId() : null));
+  const nextTrack = useStore((s) => (nextId ? s.tracks[nextId] : null));
+  const nextArtist = useStore((s) => (nextTrack ? s.artists[nextTrack.artistId]?.name : ""));
+  return (
+    <div className="fp-extras">
+      <div className="fp-extra">
+        <div className="fp-extra-head">
+          <span className="spot-eyebrow">Next up</span>
+          <button type="button" className="text-btn" onClick={onQueue}>Open queue</button>
+        </div>
+        {nextTrack ? (
+          <button type="button" className="fp-next" onClick={playPreviewedNext} aria-label={`Play ${nextTrack.title}`}>
+            <TrackArt trackId={nextTrack.id} />
+            <span className="title-text">
+              <span className="t-name">{nextTrack.title}</span>
+              <span className="t-sub">{nextArtist}</span>
+            </span>
+            <span className="q-dur">{formatTime(nextTrack.duration)}</span>
+          </button>
+        ) : <p className="muted small">End of the queue. Turn on repeat, or add more songs.</p>}
+      </div>
     </div>
   );
 }

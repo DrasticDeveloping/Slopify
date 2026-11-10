@@ -5,7 +5,8 @@ import { addToPlaylist, closeModal, createPlaylist, editPlaylist, findMusic, lib
 import { signIn, useAccount } from "../../state/cloud";
 import { joinRoom, leaveRoom, startRoom } from "../../state/listen";
 import { getState, useStore } from "../../state/store";
-import { Art, TrackArt } from "../Artwork";
+import { Art, PlaylistArt, TrackArt } from "../Artwork";
+import { hashString, paletteFromSeed } from "../../data/library";
 import { ChooseFiles } from "../ChooseFiles";
 import { Icon } from "../Icon";
 import { Shell } from "./Shell";
@@ -16,6 +17,8 @@ export function PlaylistFormModal({ editId, addIds }: { editId?: string; addIds?
   const [name, setName] = useState(existing?.name ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
   const placeholder = `My Playlist #${count + 1}`;
+  // A new playlist's cover is its colours (and, with songs to start, their covers), previewed as you type.
+  const preview = existing ?? { id: "new", name: name || placeholder, description, system: false, trackIds: addIds ?? [], createdAt: 0, palette: paletteFromSeed(hashString(name.trim() || placeholder)) };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -32,16 +35,24 @@ export function PlaylistFormModal({ editId, addIds }: { editId?: string; addIds?
   };
 
   return (
-    <Shell title={existing ? "Edit details" : "Create playlist"} subtitle={!existing && addIds?.length ? `Starting with ${plural(addIds.length, "song")}` : undefined} size="sm">
+    <Shell title={existing ? "Edit details" : "Create playlist"} subtitle={!existing && addIds?.length ? `Starting with ${plural(addIds.length, "song")}` : undefined} tint={preview.palette.b} size="md">
       <form className="form" onSubmit={submit}>
-        <label className="field-label">
-          Name
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={placeholder} maxLength={80} autoFocus />
-        </label>
-        <label className="field-label">
-          Description <span className="muted">(optional)</span>
-          <textarea className="input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What's the vibe?" rows={3} maxLength={300} />
-        </label>
+        <div className="details-grid">
+          <div className="details-cover">
+            <PlaylistArt playlist={preview} />
+            <span className="details-cover-name">{name.trim() || existing?.name || placeholder}</span>
+          </div>
+          <div className="details-fields">
+            <label className="field-label">
+              Name
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={placeholder} maxLength={80} autoFocus />
+            </label>
+            <label className="field-label grow">
+              <span>Description <span className="optional">(optional)</span></span>
+              <textarea className="input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What's the vibe?" rows={4} maxLength={300} />
+            </label>
+          </div>
+        </div>
         <div className="form-actions">
           <button type="button" className="btn ghost" onClick={closeModal}>Cancel</button>
           <button type="submit" className="btn primary">{existing ? "Save" : "Create"}</button>
@@ -66,7 +77,7 @@ export function AddSongsModal({ playlistId }: { playlistId: string }) {
   const inList = new Set(playlist.trackIds);
 
   return (
-    <Shell title="Add songs" subtitle={<>to <strong>{playlist.name}</strong> · {plural(playlist.trackIds.length, "song")}</>} size="md" footer={<button type="button" className="btn primary" onClick={closeModal}>Done</button>}>
+    <Shell title="Add songs" subtitle={<>to <strong>{playlist.name}</strong> · {plural(playlist.trackIds.length, "song")}</>} art={<PlaylistArt playlist={playlist} />} tint={playlist.palette.b} size="md" footer={<><span className="muted small">{plural(playlist.trackIds.length, "song")} in the playlist</span><span className="spacer" /><button type="button" className="btn primary" onClick={closeModal}>Done</button></>}>
       <label className="field search-field">
         <Icon name="search" size={18} />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search your library" aria-label="Search songs to add" autoFocus />
@@ -128,15 +139,28 @@ export function ListenAlongModal() {
 
   if (account.status !== "signedIn") {
     return (
-      <Shell title="Listen along" subtitle="Listen together in real time, with one person in control." icon="users" size="sm">
-        <p className="muted">
+      <Shell title="Listen along" subtitle="Listen together in real time, with one person in control." icon="users" size="sm" className="listen-intro">
+        <div className="listen-hero" aria-hidden="true">
+          <span className="listen-orbit">
+            <i style={{ "--h": 268 } as CSSProperties} />
+            <i style={{ "--h": 330 } as CSSProperties} />
+            <i style={{ "--h": 190 } as CSSProperties} />
+          </span>
+          <span className="listen-wave"><Icon name="wave" size={22} /></span>
+        </div>
+        <ul className="feature-rows">
+          <li><span className="feature-icon"><Icon name="radio" size={17} /></span><span><strong>Start a room</strong><small>Everyone hears what you play, in sync.</small></span></li>
+          <li><span className="feature-icon"><Icon name="users" size={17} /></span><span><strong>Join with a code</strong><small>Friends join from their own Slopify.</small></span></li>
+          <li><span className="feature-icon"><Icon name="volume" size={17} /></span><span><strong>Your volume stays yours</strong><small>The host picks the music; you set the level.</small></span></li>
+        </ul>
+        <p className="muted small">
           {account.status === "disabled"
             ? "Listen Along needs Slopify's online service, which this copy of Slopify isn't set up with."
             : "Rooms are linked to your Slopify account, so friends see who you are."}
         </p>
         {account.status !== "disabled" ? (
           <div className="form-actions">
-            <button type="button" className="btn primary" disabled={account.status === "loading"} onClick={signIn}>Sign in</button>
+            <button type="button" className="btn primary wide" disabled={account.status === "loading"} onClick={signIn}><Icon name="user" size={17} />Sign in to listen along</button>
           </div>
         ) : null}
       </Shell>

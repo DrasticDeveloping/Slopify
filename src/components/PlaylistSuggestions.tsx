@@ -29,7 +29,8 @@ export function PlaylistSuggestions({ id, name, seedIds }: { id: string; name: s
     else if (canStream(song.candidate)) playList(ids, streamTrackId(song.key), { label: `Suggestions for ${name}`, route: { name: "playlist", id } });
     else void addDiscoveredSong(song.candidate, song.kind);
   };
-  const status = loading ? "Finding songs for this playlist…" : note || (!songs.length ? "No more matching songs right now." : "");
+  const status = loading ? "Finding songs for this playlist…" : note || "";
+  if (!songs.length && !loading) return null;
 
   return (
     <section className="playlist-suggestions" aria-label="Recommended for this playlist">

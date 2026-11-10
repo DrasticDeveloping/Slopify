@@ -140,9 +140,8 @@ export function PlatformBadge({ track }: { track: Track }) {
   const platform = track.stream || track.storage === "server" ? trackPlatform(track) : null;
   if (!platform) return null;
   return (
-    <span className={`badge platform ${platform}`} title={`Plays from ${PLATFORM_NAMES[platform]}; not downloaded`}>
+    <span className={`badge platform ${platform}`} title={`Plays from ${PLATFORM_NAMES[platform]}; not downloaded`} role="img" aria-label={`From ${PLATFORM_NAMES[platform]}`}>
       <span className={`prov-dot ${platform}`} aria-hidden="true" />
-      {PLATFORM_NAMES[platform]}
     </span>
   );
 }
@@ -313,7 +312,7 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
           <span className="t-name">
             {track.title}
             <PlatformBadge track={track} />
-            {track.kind === "video" ? <span className="badge">VIDEO</span> : null}
+            {track.kind === "video" ? <span className="badge icon" title="Video" role="img" aria-label="Video"><Icon name="video" size={11} /></span> : null}
             {hasClip ? <span className="badge clip" title="Clip range applied"><Icon name="scissors" size={11} /></span> : null}
             {snoozed ? <span className="badge snoozed" title={`Snoozed ${snoozeEnds(snoozed)}: skipped unless you play it`}><Icon name="snooze" size={11} /> SNOOZED</span> : null}
           </span>
@@ -328,7 +327,7 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
         <span className="td album" role="cell">
           <button type="button" className="link" tabIndex={-1} onClick={(e) => { e.stopPropagation(); navigate({ name: "album", id: track.albumId }); }}>
             {/* A single's "album" is the song itself: naming it twice says nothing. */}
-            {album && album.title.toLowerCase() !== track.title.toLowerCase() ? album.title : <span className="muted">Single</span>}
+            {album && album.title.toLowerCase() !== track.title.toLowerCase() ? album.title : <span className="single-mark" title="Single">—</span>}
           </button>
         </span>
       ) : null}

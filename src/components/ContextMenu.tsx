@@ -1,17 +1,43 @@
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { useMediaQuery } from "../lib/hooks";
 import { closeMenu, takeMenuOpener } from "../state/actions";
-import { useStore, type MenuItem } from "../state/store";
+import { useStore, type MenuArt, type MenuItem } from "../state/store";
+import { PlaylistArt, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 
-function MenuList({ items, x, y, flipX, title, subtitle, onDone, sub }: { items: MenuItem[]; x: number; y: number; flipX?: number; title?: string; subtitle?: string; onDone: () => void; sub?: boolean }) {
+/** The cover at the top of a menu, so it's clear at a glance what the menu acts on (as Spotify's and Apple Music's do). */
+function MenuArtView({ art }: { art: MenuArt }) {
+  const playlist = useStore((s) => (art.playlistId ? s.playlists.find((p) => p.id === art.playlistId) : undefined));
+  if (art.trackId) return <TrackArt trackId={art.trackId} className="menu-art" />;
+  if (playlist) return <PlaylistArt playlist={playlist} className="menu-art" />;
+  if (art.image) return <span className={`menu-art menu-art-img${art.round ? " round" : ""}`}><img src={art.image} alt="" referrerPolicy="no-referrer" /></span>;
+  if (art.initial) return <span className={`menu-art menu-art-initial${art.round ? " round" : ""}`}>{art.initial}</span>;
+  if (art.icon) return <span className={`menu-art menu-art-icon${art.round ? " round" : ""}`}><Icon name={art.icon} size={20} /></span>;
+  return null;
+}
+
+function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet }: { items: MenuItem[]; x: number; y: number; flipX?: number; title?: string; subtitle?: string; art?: MenuArt; onDone: () => void; sub?: boolean; sheet?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y, ready: false });
   const [openSub, setOpenSub] = useState<{ index: number; x: number; y: number; flipX: number } | null>(null);
+  /** The item to focus once its submenu has closed (in a sheet the menu is hidden until then). */
+  const [returnTo, setReturnTo] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (returnTo === null || openSub) return;
+    // Indexes count separators too, so the item is found by its place among all the list's children.
+    (ref.current?.querySelector(":scope > .menu-items")?.children[returnTo] as HTMLElement | undefined)?.focus();
+    setReturnTo(null);
+  }, [returnTo, openSub]);
 
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
+    if (sheet) {
+      setPos({ left: 0, top: 0, ready: true });
+      el.querySelector<HTMLButtonElement>(".menu-items button:not(:disabled)")?.focus({ preventScroll: true });
+      return;
+    }
     const r = el.getBoundingClientRect();
     const pad = 10;
     let left = x;
@@ -20,7 +46,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, onDone, sub }: { items:
     if (top + r.height > window.innerHeight - pad) top = Math.max(pad, window.innerHeight - r.height - pad);
     setPos({ left: Math.max(pad, left), top: Math.max(pad, top), ready: true });
     if (!sub) el.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-  }, [x, y, sub, flipX]);
+  }, [x, y, sub, flipX, sheet]);
 
   const key = (e: KeyboardEvent<HTMLDivElement>) => {
     // The submenu is portalled but React still bubbles its events to the parent menu.
@@ -56,17 +82,25 @@ function MenuList({ items, x, y, flipX, title, subtitle, onDone, sub }: { items:
   return (
     <div
       ref={ref}
-      className={`menu${pos.ready ? " ready" : ""}${sub ? " sub" : ""}`}
-      style={{ left: pos.left, top: pos.top }}
+      className={`menu${pos.ready ? " ready" : ""}${sub ? " sub" : ""}${sheet ? " sheet" : ""}${art ? " has-art" : ""}${sheet && openSub ? " covered" : ""}`}
+      style={sheet ? undefined : { left: pos.left, top: pos.top }}
       role="menu"
       aria-label={title}
       onKeyDown={key}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {sheet ? <span className="sheet-grip" aria-hidden="true" /> : null}
       {title ? (
         <div className="menu-head">
-          <strong>{title}</strong>
-          {subtitle ? <small>{subtitle}</small> : null}
+          {sheet && sub ? (
+            <button type="button" className="icon-btn sm menu-back" onClick={onDone} aria-label="Back">
+              <Icon name="chevronLeft" size={18} />
+            </button>
+          ) : art ? <MenuArtView art={art} /> : null}
+          <span className="menu-head-text">
+            <strong>{title}</strong>
+            {subtitle ? <small>{subtitle}</small> : null}
+          </span>
         </div>
       ) : null}
       <div className="menu-items">
@@ -82,9 +116,10 @@ function MenuList({ items, x, y, flipX, title, subtitle, onDone, sub }: { items:
               aria-haspopup={item.submenu ? "menu" : undefined}
               aria-expanded={item.submenu ? openSub?.index === i : undefined}
               data-sub={item.submenu ? "1" : undefined}
-              className={`menu-item${item.danger ? " danger" : ""}${openSub?.index === i ? " open" : ""}`}
+              className={`menu-item${item.danger ? " danger" : ""}${item.accent ? " accent" : ""}${openSub?.index === i ? " open" : ""}`}
               disabled={item.disabled}
               onPointerEnter={(e) => {
+                if (sheet) return;
                 if (item.submenu) {
                   const r = e.currentTarget.getBoundingClientRect();
                   setOpenSub({ index: i, x: r.right + 4, y: r.top - 6, flipX: r.left - 4 });
@@ -120,9 +155,13 @@ function MenuList({ items, x, y, flipX, title, subtitle, onDone, sub }: { items:
           y={openSub.y}
           flipX={openSub.flipX}
           sub
+          sheet={sheet}
+          // A sheet's submenu replaces it on screen, so it says where you are and has a way back.
+          title={sheet ? items[openSub.index].label : undefined}
+          subtitle={sheet ? title : undefined}
           onDone={() => {
+            setReturnTo(openSub.index);
             setOpenSub(null);
-            ref.current?.querySelectorAll<HTMLButtonElement>(".menu-item")[openSub.index]?.focus();
           }}
         />,
         ref.current?.parentElement ?? document.body,
@@ -133,6 +172,8 @@ function MenuList({ items, x, y, flipX, title, subtitle, onDone, sub }: { items:
 
 export function ContextMenu() {
   const menu = useStore((s) => s.menu);
+  // On a phone a menu is a sheet from the bottom, within thumb reach, as in Spotify's and Apple Music's apps.
+  const sheet = useMediaQuery("(max-width: 680px)");
   const wasOpen = useRef(false);
 
   // Hand focus back to whatever opened the menu (captured in openMenu, before the
@@ -151,8 +192,8 @@ export function ContextMenu() {
 
   if (!menu) return null;
   return (
-    <div className="menu-layer" onPointerDown={(e) => e.target === e.currentTarget && closeMenu()} onContextMenu={(e) => { e.preventDefault(); closeMenu(); }}>
-      <MenuList key={`${menu.x},${menu.y},${menu.title}`} items={menu.items} x={menu.x} y={menu.y} title={menu.title} subtitle={menu.subtitle} onDone={closeMenu} />
+    <div className={`menu-layer${sheet ? " sheet" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && closeMenu()} onContextMenu={(e) => { e.preventDefault(); closeMenu(); }}>
+      <MenuList key={`${menu.x},${menu.y},${menu.title}`} items={menu.items} x={menu.x} y={menu.y} title={menu.title} subtitle={menu.subtitle} art={menu.art} sheet={sheet} onDone={closeMenu} />
     </div>
   );
 }

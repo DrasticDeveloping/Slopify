@@ -124,7 +124,10 @@ export function useReleaseShelves() {
       hit.value.then((v) => { if (v.partial && !v.radar.length && !v.albums.length) memory.delete(key); }, () => memory.delete(key));
     }
     hit.value.then(
-      (shelves) => !controller.signal.aborted && setState({ shelves, loading: false, error: "" }),
+      (shelves) => {
+        for (const r of [...shelves.radar, ...shelves.albums]) known.set(r.id, r);
+        if (!controller.signal.aborted) setState({ shelves, loading: false, error: "" });
+      },
       () => !controller.signal.aborted && setState({ shelves: null, loading: false, error: "The music catalog couldn't be reached. Try again later." }),
     );
     return () => controller.abort();
@@ -136,6 +139,9 @@ export function useReleaseShelves() {
 /* ───────────────────────── one release ───────────────────────── */
 
 const details = new Map<string, Promise<ReleaseDetail>>();
+/** Releases seen on a shelf, so a release's page can show its cover and title before (or without) its details. */
+const known = new Map<string, Release>();
+export const knownRelease = (id: string) => known.get(id);
 
 export function fetchRelease(id: string): Promise<ReleaseDetail> {
   let hit = details.get(id);
