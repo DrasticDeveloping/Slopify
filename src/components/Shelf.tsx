@@ -15,9 +15,13 @@ export function Shelf({ title, subtitle, action, children }: { title: string; su
     el.addEventListener("scroll", update, { passive: true });
     const ro = new ResizeObserver(update);
     ro.observe(el);
+    // Cards arriving or leaving change how far the row scrolls without resizing it (and the arrows hide when it can't).
+    const mo = new MutationObserver(update);
+    mo.observe(el, { childList: true });
     return () => {
       el.removeEventListener("scroll", update);
       ro.disconnect();
+      mo.disconnect();
     };
   }, []);
 
