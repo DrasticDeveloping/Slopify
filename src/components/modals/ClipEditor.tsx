@@ -5,9 +5,10 @@ import { engine } from "../../audio/engine";
 import { rng } from "../../data/library";
 import { formatTime } from "../../lib/format";
 import { onLiveFrame } from "../../lib/live";
+import { useMediaQuery } from "../../lib/hooks";
 import { closeModal, isPlayable, libraryIds, mediaUrlOf, previewClip, saveClip, seek, setClipDraft, toast, togglePlay } from "../../state/actions";
 import { getState, useStore } from "../../state/store";
-import { TrackArt } from "../Artwork";
+import { BlurredTrackArt, TrackArt } from "../Artwork";
 import { Icon } from "../Icon";
 import { Shell } from "./Shell";
 
@@ -80,6 +81,20 @@ function TimeInput({ value, onCommit, label }: { value: number; onCommit: (v: nu
   );
 }
 
+/**
+ * How the two handle times sit under the waveform. Each opens inward from its handle; a clip too narrow for both
+ * side by side steps the end time down a row, and near either end of the song the time that would run off the
+ * waveform opens the other way.
+ */
+function chipClasses(range: { start: number; end: number }, duration: number, width: number) {
+  if (!duration || !width) return "";
+  const room = 70;
+  const startPx = (range.start / duration) * width;
+  const endPx = (range.end / duration) * width;
+  if (endPx - startPx >= 130) return "";
+  return ` tight${width - startPx < room ? " start-out" : ""}${endPx < room ? " end-out" : ""}`;
+}
+
 export function ClipEditorModal({ trackId }: { trackId?: string }) {
   const tracks = useStore((s) => s.tracks);
   const artists = useStore((s) => s.artists);
@@ -98,6 +113,16 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
   const wave = useRef<HTMLDivElement>(null);
   const head = useRef<HTMLSpanElement>(null);
   const dragging = useRef<"start" | "end" | null>(null);
+  const touch = useMediaQuery("(hover: none) and (pointer: coarse)");
+  // The waveform's width, so the two handle times can step apart when the clip is too narrow for both side by side.
+  const [waveWidth, setWaveWidth] = useState(0);
+  useEffect(() => {
+    const el = wave.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setWaveWidth(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [id]);
 
   // A song opened before its length was known starts as the whole song once the length arrives.
   useEffect(() => {
@@ -199,10 +224,11 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
 
   return (
     <Shell
-      title="Clip editor"
-      subtitle="Choose exactly which part of a song plays. The file itself is never changed."
-      icon="scissors"
+      title="Edit clip"
+      subtitle={<><strong>{track.title}</strong> · {creditLine(track, artists)}</>}
+      art={<TrackArt trackId={id} />}
       size="lg"
+      className="clip-modal"
       footer={
         <>
           <button type="button" className="btn ghost" onClick={() => setRange({ start: 0, end: duration })} disabled={full}>Use full song</button>
@@ -223,13 +249,9 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
         </>
       }
     >
-      <div className="clip-track">
-        <TrackArt trackId={id} className="clip-art" />
-        <div className="title-text">
-          <span className="t-name">{track.title}</span>
-          <span className="t-sub">{creditLine(track, artists)} · {formatTime(duration)}</span>
-        </div>
-        {options.length > 1 ? <label className="select">
+      <div className="clip-bar">
+        <span className="clip-note"><Icon name="scissors" size={15} />Only this part plays. The file itself never changes.</span>
+        {options.length > 1 ? <label className="select clip-switch">
           <span className="sr-only">Song</span>
           <select value={id} onChange={(e) => pick(e.target.value)} aria-label="Choose a song to clip">
             {options.map((o) => (
@@ -240,6 +262,8 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
       </div>
 
       <div className="clip-stage">
+        {/* The song's own artwork, blurred once into a still canvas (as the full player's backdrop), behind the waveform. */}
+        <BlurredTrackArt trackId={id} className="clip-backdrop" />
         <div className="clip-ruler" aria-hidden="true">
           {Array.from({ length: 6 }, (_, i) => <span key={i}>{formatTime((duration * i) / 5)}</span>)}
         </div>
@@ -248,12 +272,13 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
             {analysis.frames.map((src, i) => <img key={i} src={src} alt="" />)}
           </div>
         ) : null}
-        <div ref={wave} className={`clip-wave${analysis.peaks ? "" : " estimated"}`} onPointerDown={scrub} style={{ "--s": range.start / duration, "--e": range.end / duration } as CSSProperties}>
+        <div ref={wave} className={`clip-wave${analysis.peaks ? "" : " estimated"}${chipClasses(range, duration, waveWidth)}`} onPointerDown={scrub} style={{ "--s": range.start / duration, "--e": range.end / duration } as CSSProperties}>
           <div className="clip-bars" aria-hidden="true">
             {levels.map((v, i) => {
               const t = (i + 0.5) / BARS;
               const inside = t >= range.start / duration && t <= range.end / duration;
-              return <i key={i} className={inside ? "in" : ""} style={{ "--v": v } as CSSProperties} />;
+              // Near-silent bars are flat stubs: as tiny rounded bars they read as a "•••" menu icon.
+              return <i key={i} className={`${inside ? "in" : ""}${v < 0.07 ? " q" : ""}`} style={{ "--v": v } as CSSProperties} />;
             })}
           </div>
           <span className="clip-shade left" aria-hidden="true" />
@@ -286,19 +311,28 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
 
       <div className="clip-controls">
         <TimeInput label="Start" value={range.start} onCommit={(v) => setRange((r) => clamp({ ...r, start: v }, "start"))} />
-        <div className="clip-length">
-          <small>Clip length</small>
-          <strong>{formatTime(range.end - range.start)}</strong>
+        <div className="clip-center">
+          <button
+            type="button"
+            className={`play-main clip-preview${previewing ? " playing" : ""}`}
+            onClick={() => (previewing ? togglePlay() : previewClip(id))}
+            aria-label={previewing ? "Pause preview" : "Preview clip"}
+            title={previewing ? "Pause" : "Preview the clip"}
+          >
+            <span className="pm-icon pm-play"><Icon name="play" size={22} /></span>
+            <span className="pm-icon pm-pause"><Icon name="pause" size={22} /></span>
+          </button>
+          <div className="clip-length">
+            <small>{full ? "Whole song" : "Clip length"}</small>
+            <strong>{formatTime(range.end - range.start)}</strong>
+            {full ? null : <span className="muted small">of {formatTime(duration)}</span>}
+          </div>
         </div>
         <TimeInput label="End" value={range.end} onCommit={(v) => setRange((r) => clamp({ ...r, end: v }, "end"))} />
-        <button type="button" className={`btn${previewing ? "" : " primary"}`} onClick={() => (previewing ? togglePlay() : previewClip(id))}>
-          <Icon name={previewing ? "pause" : "play"} size={18} />
-          {previewing ? "Pause" : "Preview"}
-        </button>
       </div>
-      <p className="muted small" role="status">
+      <p className="muted small clip-help" role="status">
         {analysis.peaks ? "" : analysis.failed ? "This song's file couldn't be read, so the waveform is only an outline. " : "Reading the song's waveform… "}
-        Drag the handles, use arrow keys (Shift for 5s steps), or type exact times. Click the waveform to scrub while previewing.
+        {touch ? "Drag either handle, or type the start and end times. Tap the waveform while previewing to jump there." : "Drag the handles, use the arrow keys (Shift for 5s), or type a time. Click the waveform to scrub while previewing."}
       </p>
     </Shell>
   );
