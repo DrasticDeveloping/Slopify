@@ -11,7 +11,7 @@ import { namesOverlap } from "./keys.mjs";
 const require = createRequire(import.meta.url);
 const { youtubeVideoID } = require("../providers/local-import-core.cjs");
 const { completedSoundCloudDownload, ffmpegExecutable } = require("../providers/local-import-platform.cjs");
-const { downloadResolvedAudio, downloadYouTubeAudio, fetchResolvedAudioRange, resolveYouTubeAudio } = require("../providers/local-youtube.cjs");
+const { downloadResolvedAudio, downloadYouTubeAudio, fetchResolvedAudioRange, resolveYouTubeAudio, youtubeCoolingDown } = require("../providers/local-youtube.cjs");
 const {
   downloadResolvedSoundCloudAudio,
   downloadSoundCloudAudio,
@@ -248,8 +248,11 @@ export function createDuplicateFinder({ dataDir, songs, downloadLink, beforeSave
 
   async function backfillNow(song, signal) {
     const checkedAt = Date.now();
+    const link = downloadLink(song);
+    // Fingerprinting a library song can wait while YouTube is cooling down (it's tried again next time).
+    if (typeof link === "string" && !isSoundCloudURL(link) && youtubeCoolingDown()) return;
     try {
-      const stream = await openStream(downloadLink(song), signal);
+      const stream = await openStream(link, signal);
       if (!stream) return void (await index.update(song.id, { checkedAt }));
       const bytes = await stream.range(0, bytesFor(stream.resolved, LIBRARY_SECONDS));
       const payload = await payloadHashOfBuffer(bytes);

@@ -28,7 +28,7 @@ const { LocalImportError, youtubeVideoID } = require("./providers/local-import-c
 const { importConfirmedSource, resolveLocalImportSource } = require("./providers/local-import-platform.cjs");
 const { mp4Duration } = require("./providers/mp4-join.cjs");
 const { looksLikeLink, searchAllPlatforms, searchMorePlatforms } = require("./providers/local-search.cjs");
-const { downloadResolvedAudio, resolveYouTubeAudio } = require("./providers/local-youtube.cjs");
+const { downloadResolvedAudio, isLastingRefusal, resolveYouTubeAudio, youtubeCoolingDown } = require("./providers/local-youtube.cjs");
 const { downloadResolvedSoundCloudAudio, isSoundCloudURL, resolveSoundCloudAudio } = require("./providers/local-soundcloud.cjs");
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -197,8 +197,11 @@ class Previews {
     await sweepOldTemp(/^slopify-preview-[A-Za-z0-9]{6}$/);
   }
 
-  /** A preview of the source's audio, or (`video`, YouTube only) its video with sound. */
-  async create(sourceURL, signal, mediaKind = "audio") {
+  /**
+   * A preview of the source's audio, or (`video`, YouTube only) its video with sound.
+   * `background` (the next song, fetched ahead) waits while YouTube is cooling down; one being played doesn't.
+   */
+  async create(sourceURL, signal, mediaKind = "audio", { background = false } = {}) {
     const video = mediaKind === "video" && !isSoundCloudURL(sourceURL);
     const key = createHash("sha256").update(video ? `video:${sourceURL}` : sourceURL).digest("hex").slice(0, 32);
     const cached = this.items.get(key);
@@ -213,8 +216,11 @@ class Previews {
         this.items.delete(key);
       }
     }
-    if (video) return this.createVideo(key, sourceURL, signal);
     const soundCloud = isSoundCloudURL(sourceURL);
+    if (background && !soundCloud && youtubeCoolingDown()) {
+      throw new LocalImportError("previewing", "YOUTUBE_COOLING_DOWN", "YouTube refused a song a moment ago, so this one is fetched when it plays.");
+    }
+    if (video) return this.createVideo(key, sourceURL, signal);
     const resolved = soundCloud ? await resolveSoundCloudAudio(sourceURL, signal) : await resolveYouTubeAudio(sourceURL, signal);
     if (resolved.contentLength > MAX_PREVIEW_BYTES) {
       throw new LocalImportError("previewing", "PREVIEW_TOO_LARGE", "This source is too large to preview. You can still select and import it.");
@@ -294,6 +300,11 @@ class Previews {
  * was saved; its stored media address expires, so the match's page is used.
  */
 function downloadLink(song) {
+  return downloadLinks(song)[0] ?? null;
+}
+
+/** Every link the song's audio can download from, best first: its own, then other copies of it found when it was saved. */
+function downloadLinks(song) {
   const identity = song.sourceIdentity ?? {};
   const candidates = [
     song.sourceURL,
@@ -307,7 +318,7 @@ function downloadLink(song) {
       return false;
     }
   };
-  return candidates.find(downloadable) ?? null;
+  return [...new Set(candidates.filter(downloadable))];
 }
 
 /**
@@ -315,10 +326,10 @@ function downloadLink(song) {
  * With `duplicates`, a song not yet fingerprinted in full is fingerprinted from this download.
  */
 async function prepareSongFile(song, dir, signal, duplicates = null) {
-  const sourceURL = downloadLink(song);
-  if (!sourceURL) throw Object.assign(new Error("This song has no source link to fetch it from."), { status: 404 });
+  const links = downloadLinks(song);
+  if (!links.length) throw Object.assign(new Error("This song has no source link to fetch it from."), { status: 404 });
   const study = duplicates?.wants(song.id);
-  const download = () => importConfirmedSource({
+  const download = (sourceURL) => importConfirmedSource({
     sourceURL,
     sourceIdentity: song.sourceIdentity,
     mediaKind: song.savedAs,
@@ -329,12 +340,23 @@ async function prepareSongFile(song, dir, signal, duplicates = null) {
     analyzeSource: study ? (file, options) => duplicates.analyzeFile(file, options) : undefined,
   }, signal, () => {});
   let result;
-  try {
-    result = await download();
-  } catch (error) {
-    // Sources occasionally fail once (an expired stream address, a dropped connection); try once more.
-    if (signal.aborted) throw error;
-    result = await download();
+  for (const [i, sourceURL] of links.entries()) {
+    try {
+      result = await download(sourceURL);
+      break;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      // YouTube refused this copy (or it's gone): asking again won't change that, but another copy of the song may play.
+      if (isLastingRefusal(error)) {
+        if (i === links.length - 1) throw error;
+        continue;
+      }
+      // Rate-limited: asking again straight away would only add to it.
+      if (error?.code === "YOUTUBE_RATE_LIMITED") throw error;
+      // Sources occasionally fail once (an expired stream address, a dropped connection); try once more.
+      result = await download(sourceURL);
+      break;
+    }
   }
   if (result.analysis && duplicates) void duplicates.learn(song.id, result.analysis).catch(() => undefined);
   return { filePath: result.filePath, size: result.size, sha256: result.contentSha256 };
@@ -624,7 +646,7 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
       if (!res.writableFinished) controller.abort(new DOMException("Preview stopped", "AbortError"));
     });
     try {
-      const { token, durationSeconds } = await previews.create(String(body.sourceURL || ""), controller.signal, body.mediaKind === "video" ? "video" : "audio");
+      const { token, durationSeconds } = await previews.create(String(body.sourceURL || ""), controller.signal, body.mediaKind === "video" ? "video" : "audio", { background: body.background === true });
       sendJSON(res, 200, { ok: true, result: { url: `/api/import/preview/${token}`, durationSeconds } });
     } catch (error) {
       if (error?.name === "AbortError") {
