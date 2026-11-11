@@ -11,6 +11,7 @@ import type { Artist } from "../data/types";
 import { plural } from "../lib/format";
 import { openArtist, useArtistMetadata, type ArtistMetadata, type ArtistProfiles } from "../recommend/artist";
 import { artistName, cleanArtist, type DiscoveryQuery } from "../recommend/discover";
+import { useTopSongs, type TopSong } from "../recommend/popular";
 import { relatedFor } from "../recommend/service";
 import { navigate, startCollectionRadio } from "../state/actions";
 import { useStore, type Route } from "../state/store";
@@ -69,7 +70,7 @@ function ArtistPage({ artist }: { artist: Artist }) {
           <TrackList ids={popular.slice(0, 10)} context={{ label: name, route }} showAlbum={false} sortable={false} />
         </>
       ) : null}
-      <DiscoveryShelf title="Popular" subtitle="Their best-known songs, from your library and online" queries={popularQueries(name, profiles)} limit={12} route={route} withOwned hideWhenEmpty fixedSubtitle openSong />
+      <PopularShelf artistId={id} name={name} profiles={profiles} profilesLoading={metadata.loading} route={route} />
       <Discography artistId={id} profiles={profiles} loading={metadata.loading} />
       {profiles.filter((p) => p.biography.trim()).map((p) => (
         <About key={p.name} profile={p} heading={metadata.result?.collaboration ? `About ${p.name}` : "About"} />
@@ -112,16 +113,56 @@ function About({ profile: p, heading }: { profile: ArtistMetadata; heading: stri
 }
 
 /**
- * The artist's popular songs: the ones TheAudioDB lists first, then whatever the
- * platforms rank highest for the artist's name (TheAudioDB often knows only one
- * or two songs, which may all be in your library already).
+ * The artist's popular songs, most popular first: the music catalog's ranking
+ * when it knows the artist, else the songs TheAudioDB lists. Either way, what
+ * the platforms rank highest for the artist's name fills any gaps.
  */
-function popularQueries(name: string, profiles: ArtistMetadata[]): DiscoveryQuery[] {
-  const top: DiscoveryQuery[] = profiles.flatMap((p) => p.tracks).map((t) => ({
+function popularQueries(name: string, profiles: ArtistMetadata[], top: TopSong[] | null): DiscoveryQuery[] {
+  const byName = (n: string): DiscoveryQuery => ({ text: n, artist: n, because: `Popular · ${n}`, affinity: 0, kind: "discover-search" });
+  if (top?.length) {
+    // Doesn't wait on (or change with) the profiles, so the shelf searches once.
+    return [
+      ...top.slice(0, 16).map((t, i): DiscoveryQuery => ({ text: `${t.artist} ${t.title}`, artist: t.artist, title: t.title, because: t.artist, reason: "Popular on Deezer", affinity: 1 - i / 32, kind: "discover-song" })),
+      byName(name),
+    ];
+  }
+  const listed: DiscoveryQuery[] = profiles.flatMap((p) => p.tracks).map((t) => ({
     text: `${t.artist} ${t.title}`, artist: t.artist, title: t.title, because: t.artist, reason: `Popular on TheAudioDB · ${t.artist}`, affinity: 1, kind: "discover-song",
   }));
   const names = profiles.length ? profiles.map((p) => p.name) : [name];
-  return [...top, ...names.map((n): DiscoveryQuery => ({ text: n, artist: n, because: `Popular · ${n}`, affinity: 0, kind: "discover-search" }))];
+  return [...listed, ...names.map(byName)];
+}
+
+function PopularShelf({ artistId, name, profiles, profilesLoading, route }: { artistId: string; name: string; profiles: ArtistMetadata[]; profilesLoading: boolean; route: Route }) {
+  const top = useTopSongs(name);
+  const songs = top.value?.songs ?? null;
+  // With a ranking, profiles arriving later leave the searches as they were (the shelf's key is their text).
+  const queries = useMemo(() => popularQueries(name, profiles, songs), [name, songs, profiles]);
+  const showAll = () => navigate({ name: "popular", id: artistId });
+  // The ranking decides what to search for, so nothing is searched until it's known (or unavailable);
+  // without one, the profiles' songs do, so those are waited for too.
+  if (top.loading || (!songs?.length && profilesLoading)) {
+    return (
+      <Shelf title="Popular" subtitle="Their best-known songs, most popular first">
+        <SkeletonCards label="Finding their popular songs…" />
+      </Shelf>
+    );
+  }
+  return (
+    <DiscoveryShelf
+      title="Popular"
+      subtitle={songs?.length ? "Their best-known songs, most popular first" : "Their best-known songs, from your library and online"}
+      queries={queries}
+      limit={12}
+      route={route}
+      withOwned
+      hideWhenEmpty
+      fixedSubtitle
+      ranked
+      openSong
+      onShowAll={songs?.length ? showAll : undefined}
+    />
+  );
 }
 
 function Discography({ artistId, profiles, loading }: { artistId: string; profiles: ArtistMetadata[]; loading: boolean }) {

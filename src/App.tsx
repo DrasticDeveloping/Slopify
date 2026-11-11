@@ -28,6 +28,7 @@ import { MixView } from "./views/Mix";
 import { LibraryView, PlaylistsView } from "./views/Library";
 import { ArtistView } from "./views/Artist";
 import { DiscographyView } from "./views/Discography";
+import { PopularView } from "./views/Popular";
 import { SongView } from "./views/Song";
 // Plugs web-discovery radio into the player (see connectRadio).
 import "./recommend/radio";
@@ -60,6 +61,8 @@ function View({ route }: { route: Route }) {
       return <ArtistView id={route.id} />;
     case "discography":
       return <DiscographyView id={route.id} />;
+    case "popular":
+      return <PopularView id={route.id} />;
     case "song":
       // Keyed, so going from one song to a similar one starts that page afresh.
       return <SongView key={JSON.stringify(route)} artist={route.artist} title={route.title} id={route.id} />;
