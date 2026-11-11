@@ -328,6 +328,17 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
     return lead && lead !== name ? findArtist(lead, signal) : null;
   }
 
+  async function topSongs(body, signal) {
+    const name = text(body?.artist, 200);
+    if (!name) throw badRequest("Send an artist name.");
+    const artist = await findArtistOrLead(name, signal);
+    if (!artist) return { artist: null, songs: [] };
+    return {
+      artist: { name: artist.name, picture: artist.picture, fans: artist.fans, sourceUrl: `https://www.deezer.com/artist/${artist.id}` },
+      songs: await topOf(artist, signal),
+    };
+  }
+
   const trackDetail = (id, signal) => once(tracks, String(id), DAY, (signal) => get(`/track/${id}`, signal), signal);
 
   /**
@@ -466,6 +477,7 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
     },
     lookupSongs,
     songRelease,
+    topSongs,
     songStats,
   };
 }

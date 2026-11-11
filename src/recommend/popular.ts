@@ -25,6 +25,12 @@ export interface TopSong {
   sourceUrl: string;
 }
 
+export interface TopSongs {
+  artist: { name: string; picture?: string; fans: number; sourceUrl: string } | null;
+  /** Most popular first. */
+  songs: TopSong[];
+}
+
 export interface SongStats extends TopSong {
   /** Beats per minute, when the catalog knows it. */
   bpm: number | null;
@@ -58,6 +64,7 @@ function remembered<T>(load: (key: string) => Promise<T>) {
   };
 }
 
+const topSongsOf = remembered((name) => post<TopSongs>("/api/catalog/top-songs", { artist: name }));
 const statsOf = remembered((key) => {
   const [artist, title] = JSON.parse(key) as [string, string];
   return post<{ song: SongStats | null }>("/api/catalog/song", { artist, title }).then((r) => r.song);
@@ -84,6 +91,9 @@ function useLoaded<T>(key: string | null, load: (key: string) => Promise<T>): Lo
   const current = state.key === key;
   return { value: current ? state.value : null, loading: current ? state.loading : !!key, error: current ? state.error : "", retry: () => setAttempt((n) => n + 1) };
 }
+
+/** An artist's songs by popularity. `name` null waits (the artist isn't known yet). */
+export const useTopSongs = (name: string | null) => useLoaded(name, topSongsOf);
 
 /** One song's statistics; `value` is null when the catalog doesn't have the song. */
 export const useSongStats = (artist: string, title: string) => useLoaded(JSON.stringify([artist, title]), statsOf);

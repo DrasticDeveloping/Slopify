@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { hashString, paletteFromSeed } from "../data/library";
 import { openTrackMenu } from "../lib/menus";
-import { artistName, type DiscoveredSong, type DiscoveryQuery } from "../recommend/discover";
+import { artistName, discoveryKey, type DiscoveredSong, type DiscoveryQuery } from "../recommend/discover";
 import type { Seeds } from "../recommend/service";
 import { useDiscovery } from "../recommend/useDiscovery";
 import { hideDiscovery, navigate, playList, songRoute, togglePlay } from "../state/actions";
@@ -30,18 +30,27 @@ interface Props {
   fixedSubtitle?: boolean;
   /** Songs like these (by name) instead of ones from your taste. */
   seeds?: Seeds;
+  /** Keep the order of `queries` (an artist's songs, most popular first) rather than the best matches first. */
+  ranked?: boolean;
   /** A card's title opens the song's own page (its statistics and songs like it); false opens its album. */
   openSong?: boolean;
   /** Songs never to show (the song a "similar songs" list is about), by discovery key. */
   exclude?: string[];
+  onShowAll?: () => void;
   grid?: boolean;
 }
 
 /** Songs outside the library, as cards that play in full, and can be dismissed or added to the library. */
-export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false, fixedSubtitle = false, seeds, openSong = false, exclude, grid = false }: Props) {
+export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false, fixedSubtitle = false, seeds, ranked = false, openSong = false, exclude, onShowAll, grid = false }: Props) {
   const found = useDiscovery(title, { queries, seeds, limit, withOwned });
   const { loading, note, refresh } = found;
-  const songs = useMemo(() => (exclude?.length ? found.songs.filter((song) => !exclude.includes(song.key)) : found.songs), [found.songs, exclude?.join("\n")]);
+  const songs = useMemo(() => {
+    const kept = exclude?.length ? found.songs.filter((song) => !exclude.includes(song.key)) : found.songs;
+    if (!ranked || !queries) return kept;
+    const order = new Map(queries.filter((q) => q.artist && q.title).map((q, i) => [discoveryKey(q.artist, q.title), i]));
+    const at = (song: DiscoveredSong) => order.get(song.key) ?? order.get(discoveryKey(song.artist, song.title)) ?? Infinity;
+    return [...kept].sort((a, b) => at(a) - at(b));
+  }, [found.songs, exclude?.join("\n"), ranked, queries]);
   const tracks = useStore((s) => s.tracks);
   // Suggestions become songs the player knows, so they play, queue and show like library songs.
   useEffect(() => registerStreams(songs.filter((song) => !song.owned)), [songs]);
@@ -65,6 +74,7 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
     <section className="discovery" aria-label={title}>
       <Shelf
         title={title}
+        onShowAll={onShowAll}
         grid={grid}
         subtitle={shared && !fixedSubtitle ? shared.replace(/ also play this\b/u, " also play these") : subtitle}
         action={
