@@ -1,9 +1,10 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { useCoverPalette } from "../lib/art-colors";
 import { useMediaQuery } from "../lib/hooks";
 import { closeMenu, takeMenuOpener } from "../state/actions";
 import { useStore, type MenuArt, type MenuItem } from "../state/store";
-import { PlaylistArt, TrackArt } from "./Artwork";
+import { BlurredTrackArt, PlaylistArt, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 
 /** The cover at the top of a menu, so it's clear at a glance what the menu acts on (as Spotify's and Apple Music's do). */
@@ -17,9 +18,49 @@ function MenuArtView({ art }: { art: MenuArt }) {
   return null;
 }
 
+/** The song whose cover stands for what the menu is about: the song itself, or a playlist's first song with a cover. */
+function useMenuCoverTrack(art: MenuArt | undefined) {
+  return useStore((s) => {
+    if (art?.trackId) return s.tracks[art.trackId] ? art.trackId : undefined;
+    const playlist = art?.playlistId && art.playlistId !== "liked" ? s.playlists.find((p) => p.id === art.playlistId) : undefined;
+    return playlist?.trackIds.find((id) => s.albums[s.tracks[id]?.albumId]?.artworkUrl);
+  });
+}
+
+/** The colour of what the menu is about, washed across its top: read from the cover itself, as the Dynamic theme
+ *  does (its generated colours when it has none); the theme's accent for anything without a cover. */
+function useMenuTint(art: MenuArt | undefined, coverTrack: string | undefined) {
+  const url = useStore((s) => (coverTrack ? s.albums[s.tracks[coverTrack]?.albumId]?.artworkUrl : undefined));
+  const generated = useStore((s) => {
+    if (coverTrack) return s.albums[s.tracks[coverTrack]?.albumId]?.palette.b;
+    if (art?.trackId) return s.albums[s.tracks[art.trackId]?.albumId]?.palette.b;
+    if (art?.playlistId) return s.playlists.find((p) => p.id === art.playlistId)?.palette.b;
+    return undefined;
+  });
+  const cover = useCoverPalette(url, undefined);
+  return cover?.a ?? generated;
+}
+
+/** Splits off the quick actions (a row of tiles across the top), tidying the separators the rest is left with. */
+function splitQuick(items: MenuItem[], sub?: boolean) {
+  const quick = sub ? [] : items.filter((item) => item.quick && !item.separator && !item.submenu);
+  if (quick.length < 2) return { quick: [] as MenuItem[], list: items };
+  const list: MenuItem[] = [];
+  for (const item of items) {
+    if (quick.includes(item)) continue;
+    if (item.separator && (!list.length || list[list.length - 1].separator)) continue;
+    list.push(item);
+  }
+  while (list.length && list[list.length - 1].separator) list.pop();
+  return { quick, list };
+}
+
 function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet }: { items: MenuItem[]; x: number; y: number; flipX?: number; title?: string; subtitle?: string; art?: MenuArt; onDone: () => void; sub?: boolean; sheet?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ left: x, top: y, ready: false });
+  const [pos, setPos] = useState({ left: x, top: y, ready: false, origin: "top left" });
+  const coverTrack = useMenuCoverTrack(sub ? undefined : art);
+  const tint = useMenuTint(sub ? undefined : art, coverTrack);
+  const { quick, list } = splitQuick(items, sub);
   const [openSub, setOpenSub] = useState<{ index: number; x: number; y: number; flipX: number } | null>(null);
   /** The item to focus once its submenu has closed (in a sheet the menu is hidden until then). */
   const [returnTo, setReturnTo] = useState<number | null>(null);
@@ -34,7 +75,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
     const el = ref.current;
     if (!el) return;
     if (sheet) {
-      setPos({ left: 0, top: 0, ready: true });
+      setPos({ left: 0, top: 0, ready: true, origin: "bottom center" });
       el.querySelector<HTMLButtonElement>(".menu-items button:not(:disabled)")?.focus({ preventScroll: true });
       return;
     }
@@ -44,16 +85,25 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
     let top = y;
     if (left + r.width > window.innerWidth - pad) left = sub && flipX !== undefined ? flipX - r.width : window.innerWidth - r.width - pad;
     if (top + r.height > window.innerHeight - pad) top = Math.max(pad, window.innerHeight - r.height - pad);
-    setPos({ left: Math.max(pad, left), top: Math.max(pad, top), ready: true });
+    left = Math.max(pad, left);
+    top = Math.max(pad, top);
+    // It grows out of the corner nearest the pointer, so a menu pushed left or up of the click still opens from it.
+    setPos({ left, top, ready: true, origin: `${top < y - 4 ? "bottom" : "top"} ${left < x - 4 ? "right" : "left"}` });
     if (!sub) el.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
   }, [x, y, sub, flipX, sheet]);
 
   const key = (e: KeyboardEvent<HTMLDivElement>) => {
     // The submenu is portalled but React still bubbles its events to the parent menu.
     e.stopPropagation();
-    const buttons = [...(ref.current?.querySelectorAll<HTMLButtonElement>(":scope > .menu-items > button:not(:disabled)") ?? [])];
+    const buttons = [...(ref.current?.querySelectorAll<HTMLButtonElement>(":scope > .menu-quick > button:not(:disabled), :scope > .menu-items > button:not(:disabled)") ?? [])];
     const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    if (e.key === "ArrowDown") {
+    const tiles = [...(ref.current?.querySelectorAll<HTMLButtonElement>(":scope > .menu-quick > button:not(:disabled)") ?? [])];
+    const tile = tiles.indexOf(document.activeElement as HTMLButtonElement);
+    if (tile >= 0 && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+      // The quick actions are a row: left and right move along it.
+      e.preventDefault();
+      tiles[(tile + (e.key === "ArrowRight" ? 1 : -1) + tiles.length) % tiles.length]?.focus();
+    } else if (e.key === "ArrowDown") {
       e.preventDefault();
       buttons[(i + 1) % buttons.length]?.focus();
     } else if (e.key === "ArrowUp") {
@@ -82,13 +132,15 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
   return (
     <div
       ref={ref}
-      className={`menu${pos.ready ? " ready" : ""}${sub ? " sub" : ""}${sheet ? " sheet" : ""}${art ? " has-art" : ""}${sheet && openSub ? " covered" : ""}`}
-      style={sheet ? undefined : { left: pos.left, top: pos.top }}
+      className={`menu${pos.ready ? " ready" : ""}${sub ? " sub" : ""}${sheet ? " sheet" : ""}${art ? " has-art" : ""}${quick.length ? " has-quick" : ""}${sheet && openSub ? " covered" : ""}`}
+      style={{ ...(sheet ? {} : { left: pos.left, top: pos.top, transformOrigin: pos.origin }), ...(tint ? { "--menu-tint": tint } : {}) } as CSSProperties}
       role="menu"
       aria-label={title}
       onKeyDown={key}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {/* The cover, blurred, behind the header: the menu takes on the look of what it's about (drawn once, never animated). */}
+      {coverTrack ? <BlurredTrackArt trackId={coverTrack} className="menu-backdrop" /> : null}
       {sheet ? <span className="sheet-grip" aria-hidden="true" /> : null}
       {title ? (
         <div className="menu-head">
@@ -103,8 +155,32 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
           </span>
         </div>
       ) : null}
+      {quick.length ? (
+        <div className="menu-quick" style={{ "--tiles": quick.length } as CSSProperties}>
+          {quick.map((item, i) => (
+            <button
+              key={i}
+              type="button"
+              role={item.on !== undefined ? "menuitemcheckbox" : "menuitem"}
+              aria-checked={item.on}
+              aria-label={item.label}
+              className={`menu-tile${item.on ? " on" : ""}`}
+              style={{ "--i": i } as CSSProperties}
+              disabled={item.disabled}
+              onPointerEnter={() => setOpenSub(null)}
+              onClick={() => {
+                closeMenu();
+                item.run?.();
+              }}
+            >
+              <span className="menu-tile-icon"><Icon name={item.icon ?? "play"} size={19} /></span>
+              <span className="menu-tile-label">{item.short ?? item.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="menu-items">
-        {items.map((item, i) =>
+        {list.map((item, i) =>
           item.separator ? (
             <div key={i} className="menu-sep" role="separator" />
           ) : (
@@ -117,6 +193,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
               aria-expanded={item.submenu ? openSub?.index === i : undefined}
               data-sub={item.submenu ? "1" : undefined}
               className={`menu-item${item.danger ? " danger" : ""}${item.accent ? " accent" : ""}${openSub?.index === i ? " open" : ""}`}
+              style={{ "--i": Math.min(i + quick.length, 14) } as CSSProperties}
               disabled={item.disabled}
               onPointerEnter={(e) => {
                 if (sheet) return;
@@ -148,16 +225,16 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
           ),
         )}
       </div>
-      {openSub && items[openSub.index]?.submenu ? createPortal(
+      {openSub && list[openSub.index]?.submenu ? createPortal(
         <MenuList
-          items={items[openSub.index].submenu!}
+          items={list[openSub.index].submenu!}
           x={openSub.x}
           y={openSub.y}
           flipX={openSub.flipX}
           sub
           sheet={sheet}
           // A sheet's submenu replaces it on screen, so it says where you are and has a way back.
-          title={sheet ? items[openSub.index].label : undefined}
+          title={sheet ? list[openSub.index].label : undefined}
           subtitle={sheet ? title : undefined}
           onDone={() => {
             setReturnTo(openSub.index);
