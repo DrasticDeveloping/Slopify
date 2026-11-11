@@ -656,6 +656,8 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
       }
       if (parts[0] === "metadata" && parts[1] === "artist" && parts.length === 2 && method === "POST") {
         const result = await artists.profile(await readJSON(req));
+        // Discography covers the profile's sources lack come from the music catalog.
+        await catalog.fillReleaseArt(result.profiles, AbortSignal.timeout(10_000));
         if (!res.destroyed) sendJSON(res, 200, { ok: true, result });
         return;
       }
@@ -709,6 +711,13 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
       if (parts[0] === "catalog" && parts[1] === "pictures" && parts.length === 2 && method === "POST") {
         const result = await catalog.artistPictures(await readJSON(req), AbortSignal.timeout(30_000));
         return sendJSON(res, 200, { ok: true, result });
+      }
+      // An artist picture for the app to keep on the device (its host may not allow the page to read it).
+      if (parts[0] === "catalog" && parts[1] === "picture" && parts.length === 2 && method === "GET") {
+        if (crossSite(req)) return sendJSON(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "Requests from other websites aren't allowed." } });
+        const { type, bytes } = await catalog.picture(url.searchParams.get("url"), AbortSignal.timeout(20_000));
+        res.writeHead(200, { "Content-Type": type, "Content-Length": bytes.length, "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff" });
+        return res.end(bytes);
       }
       if (parts[0] === "catalog" && parts[1] === "album" && parts.length === 3 && method === "GET") {
         const result = await catalog.album(parts[2], AbortSignal.timeout(20_000));

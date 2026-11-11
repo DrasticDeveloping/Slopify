@@ -17,6 +17,12 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const MAX_ARTISTS = 24;
 const MAX_SONGS = 40;
+/** A prolific artist's older releases are on later pages (Dua Lipa has over 130). */
+const MAX_RELEASE_PAGES = 3;
+/** Where artist pictures come from: the catalog, TheAudioDB and Wikipedia. */
+const PICTURE_HOSTS = /^(?:[a-z0-9-]+\.dzcdn\.net|(?:r2|www)\.theaudiodb\.com|upload\.wikimedia\.org)$/;
+const PICTURE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
+const MAX_PICTURE_BYTES = 8_000_000;
 
 /** Names compared without case, accents, punctuation or channel suffixes: "Dua Lipa - Topic" is "dualipa". */
 const normalize = (s) => String(s ?? "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()
@@ -58,6 +64,8 @@ const release = (a, artist) => ({
 export function createCatalog({ fetchImpl = fetch } = {}) {
   const artists = cache(400);
   const releases = cache(400);
+  /** Release lists missing later pages (the catalog failed partway), kept only briefly. */
+  const incomplete = new WeakSet();
   const related = cache(200);
   const albums = cache(200);
   const songs = cache(2000);
@@ -124,11 +132,28 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
     return a ? { id: a.id, name: text(a.name), picture: a.picture_xl || a.picture_big || a.picture_medium || undefined, fans: a.nb_fan || 0 } : null;
   }, signal);
 
-  /** An artist's releases, newest first. */
-  const releasesOf = (artist, signal) => once(releases, artist.id, 12 * HOUR, async (signal) => {
-    const { data = [] } = await get(`/artist/${artist.id}/albums?limit=100`, signal);
-    return data.map((a) => release(a, artist.name)).filter((r) => r.title && r.released)
+  /** An artist's releases, newest first (up to MAX_RELEASE_PAGES pages of them). */
+  const releasesOf = (artist, signal) => once(releases, artist.id, (v) => (incomplete.has(v) ? 10 * 60_000 : 12 * HOUR), async (signal) => {
+    const data = [];
+    let cut = false;
+    for (let page = 0; page < MAX_RELEASE_PAGES; page++) {
+      let body;
+      try {
+        body = await get(`/artist/${artist.id}/albums?limit=100&index=${page * 100}`, signal);
+      } catch (error) {
+        // A later page failing keeps the releases already loaded (asked again soon).
+        if (!page || signal.aborted) throw error;
+        cut = true;
+        break;
+      }
+      const rows = body.data ?? [];
+      data.push(...rows);
+      if (!body.next || rows.length < 100) break;
+    }
+    const list = data.map((a) => release(a, artist.name)).filter((r) => r.title && r.released)
       .sort((a, b) => b.released.localeCompare(a.released));
+    if (cut) incomplete.add(list);
+    return list;
   }, signal);
 
   const relatedTo = (artist, signal) => once(related, artist.id, DAY, async (signal) => {
@@ -256,7 +281,77 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
     return { songs: results };
   }
 
+  /**
+   * Covers for an artist page's discography (MusicBrainz and TheAudioDB), which
+   * often have none, or only a Cover Art Archive link that has no image for a
+   * single: the same release's cover in the catalog, matched by title. Changes
+   * `profiles` in place; a catalog that's down leaves them as they were.
+   */
+  async function fillReleaseArt(profiles, signal) {
+    for (const profile of profiles) {
+      const missing = (profile.releases ?? []).filter((r) => !r.artwork || r.artwork.startsWith("https://coverartarchive.org/"));
+      if (!missing.length) continue;
+      try {
+        const artist = await findArtist(profile.name, signal);
+        if (!artist) continue;
+        const exact = new Map();
+        const core = new Map();
+        // Oldest first, so an original release's cover wins over a later reissue's.
+        for (const r of [...await releasesOf(artist, signal)].reverse()) {
+          if (!r.artwork) continue;
+          if (!exact.has(normalize(r.title))) exact.set(normalize(r.title), r.artwork);
+          if (!core.has(coreTitle(r.title))) core.set(coreTitle(r.title), r.artwork);
+        }
+        for (const r of missing) {
+          const artwork = exact.get(normalize(r.title)) ?? core.get(coreTitle(r.title));
+          if (artwork) r.artwork = artwork;
+        }
+      } catch (error) {
+        if (signal.aborted) return;
+        // The catalog is unavailable: the profile keeps what it had.
+      }
+    }
+  }
+
+  /**
+   * An artist picture's file, for the app to keep on the device when the
+   * picture's host doesn't let pages read it (TheAudioDB). Only https links to
+   * the hosts artist pictures come from are fetched.
+   */
+  async function picture(raw, signal) {
+    let url;
+    try {
+      url = new URL(String(raw ?? ""));
+    } catch {
+      throw badRequest("Send a picture link.");
+    }
+    if (url.protocol !== "https:" || url.port || url.username || url.password || !PICTURE_HOSTS.test(url.hostname)) throw badRequest("That picture isn't from a known source.");
+    const response = await fetchImpl(url, { signal, redirect: "error", headers: { Accept: "image/*" } });
+    const type = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    if (!response.ok || !PICTURE_TYPES.has(type) || !response.body) {
+      void response.body?.cancel().catch(() => {});
+      throw Object.assign(new Error("The picture couldn't be loaded."), { status: 502 });
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > MAX_PICTURE_BYTES) throw Object.assign(new Error("The picture is too large."), { status: 502 });
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      void reader.cancel().catch(() => {});
+    }
+    return { type, bytes: Buffer.concat(chunks, size) };
+  }
+
   return {
+    picture,
+    fillReleaseArt,
     artistReleases,
     artistPictures,
     album: (id, signal) => {

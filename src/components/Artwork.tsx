@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState, type CSSProperties } from "react";
-import type { Palette, Playlist } from "../data/types";
+import type { Artist, Palette, Playlist } from "../data/types";
+import { useKeptPicture } from "../state/pictures";
 import { useCurrentVideo } from "../audio/video";
 import { onLiveFrame } from "../lib/live";
 import { useStore } from "../state/store";
@@ -56,6 +57,12 @@ export const Art = memo(function Art({ palette, glyph = 0, className, round, lab
     </div>
   );
 });
+
+/** A library artist's picture, from the copy kept on this device (see state/pictures.ts). */
+export function ArtistArt({ artist, className, glyph }: { artist: Artist; className?: string; glyph?: number }) {
+  const image = useKeptPicture(artist.image);
+  return <Art palette={artist.palette} glyph={glyph} image={image} round className={className} />;
+}
 
 export function TrackArt({ trackId, className, label }: { trackId: string; className?: string; label?: boolean }) {
   const track = useStore((s) => s.tracks[trackId]);

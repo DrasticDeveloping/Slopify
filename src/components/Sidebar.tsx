@@ -6,7 +6,7 @@ import { addToPlaylist, navigate, openModal } from "../state/actions";
 import { setState, useStore, type Route } from "../state/store";
 import { useSocial } from "../state/social";
 import { hashString, paletteFromSeed } from "../data/library";
-import { Art, PlaylistArt } from "./Artwork";
+import { ArtistArt, Art, PlaylistArt } from "./Artwork";
 import { Icon } from "./Icon";
 import { DRAG_MIME } from "./TrackList";
 import { usePanel } from "./RightPanel";
@@ -64,7 +64,7 @@ function libraryEntries(library: Track[], playlists: Playlist[], albums: Record<
   for (const a of Object.values(artists)) {
     const at = added.get(`artist:${a.id}`);
     if (at === undefined) continue;
-    entries.push({ id: a.id, type: "artist", name: a.name, subtitle: "Artist", at, art: <Art palette={a.palette} image={a.image} round className="side-art" /> });
+    entries.push({ id: a.id, type: "artist", name: a.name, subtitle: "Artist", at, art: <ArtistArt artist={a} className="side-art" /> });
   }
   return entries.sort((a, b) => b.at - a.at || a.name.localeCompare(b.name));
 }

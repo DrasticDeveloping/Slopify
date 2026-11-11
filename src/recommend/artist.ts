@@ -31,7 +31,13 @@ export interface ArtistProfiles {
 }
 
 const DAY = 86_400_000;
-const cacheKey = (name: string, musicBrainzId?: string) => `slopify.artist.v3.${name.toLowerCase()}${musicBrainzId ? `.${musicBrainzId}` : ""}`;
+// v4: discography covers the profile's sources lacked now come from the music catalog.
+const cacheKey = (name: string, musicBrainzId?: string) => `slopify.artist.v4.${name.toLowerCase()}${musicBrainzId ? `.${musicBrainzId}` : ""}`;
+
+/** Profiles kept by earlier versions, without those covers, go. */
+try {
+  for (const key of Object.keys(localStorage)) if (/^slopify\.artist\.v[1-3]\./.test(key)) localStorage.removeItem(key);
+} catch { /* Storage is unavailable. */ }
 
 /** A complete profile from the last day, if this browser has one. */
 function cached(key: string): ArtistProfiles | null {
