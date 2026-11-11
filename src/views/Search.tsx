@@ -10,7 +10,7 @@ import { plural } from "../lib/format";
 import { hashString } from "../data/library";
 import { mixSeed, useMixes } from "../recommend/mixes";
 import { MixArt } from "../components/MixArt";
-import { isPlayable, navigate } from "../state/actions";
+import { isPlayable, navigate, trackSongRoute } from "../state/actions";
 import { ChooseFiles } from "../components/ChooseFiles";
 import { openTrackMenu } from "../lib/menus";
 import { useStore } from "../state/store";
@@ -173,7 +173,7 @@ export function SearchView({ q }: { q: string }) {
           {top || topSong ? (
             <div className="top-result" onContextMenu={topSong ? (e) => openTrackMenu(e, [topSong.id], { context: { label: searchLabel(q), route: { name: "search", q }, ids: results.songs } }) : undefined}>
               {top ? <Art palette={top.palette} glyph={4} round className="top-art" image={top.image} /> : <TrackArt trackId={topSong!.id} className="top-art" />}
-              <button type="button" className="card-link" onClick={() => navigate(top ? { name: "artist", id: top.id } : { name: "album", id: topSong!.albumId })}>
+              <button type="button" className="card-link" onClick={() => navigate(top ? { name: "artist", id: top.id } : trackSongRoute(topSong!.id))}>
                 <strong>{top ? top.name : topSong!.title}</strong>
                 <span>
                   <span className="pill">{top ? "Artist" : "Song"}</span>

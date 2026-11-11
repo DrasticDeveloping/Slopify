@@ -15,7 +15,7 @@ import { allTimePlays, topArtistPlays } from "../lib/plays";
 import { useMediaQuery } from "../lib/hooks";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
 import { hasTaste } from "../recommend/rank";
-import { findMusic, hideRecommendation, isPlayable, libraryIds, navigate, playList, recommendations, togglePlay } from "../state/actions";
+import { findMusic, hideRecommendation, isPlayable, libraryIds, navigate, playList, recommendations, togglePlay, trackSongRoute } from "../state/actions";
 import { getState, useStore, type Route } from "../state/store";
 
 function QuickTile({ title, art, route, ids, onMenu }: { title: string; art: ReactNode; route: Route; ids: string[]; onMenu?: (e: MouseEvent) => void }) {
@@ -235,7 +235,7 @@ export function HomeView() {
                     <Icon name="close" size={16} />
                   </button>
                 </div>
-                <button type="button" className="card-link" onClick={() => navigate({ name: "album", id: t.albumId })}>
+                <button type="button" className="card-link" onClick={() => navigate(trackSongRoute(id))}>
                   <strong>{t.title}</strong>
                   <span>{creditLine(t, artists)}</span>
                 </button>
@@ -292,7 +292,7 @@ export function HomeView() {
                   <Icon name={currentId === id && isPlaying ? "pause" : "play"} size={20} />
                 </button>
               </div>
-              <button type="button" className="card-link" onClick={() => navigate({ name: "album", id: t.albumId })}>
+              <button type="button" className="card-link" onClick={() => navigate(trackSongRoute(id))}>
                 <strong>{t.title}</strong>
                 <span>{creditLine(t, artists)}</span>
               </button>

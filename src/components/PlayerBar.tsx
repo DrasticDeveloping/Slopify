@@ -3,7 +3,7 @@ import { engine } from "../audio/engine";
 import { formatTime } from "../lib/format";
 import { pollPosition, useCurrent, useLiveText } from "../lib/hooks";
 import { onLiveFrame } from "../lib/live";
-import { cycleRepeat, isLiked, navigate, next, openMenu, positionOf, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, cycleShuffle } from "../state/actions";
+import { cycleRepeat, isLiked, navigate, next, trackSongRoute, openMenu, positionOf, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, cycleShuffle } from "../state/actions";
 import { setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
 import { BlurredTrackArt, TrackArt } from "./Artwork";
@@ -112,7 +112,7 @@ export function VolumeControl() {
 }
 
 export function PlayerBar() {
-  const { id, track, album } = useCurrent();
+  const { id, track } = useCurrent();
   const liked = useStore((s) => (id ? isLiked(id, s) : false));
   const panel = useStore((s) => s.panel);
   const speed = useStore((s) => s.speed);
@@ -129,7 +129,7 @@ export function PlayerBar() {
               <span className="pb-art-expand"><Icon name="expand" size={18} /></span>
             </button>
             <div className="pb-meta" key={track.id}>
-              <button type="button" className="link pb-title" onClick={() => album && navigate({ name: "album", id: album.id })}>
+              <button type="button" className="link pb-title" onClick={() => navigate(trackSongRoute(track.id))}>
                 {track.title}
               </button>
               <span className="pb-artist"><ArtistLinks track={track} /></span>

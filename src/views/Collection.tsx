@@ -7,6 +7,7 @@ import { Icon } from "../components/Icon";
 import { Card, PlayFab, Shelf } from "../components/Shelf";
 import { TrackList } from "../components/TrackList";
 import { PlaylistSuggestions } from "../components/PlaylistSuggestions";
+import { SongView } from "./Song";
 import { formatLongDuration, plural } from "../lib/format";
 import { openPlaylistMenu, openTrackMenu } from "../lib/menus";
 import { findMusic, libraryIds, navigate, openModal, startCollectionRadio, cycleShuffle } from "../state/actions";
@@ -160,6 +161,7 @@ export function AlbumView({ id }: { id: string }) {
   const trackMap = useStore((s) => s.tracks);
   const ids = useMemo(() => Object.values(trackMap).filter((t) => t.albumId === id).map((t) => t.id), [trackMap, id]);
   const albumMap = useStore((s) => s.albums);
+  const artistMap = useStore((s) => s.artists);
   // The artist's other albums in your library, so a single isn't a dead end.
   const more = useMemo(() => {
     if (!album) return [];
@@ -168,6 +170,11 @@ export function AlbumView({ id }: { id: string }) {
     return [...seen];
   }, [trackMap, albumMap, album, id]);
   if (!album || !artist) return <Missing what="album" />;
+  // A single is its song: it gets the song's page (statistics and songs like it).
+  if (ids.length === 1) {
+    const t = trackMap[ids[0]];
+    return <SongView key={t.id} artist={artistMap[t.artistId]?.name ?? artist.name} title={t.title} id={t.id} />;
+  }
   const route: Route = { name: "album", id };
   const total = ids.reduce((sum, t) => sum + (trackMap[t]?.duration ?? 0), 0);
   const serverOnly = ids.filter((t) => trackMap[t]?.storage === "server");
