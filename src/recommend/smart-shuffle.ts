@@ -7,9 +7,9 @@ import { discover, seedsForIds, trackKey } from "./service";
 
 /*
  * Smart shuffle (press Shuffle twice): while the list you're playing shuffles,
- * a recommended song joins the queue after every two of yours. Songs from your
- * library that suit the list come first, straight away; new songs from the web
- * join as they're found. Only the queue changes, never the list itself, so
+ * a recommended song joins the queue after every two of yours: new songs from
+ * the web, as they're found, and (only with "Include songs from your library"
+ * on) library songs that suit the list. Only the queue changes, never the list itself, so
  * turning smart shuffle (or shuffle) off leaves just your songs.
  */
 
@@ -135,8 +135,10 @@ function fill() {
   if (!open.length) return;
   const usable = (id: string) => isPlayable(s.tracks[id], s) && !s.order.includes(id);
   r.fresh = r.fresh.filter(usable);
-  r.owned = r.owned.filter(usable);
-  if (r.owned.length + r.fresh.length < open.length) ownedFor(s, r, open.length - r.owned.length - r.fresh.length);
+  // Library songs only when "Include songs from your library" is on; otherwise recommendations are new songs only.
+  const withLibrary = s.settings.recommendLibrary;
+  r.owned = withLibrary ? r.owned.filter(usable) : [];
+  if (withLibrary && r.owned.length + r.fresh.length < open.length) ownedFor(s, r, open.length - r.owned.length - r.fresh.length);
   if (r.fresh.length < open.length) findFresh(s, r);
   const picks: string[] = [];
   for (let i = 0; i < open.length; i++) {
