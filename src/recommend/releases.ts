@@ -158,7 +158,7 @@ export function fetchRelease(id: string): Promise<ReleaseDetail> {
 }
 
 /** The search result that is this song: by its artist, with its title, and about as long. */
-function matchCandidate(candidates: Candidate[], track: ReleaseTrack): Candidate | undefined {
+function matchCandidate(candidates: Candidate[], track: Pick<ReleaseTrack, "title" | "artist" | "durationSeconds">): Candidate | undefined {
   const wanted = cleanTitle(track.title);
   return candidates.find((c) => {
     if (!canStream(c)) return false;
@@ -177,6 +177,33 @@ function matchCandidate(candidates: Candidate[], track: ReleaseTrack): Candidate
 /** "missing": searched and not found; "failed": the search itself didn't work (try again later). */
 export type TrackStatus = { state: "finding" } | { state: "ready"; id: string } | { state: "missing" } | { state: "failed" };
 
+export interface SongToFind {
+  title: string;
+  artist: string;
+  durationSeconds: number | null;
+  artwork?: string;
+  album?: string;
+  released?: string;
+}
+
+/**
+ * Finds a catalog song to play: in your library if you have it, otherwise on
+ * YouTube or SoundCloud (registered as a streamed song). Never rejects.
+ */
+export async function resolveSong(song: SongToFind, owned = ownedIndex(getState())): Promise<TrackStatus> {
+  const mine = owned.find({ artist: song.artist, title: song.title })[0];
+  if (mine) return { state: "ready", id: mine };
+  try {
+    const found = matchCandidate((await searchSongs(`${song.artist} ${song.title}`)).candidates, song);
+    if (!found) return { state: "missing" };
+    const key = discoveryKey(song.artist, song.title);
+    registerStreams([{ key, candidate: found, title: song.title, artist: song.artist, artwork: song.artwork, kind: "discover-artist", album: song.album, released: song.released }]);
+    return { state: "ready", id: streamTrackId(key) };
+  } catch {
+    return { state: "failed" };
+  }
+}
+
 /**
  * Finds each of a release's songs: in your library if you have it, otherwise on
  * YouTube or SoundCloud (registered as a streamed song). Reports as each is found.
@@ -194,21 +221,7 @@ export function useReleaseTracks(release: ReleaseDetail | null) {
       while (live && next < release.tracks.length) {
         const i = next++;
         const track = release.tracks[i];
-        const mine = owned.find({ artist: track.artist, title: track.title })[0];
-        if (mine) {
-          results[i] = { state: "ready", id: mine };
-        } else {
-          try {
-            const found = matchCandidate((await searchSongs(`${track.artist} ${track.title}`)).candidates, track);
-            if (found) {
-              const key = discoveryKey(track.artist, track.title);
-              registerStreams([{ key, candidate: found, title: track.title, artist: track.artist, artwork: release.artwork, kind: "discover-artist", album: release.title, released: release.released }]);
-              results[i] = { state: "ready", id: streamTrackId(key) };
-            } else results[i] = { state: "missing" };
-          } catch {
-            results[i] = { state: "failed" };
-          }
-        }
+        results[i] = await resolveSong({ ...track, artwork: release.artwork, album: release.title, released: release.released }, owned);
         if (live) setStatus([...results]);
       }
     };

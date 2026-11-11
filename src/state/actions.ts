@@ -303,6 +303,9 @@ export function resetAppData() {
 
 const sameRoute = (a: Route, b: Route) => JSON.stringify(a) === JSON.stringify(b);
 
+/** A song's page, built in one key order so the same song is the same route. */
+export const songRoute = (artist: string, title: string, id?: string): Route => (id ? { name: "song", artist, title, id } : { name: "song", artist, title });
+
 /** Below 1240px the side panel floats over the page (full screen on phones), so going somewhere closes it. */
 const closeFloatingPanel = (): Partial<AppState> => (window.matchMedia("(max-width: 1240px)").matches ? { panel: null } : {});
 
