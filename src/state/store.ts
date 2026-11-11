@@ -16,6 +16,8 @@ export type Route =
   | { name: "artist"; id: string }
   /** An artist's whole discography, newest first (by artist id). */
   | { name: "discography"; id: string }
+  /** One song: its statistics and songs like it. `id` is its track, when the app has one (see songRoute in actions). */
+  | { name: "song"; artist: string; title: string; id?: string }
   | { name: "mix"; id: string }
   | { name: "storage" }
   | { name: "server" }

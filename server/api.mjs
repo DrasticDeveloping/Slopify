@@ -730,6 +730,19 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
         } finally { res.off("close", closed); }
         return;
       }
+      // One song's statistics (song pages).
+      if (parts[0] === "catalog" && parts[1] === "song" && parts.length === 2 && method === "POST") {
+        const body = await readJSON(req);
+        const controller = new AbortController();
+        const closed = () => { if (!res.writableFinished) controller.abort(); };
+        res.on("close", closed);
+        try {
+          const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)]);
+          const result = { song: await catalog.songStats(body, signal) };
+          if (!res.destroyed) sendJSON(res, 200, { ok: true, result });
+        } finally { res.off("close", closed); }
+        return;
+      }
       if (parts[0] === "catalog" && parts[1] === "pictures" && parts.length === 2 && method === "POST") {
         const result = await catalog.artistPictures(await readJSON(req), AbortSignal.timeout(30_000));
         return sendJSON(res, 200, { ok: true, result });

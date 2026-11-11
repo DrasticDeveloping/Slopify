@@ -1,9 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { hashString, paletteFromSeed } from "../data/library";
 import { openTrackMenu } from "../lib/menus";
 import { artistName, type DiscoveredSong, type DiscoveryQuery } from "../recommend/discover";
+import type { Seeds } from "../recommend/service";
 import { useDiscovery } from "../recommend/useDiscovery";
-import { hideDiscovery, navigate, playList, togglePlay } from "../state/actions";
+import { hideDiscovery, navigate, playList, songRoute, togglePlay } from "../state/actions";
 import { addDiscoveredSong, canStream, registerStreams, streamTrackId } from "../state/importer";
 import { getState, useStore, type Route } from "../state/store";
 import type { ReasonKind } from "../recommend/taste";
@@ -27,11 +28,20 @@ interface Props {
   hideWhenEmpty?: boolean;
   /** Keep this subtitle even when every song gives the same reason (an artist's Popular shelf, where it'd only repeat the title). */
   fixedSubtitle?: boolean;
+  /** Songs like these (by name) instead of ones from your taste. */
+  seeds?: Seeds;
+  /** A card's title opens the song's own page (its statistics and songs like it); false opens its album. */
+  openSong?: boolean;
+  /** Songs never to show (the song a "similar songs" list is about), by discovery key. */
+  exclude?: string[];
+  grid?: boolean;
 }
 
 /** Songs outside the library, as cards that play in full, and can be dismissed or added to the library. */
-export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false, fixedSubtitle = false }: Props) {
-  const { songs, loading, note, refresh } = useDiscovery(title, { queries, limit, withOwned });
+export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false, fixedSubtitle = false, seeds, openSong = false, exclude, grid = false }: Props) {
+  const found = useDiscovery(title, { queries, seeds, limit, withOwned });
+  const { loading, note, refresh } = found;
+  const songs = useMemo(() => (exclude?.length ? found.songs.filter((song) => !exclude.includes(song.key)) : found.songs), [found.songs, exclude?.join("\n")]);
   const tracks = useStore((s) => s.tracks);
   // Suggestions become songs the player knows, so they play, queue and show like library songs.
   useEffect(() => registerStreams(songs.filter((song) => !song.owned)), [songs]);
@@ -55,6 +65,7 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
     <section className="discovery" aria-label={title}>
       <Shelf
         title={title}
+        grid={grid}
         subtitle={shared && !fixedSubtitle ? shared.replace(/ also play this\b/u, " also play these") : subtitle}
         action={
           <>
@@ -64,9 +75,9 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
         }
       >
         {songs.map((song) => (
-          <DiscoveryCard key={song.key} song={song} onPlay={() => play(song)} menuContext={{ label: title, route, ids }} showReason={song.reason !== shared} />
+          <DiscoveryCard key={song.key} song={song} onPlay={() => play(song)} menuContext={{ label: title, route, ids }} showReason={song.reason !== shared} openSong={openSong} />
         ))}
-        {loading ? <SkeletonCards count={songs.length ? 2 : 6} label={songs.length ? "Finding more…" : "Finding songs for you…"} /> : null}
+        {loading ? <SkeletonCards count={songs.length ? 2 : grid ? 12 : 6} label={songs.length ? "Finding more…" : "Finding songs for you…"} /> : null}
         {!songs.length && !loading ? <p className="muted shelf-empty" role="status">{note || "No new songs found right now. Try Find more."}</p> : null}
       </Shelf>
       {songs.length && note && !loading ? <p className="muted small discovery-note" role="status">{note}</p> : null}
@@ -82,7 +93,7 @@ function sharedReason(songs: DiscoveredSong[]) {
   return reason && songs.length > 1 && count! * 2 >= songs.length ? reason : undefined;
 }
 
-function DiscoveryCard({ song, onPlay, menuContext, showReason }: { song: DiscoveredSong; onPlay: () => void; menuContext: { label: string; route: Route; ids: string[] }; showReason: boolean }) {
+function DiscoveryCard({ song, onPlay, menuContext, showReason, openSong }: { song: DiscoveredSong; onPlay: () => void; menuContext: { label: string; route: Route; ids: string[] }; showReason: boolean; openSong: boolean }) {
   const id = song.owned ?? streamTrackId(song.key);
   const track = useStore((s) => s.tracks[id]);
   const current = useStore((s) => s.currentId === id);
@@ -101,7 +112,12 @@ function DiscoveryCard({ song, onPlay, menuContext, showReason }: { song: Discov
           </button>
         )}
       </div>
-      <button type="button" className="card-link" onClick={() => (track ? navigate({ name: "album", id: track.albumId }) : onPlay())}>
+      <button
+        type="button"
+        className="card-link"
+        title={openSong ? `${song.title}: statistics and similar songs` : undefined}
+        onClick={() => (openSong ? navigate(songRoute(artistName(song.artist), song.title, track ? id : undefined)) : track ? navigate({ name: "album", id: track.albumId }) : onPlay())}
+      >
         <strong>{song.title}</strong>
         <span>{artistName(song.artist)}</span>
       </button>

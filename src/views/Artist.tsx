@@ -69,7 +69,7 @@ function ArtistPage({ artist }: { artist: Artist }) {
           <TrackList ids={popular.slice(0, 10)} context={{ label: name, route }} showAlbum={false} sortable={false} />
         </>
       ) : null}
-      <DiscoveryShelf title="Popular" subtitle="Their best-known songs, from your library and online" queries={popularQueries(name, profiles)} limit={12} route={route} withOwned hideWhenEmpty fixedSubtitle />
+      <DiscoveryShelf title="Popular" subtitle="Their best-known songs, from your library and online" queries={popularQueries(name, profiles)} limit={12} route={route} withOwned hideWhenEmpty fixedSubtitle openSong />
       <Discography artistId={id} profiles={profiles} loading={metadata.loading} />
       {profiles.filter((p) => p.biography.trim()).map((p) => (
         <About key={p.name} profile={p} heading={metadata.result?.collaboration ? `About ${p.name}` : "About"} />

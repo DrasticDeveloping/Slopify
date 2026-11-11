@@ -29,6 +29,8 @@ const normalize = (s) => String(s ?? "").normalize("NFKD").replace(/\p{M}/gu, ""
   .replace(/\s+-\s+topic$|vevo$/gu, "").replace(/[^\p{L}\p{N}]/gu, "");
 /** A title without bracketed extras ("(Remastered 2011)", "[Official Video]") or a featured credit. */
 const coreTitle = (s) => normalize(String(s ?? "").replace(/[([{].*?[)\]}]/g, " ").replace(/\s(feat|ft|featuring|with)\.?\s.*$/i, " ").replace(/\s+-\s+.*(remaster|version|edit|mix|live).*$/i, " "));
+/** The first artist of a collaboration credit ("Vicetone, Cozi Zuehlsdorff" is "Vicetone"). */
+const leadArtist = (name) => String(name ?? "").split(/\s*(?:,|&|\bx\b|\band\b|\bwith\b|\bfeat\.?|\bft\.?)\s*/iu)[0];
 const text = (v, max = 300) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 const date = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v ?? "") && !v.startsWith("0000") ? v : null);
 const badRequest = (message) => Object.assign(new Error(message), { status: 400 });
@@ -48,6 +50,28 @@ function cache(size) {
     },
   };
 }
+
+/** A different recording of a song than the original: a remix, live take, cover or karaoke copy. */
+const otherRecording = (s) => /\b(?:re-?mix|mix|live|acoustic|unplugged|instrumental|karaoke|demo|cover|tribute|reprise|rework|dub|slowed|sped up|a ?cappella|in the style of|originally performed|made (?:popular|famous))\b/i.test(String(s ?? ""));
+
+/** A catalog track as the app shows it, or null without a title. */
+const fromTrack = (t, artist) => {
+  const title = text(t?.title_short) || text(t?.title);
+  if (!title || !t.id) return null;
+  return {
+    id: `dz${t.id}`,
+    title,
+    version: text(t.title_version, 120),
+    artist: text(t.artist?.name) || artist,
+    album: text(t.album?.title),
+    albumId: t.album?.id ? `dz${t.album.id}` : undefined,
+    artwork: t.album?.cover_xl || t.album?.cover_big || t.album?.cover_medium || undefined,
+    durationSeconds: Number(t.duration) || null,
+    rank: Number(t.rank) || 0,
+    explicit: t.explicit_lyrics === true,
+    sourceUrl: `https://www.deezer.com/track/${t.id}`,
+  };
+};
 
 const release = (a, artist) => ({
   id: `dz${a.id}`,
@@ -69,6 +93,10 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
   const related = cache(200);
   const albums = cache(200);
   const songs = cache(2000);
+  const searches = cache(500);
+  const tops = cache(200);
+  const stats = cache(1000);
+  const tracks = cache(1000);
   const pending = new Map();
   let queue = Promise.resolve();
   let last = 0;
@@ -196,7 +224,7 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
       try {
         let found = await findArtist(name, signal);
         // A collaboration ("Vicetone, Cozi Zuehlsdorff") shows its first artist.
-        const first = name.split(/\s*(?:,|&|\bx\b|\band\b|\bwith\b|\bfeat\.?|\bft\.?)\s*/iu)[0];
+        const first = leadArtist(name);
         if (!found && first && first !== name) found = await findArtist(first, signal);
         pictures[name] = found?.picture ?? null;
       } catch (error) {
@@ -234,13 +262,22 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
     const title = prefixed && normalize(prefixed[1]) === normalize(artist) ? prefixed[2] : rawTitle;
     return songReleaseOf(artist, title, signal);
   };
-  const songReleaseOf = (artist, title, signal) => once(songs, `${normalize(artist)}|${coreTitle(title)}`, (v) => (v ? 30 * DAY : 3 * DAY), async (signal) => {
+  /** The catalog's songs with this artist (or one of its credited artists, "A & B", "A feat. B") and title. */
+  const findTracks = (artist, title, signal) => {
     const plain = String(title).replace(/[([{].*?[)\]}]/g, " ").replace(/\s+/g, " ").trim();
-    const { data = [] } = await get(`/search/track?q=${encodeURIComponent(`${artist} ${plain}`)}&limit=25`, signal);
-    const wanted = coreTitle(title);
-    // The catalog's artist must be the song's artist, or one of its credited artists ("A & B", "A feat. B").
-    const credits = new Set([artist, ...artist.split(/\s*(?:&|,|\bx\b|\band\b|\bwith\b|\bfeat\.?|\bft\.?)\s*/iu)].map(normalize).filter(Boolean));
-    const matches = data.filter((t) => coreTitle(t.title) === wanted && credits.has(normalize(t.artist?.name)));
+    const q = `${artist} ${plain}`;
+    return once(searches, q.toLowerCase(), HOUR, async (signal) => {
+      const { data = [] } = await get(`/search/track?q=${encodeURIComponent(q)}&limit=25`, signal);
+      return data;
+    }, signal).then((data) => {
+      const wanted = coreTitle(title);
+      const credits = new Set([artist, ...artist.split(/\s*(?:&|,|\bx\b|\band\b|\bwith\b|\bfeat\.?|\bft\.?)\s*/iu)].map(normalize).filter(Boolean));
+      return data.filter((t) => coreTitle(t.title) === wanted && credits.has(normalize(t.artist?.name)));
+    });
+  };
+
+  const songReleaseOf = (artist, title, signal) => once(songs, `${normalize(artist)}|${coreTitle(title)}`, (v) => (v ? 30 * DAY : 3 * DAY), async (signal) => {
+    const matches = await findTracks(artist, title, signal);
     const ids = [...new Set(matches.map((t) => t.album?.id).filter(Boolean))].slice(0, 6);
     let best = null;
     let failed = null;
@@ -263,6 +300,75 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
     if (!best && failed) throw failed;
     return best ? { album: best.title, albumId: best.id, released: best.released, type: best.type, artwork: best.artwork } : null;
   }, signal);
+
+  /**
+   * An artist's best-known songs, most popular first, by the catalog's
+   * popularity score (`rank`, up to 1,000,000). Versions of one song (a live
+   * take, an "Album Version") count once, as the most popular of them.
+   */
+  const topOf = (artist, signal) => once(tops, artist.id, (v) => (v.length ? 12 * HOUR : HOUR), async (signal) => {
+    const { data = [] } = await get(`/artist/${artist.id}/top?limit=100`, signal);
+    const best = new Map();
+    // The song itself wins over a remix or live take of it, however popular that is.
+    const better = (a, b) => (otherRecording(`${a.title} ${a.version}`) === otherRecording(`${b.title} ${b.version}`) ? a.rank > b.rank : !otherRecording(`${a.title} ${a.version}`));
+    for (const t of data) {
+      const song = fromTrack(t, artist.name);
+      if (!song) continue;
+      const key = `${normalize(song.artist)}|${coreTitle(song.title)}`;
+      if (!best.has(key) || better(song, best.get(key))) best.set(key, song);
+    }
+    return [...best.values()].sort((a, b) => b.rank - a.rank);
+  }, signal);
+
+  /** The artist of this name, else its lead artist ("A & B" is A), or null. */
+  async function findArtistOrLead(name, signal) {
+    const found = await findArtist(name, signal);
+    if (found) return found;
+    const lead = leadArtist(name);
+    return lead && lead !== name ? findArtist(lead, signal) : null;
+  }
+
+  const trackDetail = (id, signal) => once(tracks, String(id), DAY, (signal) => get(`/track/${id}`, signal), signal);
+
+  /**
+   * One song's statistics: its popularity score, where it ranks among the
+   * artist's songs, its tempo, and the release it first came out on. Null when
+   * the catalog doesn't have the song.
+   */
+  async function songStats(body, signal) {
+    const artist = text(body?.artist, 200);
+    const rawTitle = text(body?.title, 300);
+    if (!artist || !rawTitle) throw badRequest("Send an artist name and a song title.");
+    const prefixed = rawTitle.match(/^(.+?)\s+[-–—]\s+(.+)$/u);
+    const title = prefixed && normalize(prefixed[1]) === normalize(artist) ? prefixed[2] : rawTitle;
+    return once(stats, `${normalize(artist)}|${coreTitle(title)}`, (v) => (v ? 12 * HOUR : HOUR), async (signal) => {
+      // Failures past the first lookup leave that statistic out rather than failing the song.
+      const optional = (promise) => promise.catch((error) => {
+        if (signal.aborted) throw error;
+        return null;
+      });
+      // A remix, live take or karaoke copy is another recording: it only stands in for the song when that's what was asked for.
+      const asked = otherRecording(title);
+      const matches = (await findTracks(artist, title, signal)).filter((t) => asked || !otherRecording(`${t.title} ${t.title_version ?? ""}`));
+      const searched = [...matches].sort((a, b) => (Number(b.rank) || 0) - (Number(a.rank) || 0))[0];
+      const found = await optional(findArtistOrLead(text(searched?.artist?.name) || artist, signal));
+      const top = found ? await optional(topOf(found, signal)) : null;
+      const i = top ? top.findIndex((s) => coreTitle(s.title) === coreTitle(title) && (asked || !otherRecording(`${s.title} ${s.version}`))) : -1;
+      // Search doesn't always list a song (an explicit original, say) that the artist's own top songs do.
+      const song = searched ? fromTrack(searched, artist) : i >= 0 ? top[i] : null;
+      if (!song) return null;
+      const detail = await optional(trackDetail(song.id.slice(2), signal));
+      const origin = await optional(songReleaseOf(artist, title, signal));
+      return {
+        ...song,
+        bpm: Number(detail?.bpm) > 0 ? Math.round(Number(detail.bpm)) : null,
+        released: date(detail?.release_date),
+        position: i >= 0 ? i + 1 : null,
+        of: top?.length ?? 0,
+        origin,
+      };
+    }, signal);
+  }
 
   async function lookupSongs(body, signal) {
     const list = (Array.isArray(body?.songs) ? body.songs : []).slice(0, MAX_SONGS);
@@ -360,6 +466,7 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
     },
     lookupSongs,
     songRelease,
+    songStats,
   };
 }
 
