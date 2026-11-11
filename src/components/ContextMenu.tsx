@@ -55,12 +55,15 @@ function splitQuick(items: MenuItem[], sub?: boolean) {
   return { quick, list };
 }
 
-function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet }: { items: MenuItem[]; x: number; y: number; flipX?: number; title?: string; subtitle?: string; art?: MenuArt; onDone: () => void; sub?: boolean; sheet?: boolean }) {
+function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet, plain }: { items: MenuItem[]; x: number; y: number; flipX?: number; title?: string; subtitle?: string; art?: MenuArt; onDone: () => void; sub?: boolean; sheet?: boolean; plain?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y, ready: false, origin: "top left" });
   const coverTrack = useMenuCoverTrack(sub ? undefined : art);
   const tint = useMenuTint(sub ? undefined : art, coverTrack);
   const { quick, list } = splitQuick(items, sub);
+  // Under a coloured header the rest of the menu is plain black, so the cover's colour is the only one in it;
+  // its submenus match it.
+  const isPlain = plain || !!art || quick.length > 0;
   const [openSub, setOpenSub] = useState<{ index: number; x: number; y: number; flipX: number } | null>(null);
   /** The item to focus once its submenu has closed (in a sheet the menu is hidden until then). */
   const [returnTo, setReturnTo] = useState<number | null>(null);
@@ -132,7 +135,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
   return (
     <div
       ref={ref}
-      className={`menu${pos.ready ? " ready" : ""}${sub ? " sub" : ""}${sheet ? " sheet" : ""}${art ? " has-art" : ""}${quick.length ? " has-quick" : ""}${sheet && openSub ? " covered" : ""}`}
+      className={`menu${pos.ready ? " ready" : ""}${sub ? " sub" : ""}${sheet ? " sheet" : ""}${art ? " has-art" : ""}${quick.length ? " has-quick" : ""}${isPlain ? " plain" : ""}${sheet && openSub ? " covered" : ""}`}
       style={{ ...(sheet ? {} : { left: pos.left, top: pos.top, transformOrigin: pos.origin }), ...(tint ? { "--menu-tint": tint } : {}) } as CSSProperties}
       role="menu"
       aria-label={title}
@@ -233,6 +236,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
           flipX={openSub.flipX}
           sub
           sheet={sheet}
+          plain={isPlain}
           // A sheet's submenu replaces it on screen, so it says where you are and has a way back.
           title={sheet ? list[openSub.index].label : undefined}
           subtitle={sheet ? title : undefined}
