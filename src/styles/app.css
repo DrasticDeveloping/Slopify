@@ -1378,31 +1378,63 @@ button.th:not(:disabled):hover { color: var(--text); }
 /* ───────────────────────── Menus, toasts, modals ───────────────────────── */
 
 .menu-layer { position: fixed; inset: 0; z-index: 80; }
+/* A menu is a small sheet of tinted glass: the colour of what it is about washes down from the top, behind a header with
+   its cover, a row of quick actions, and items whose icons sit in little tiles that light up with the accent on hover. */
 .menu {
+  --menu-wash: color-mix(in oklab, var(--menu-tint, var(--accent)) 30%, var(--menu));
   position: fixed;
-  min-width: 230px;
-  max-width: 300px;
+  min-width: 240px;
+  max-width: 312px;
   padding: 6px;
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--menu);
-  border: 1px solid var(--line-strong);
-  box-shadow: var(--shadow-lg);
+  border: 1px solid rgb(255 255 255 / 0.1);
+  box-shadow: var(--shadow-lg), inset 0 1px 0 rgb(255 255 255 / 0.07);
   backdrop-filter: blur(24px) saturate(1.4);
   opacity: 0;
 }
-.menu.ready { opacity: 1; animation: menu-in 180ms var(--ease-out); transform-origin: top left; }
-@keyframes menu-in { from { opacity: 0; transform: scale(0.95) translateY(-4px); } }
-.menu-head { display: flex; align-items: center; gap: 11px; padding: 8px 10px 9px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
-.menu-head-text { display: flex; flex-direction: column; min-width: 0; }
-.menu-head strong { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.menu-head small { color: var(--text-2); font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.menu-art { flex: none; width: 40px; border-radius: 6px; box-shadow: 0 4px 12px rgb(0 0 0 / 0.35); }
+.menu.has-art, .menu.has-quick { background: linear-gradient(180deg, var(--menu-wash), var(--menu) 132px); }
+/* Its own layer, so the blurred cover sits above the menu's background and below everything in it. */
+.menu.has-art { isolation: isolate; overflow: hidden; }
+.menu-backdrop { position: absolute; top: 0; left: 0; width: 100%; height: 170px; z-index: -1; opacity: 0.6; pointer-events: none; -webkit-mask-image: linear-gradient(180deg, #000 25%, transparent); mask-image: linear-gradient(180deg, #000 25%, transparent); }
+.menu.has-art .menu-head strong, .menu.has-art .menu-head small { text-shadow: 0 1px 8px rgb(0 0 0 / 0.45); }
+.menu.has-art .menu-head small { color: rgb(255 255 255 / 0.78); }
+.menu.has-art .menu-tile { background: rgb(255 255 255 / 0.09); }
+.menu.ready { opacity: 1; animation: menu-in 200ms var(--ease-out); }
+@keyframes menu-in { from { opacity: 0; transform: scale(0.92); } }
+/* The items settle in one after another (a one-off, opacity and transform only). */
+.menu.ready :is(.menu-item, .menu-tile) { animation: menu-item-in 260ms var(--ease-out) both; animation-delay: calc(var(--i, 0) * 12ms + 30ms); }
+@keyframes menu-item-in { from { opacity: 0; transform: translateY(-3px); } }
+.menu-head { display: flex; align-items: center; gap: 12px; padding: 8px 8px 10px; margin-bottom: 2px; }
+.menu:not(.has-art):not(.has-quick) .menu-head { padding: 6px 10px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.menu:not(.has-art):not(.sheet) .menu-head strong { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-2); }
+.menu-head-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.menu-head strong { font-size: 14.5px; font-weight: 750; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.menu-head small { color: var(--text-2); font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.menu-art { flex: none; width: 46px; border-radius: 8px; box-shadow: 0 6px 16px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(255 255 255 / 0.08); }
 .menu-art.round, .menu-art.round img { border-radius: 50%; }
 .menu-art-img { aspect-ratio: 1; overflow: hidden; }
 .menu-art-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .menu-art-initial { aspect-ratio: 1; display: grid; place-items: center; font-weight: 800; font-size: 16px; color: var(--on-accent); background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
 .menu-art-icon { aspect-ratio: 1; display: grid; place-items: center; background: var(--raised); color: var(--text-2); }
-.menu.has-art { min-width: 260px; }
+.menu.has-art { min-width: 268px; }
+/* Quick actions: a row of tiles under the header, as in Apple Music's menus. */
+.menu-quick { display: grid; grid-template-columns: repeat(var(--tiles), minmax(0, 1fr)); gap: 6px; padding: 0 2px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.menu-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 10px 4px 8px; border-radius: 12px;
+  background: rgb(255 255 255 / 0.07); border: 1px solid rgb(255 255 255 / 0.06);
+  color: var(--text); font-size: 11.5px; font-weight: 620;
+  transition: background 120ms, border-color 120ms, transform 160ms var(--ease-out);
+}
+.menu-tile:hover:not(:disabled), .menu-tile:focus-visible { background: rgb(255 255 255 / 0.13); border-color: rgb(255 255 255 / 0.12); outline: none; }
+.menu-tile:active:not(:disabled) { transform: scale(0.96); }
+.menu-tile:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.menu-tile:disabled { opacity: 0.4; }
+.menu-tile-icon { display: grid; place-items: center; height: 22px; color: var(--text); }
+.menu-tile-label { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+.menu-tile.on .menu-tile-icon { color: var(--accent); }
+.menu-tile.on { background: var(--accent-soft); border-color: color-mix(in oklab, var(--accent) 30%, transparent); }
 .menu-back { flex: none; margin-left: -4px; }
 .sheet-grip { display: none; }
 /* Phones: a sheet from the bottom over a dimmed page, sized for thumbs. */
@@ -1429,22 +1461,34 @@ button.th:not(:disabled):hover { color: var(--text); }
 .menu.sheet .menu-head strong { font-size: 16px; }
 .menu.sheet .menu-head small { font-size: 13.5px; }
 .menu.sheet .menu-items { max-height: 62vh; }
-.menu.sheet .menu-item { height: 50px; font-size: 15.5px; gap: 16px; padding: 0 8px; }
-.menu.sheet .menu-icon { width: 22px; }
+.menu.sheet .menu-item { height: 52px; font-size: 15.5px; gap: 14px; padding: 0 8px 0 4px; border-radius: 12px; }
+.menu.sheet .menu-icon { width: 34px; height: 34px; border-radius: 10px; }
+.menu.sheet .menu-quick { gap: 8px; padding: 0 0 10px; }
+.menu.sheet .menu-tile { padding: 14px 4px 11px; border-radius: 14px; font-size: 12.5px; gap: 7px; }
+.menu.sheet.has-art, .menu.sheet.has-quick { background: linear-gradient(180deg, color-mix(in oklab, var(--menu-tint, var(--accent)) 26%, var(--panel-solid)), color-mix(in oklab, var(--panel-solid) 97%, white) 150px); }
 .menu.sheet .menu-sep { margin: 4px 8px; }
 .menu-items { display: flex; flex-direction: column; max-height: 60vh; overflow-y: auto; }
-.menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
-.menu-item { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 8px; text-align: left; font-size: 13.5px; font-weight: 520; color: var(--text); transition: background 100ms; }
-.menu-item:hover:not(:disabled), .menu-item:focus-visible, .menu-item.open { background: var(--hover); outline: none; }
+.menu-sep { height: 1px; margin: 5px 10px; background: var(--line); }
+.menu-item { display: flex; align-items: center; gap: 11px; height: 38px; padding: 0 10px 0 6px; border-radius: 10px; text-align: left; font-size: 13.5px; font-weight: 540; color: var(--text); transition: background 120ms; }
+.menu-item:hover:not(:disabled), .menu-item:focus-visible, .menu-item.open { background: rgb(255 255 255 / 0.08); outline: none; }
 .menu-item:disabled { opacity: 0.4; }
 .menu-item.danger { color: var(--danger); }
+.menu-item.danger:hover:not(:disabled), .menu-item.danger:focus-visible { background: color-mix(in oklab, var(--danger) 14%, transparent); }
 .menu-item.accent { color: var(--accent-ink); background: var(--accent-soft); font-weight: 650; }
 .menu-item.accent:hover:not(:disabled), .menu-item.accent:focus-visible { background: color-mix(in oklab, var(--accent) 24%, transparent); }
-.menu-item.accent .menu-icon { color: inherit; }
-.menu-icon { width: 18px; display: grid; place-items: center; color: var(--text-2); }
-.menu-item.danger .menu-icon { color: inherit; }
+/* Each icon sits in a small tile that takes the accent when its row is pointed at. */
+.menu-icon { flex: none; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; color: var(--text-2); background: rgb(255 255 255 / 0.06); transition: background 120ms, color 120ms; }
+.menu-item:hover:not(:disabled) .menu-icon, .menu-item:focus-visible .menu-icon, .menu-item.open .menu-icon { color: var(--accent-ink); background: color-mix(in oklab, var(--accent) 22%, transparent); }
+.menu-item.danger .menu-icon { color: inherit; background: color-mix(in oklab, var(--danger) 12%, transparent); }
+.menu-item.danger:hover:not(:disabled) .menu-icon, .menu-item.danger:focus-visible .menu-icon { color: var(--danger); background: color-mix(in oklab, var(--danger) 22%, transparent); }
+.menu-item.accent .menu-icon { color: inherit; background: color-mix(in oklab, var(--accent) 22%, transparent); }
+/* A choice (playback speed): the chosen one's tile is filled with the accent. */
+.menu-item[aria-checked="true"] .menu-icon { background: var(--accent); color: var(--on-accent); }
+.menu-item[aria-checked="true"] { font-weight: 650; }
 .menu-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.menu-caret { color: var(--text-3); }
+.menu-item .kbd { opacity: 0.75; }
+.menu-caret { color: var(--text-3); transition: transform 160ms var(--ease-out), color 120ms; }
+.menu-item:hover .menu-caret, .menu-item.open .menu-caret { color: var(--text-2); transform: translateX(2px); }
 
 .toasts { position: fixed; left: 50%; bottom: calc(var(--player-h) + 26px); transform: translateX(-50%); z-index: 90; display: flex; flex-direction: column-reverse; align-items: center; gap: 8px; pointer-events: none; width: min(460px, calc(100vw - 24px)); }
 .toast { position: relative; overflow: hidden; pointer-events: auto; display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 10px 11px 16px; border-radius: 14px; background: color-mix(in oklab, var(--panel-solid) 94%, white); border: 1px solid var(--line-strong); box-shadow: 0 18px 40px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3); animation: toast-in 420ms var(--ease-spring); }

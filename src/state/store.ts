@@ -47,6 +47,11 @@ export interface MenuItem {
   separator?: boolean;
   run?: () => void;
   submenu?: MenuItem[];
+  /** A quick action: shown as a tile in the row across the top of the menu (no submenu), with `short` as its label. */
+  quick?: boolean;
+  short?: string;
+  /** A quick action that's switched on (a liked song): its tile is lit. */
+  on?: boolean;
 }
 
 /** The picture at the top of a menu: a song's or playlist's cover, an image, or an initial. */

@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, hideRecommendation, isPlayable, navigate,
-  openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toast, unhideRecommendation,
+  isLiked, openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toast, toggleLike, unhideRecommendation,
 } from "../state/actions";
 import { streamLink } from "../state/importer";
 import { shareOf } from "../state/social";
@@ -55,6 +55,12 @@ function linkItems(url: string | undefined): MenuItem[] {
   return url ? [{ label: "Copy link", icon: "copy", run: () => void copyLink(url) }] : [];
 }
 
+/** Like or unlike one song, as a quick action. */
+function likeItem(t: Track): MenuItem {
+  const liked = isLiked(t.id);
+  return { label: liked ? "Remove from Liked Songs" : "Add to Liked Songs", short: liked ? "Liked" : "Like", icon: liked ? "heartFill" : "heart", quick: true, on: liked, run: () => toggleLike(t.id) };
+}
+
 /** Menu groups with a separator between each; empty groups are left out. */
 function grouped(...groups: MenuItem[][]): MenuItem[] {
   return groups.filter((g) => g.length).flatMap((g, i) => (i ? [{ separator: true }, ...g] : g));
@@ -73,8 +79,9 @@ export interface StreamMenuOptions {
 function streamMenu(t: Track, opts: StreamMenuOptions = {}): MenuItem[] {
   return grouped(
     [
-      { label: "Play next", icon: "queue", run: () => playNext([t.id]) },
-      { label: "Add to queue", icon: "list", run: () => addToQueue([t.id]) },
+      { label: "Play next", icon: "queue", quick: true, run: () => playNext([t.id]) },
+      { label: "Add to queue", short: "Queue", icon: "list", quick: true, run: () => addToQueue([t.id]) },
+      likeItem(t),
     ],
     [
       { label: "Add to library", icon: "download", disabled: opts.save === null, run: opts.save ?? (() => saveStream(t.id)) },
@@ -115,8 +122,9 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
     : [];
   return grouped(
     [
-      { label: "Play next", icon: "queue", disabled: !anyPlayable, run: () => playNext(ids) },
-      { label: "Add to queue", icon: "list", disabled: !anyPlayable, run: () => addToQueue(ids) },
+      { label: "Play next", icon: "queue", quick: true, disabled: !anyPlayable, run: () => playNext(ids) },
+      { label: "Add to queue", short: "Queue", icon: "list", quick: true, disabled: !anyPlayable, run: () => addToQueue(ids) },
+      ...(single ? [likeItem(single)] : []),
     ],
     [
       { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu(ids) },
@@ -179,10 +187,10 @@ export function openPlaylistMenu(e: ReactMouseEvent | HTMLElement, playlistId: s
     subtitle: `${p.system ? "Collection" : "Playlist"} · ${plural(p.trackIds.length, "song")}`,
     art: { playlistId: p.id },
     items: [
-      { label: "Play", icon: "play", disabled: !p.trackIds.length, run: () => playList(p.trackIds, undefined, { label: p.name, route }) },
-      { label: "Add to queue", icon: "list", disabled: !p.trackIds.length, run: () => addToQueue(p.trackIds) },
+      { label: "Play", icon: "play", quick: true, disabled: !p.trackIds.length, run: () => playList(p.trackIds, undefined, { label: p.name, route }) },
+      { label: "Add to queue", short: "Queue", icon: "list", quick: true, disabled: !p.trackIds.length, run: () => addToQueue(p.trackIds) },
+      ...(p.system ? [] : [{ label: shareOf(p.id) ? "Sharing…" : "Share…", short: shareOf(p.id) ? "Sharing" : "Share", icon: "link", quick: true, run: () => openModal({ type: "sharePlaylist", id: p.id }) }]),
       { label: "Open", icon: "external", run: () => navigate(route) },
-      ...(p.system ? [] : [{ label: shareOf(p.id) ? "Sharing…" : "Share…", icon: "link", run: () => openModal({ type: "sharePlaylist", id: p.id }) }]),
       ...(p.system ? [] : [
         { separator: true },
         { label: "Edit details…", icon: "edit", run: () => openModal({ type: "editPlaylist", id: p.id }) },
