@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { recommend } from "../recommend/rank";
-import type { Listen } from "../recommend/taste";
+import { reasonWeight, tasteProfile, type Listen } from "../recommend/taste";
 import { connectSlipIns, isLiked, isPlayable, toast, toggleLike } from "./actions";
 import { registerStreams, streamSong, streamTrackId, type StreamSong } from "./importer";
 import { getState, snoozedUntil, type AppState } from "./store";
@@ -13,8 +13,10 @@ import { getState, snoozedUntil, type AppState } from "./store";
  * it was afterwards; nothing in it is skipped or moved.
  *
  * A slip-in plays when the recommender expects you'll like it there: it has to
- * fit what's playing (the same artists, playlists you keep them together in,
- * songs listeners play together, what you usually play next).
+ * fit the songs either side of it (the same artists, playlists you keep them
+ * together in, songs listeners play together, what you usually play next).
+ * The best fit plays; one with no connection to what's playing waits,
+ * however much you like it.
  *
  * Kept per song, here (localStorage) and, for music-server songs, with your
  * library and account (sync.ts), so they follow you to your other devices.
@@ -62,9 +64,13 @@ function load(): Record<string, SlipIn> {
 }
 
 let songs = load();
+/** Why each slip-in was last chosen, from the recommender, to show while it plays. */
+const reasons = new Map<string, string>();
+export const slipInReason = (id: string) => reasons.get(id) ?? null;
 const listeners = new Set<() => void>();
 function publish(next: Record<string, SlipIn>) {
   songs = next;
+  for (const id of reasons.keys()) if (!songs[id]) reasons.delete(id);
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(songs));
   } catch {
@@ -141,24 +147,51 @@ const nextGap = (f: Exclude<SlipFrequency, "off">) => {
   return lo + Math.floor(Math.random() * (hi - lo + 1));
 };
 
-/** How likely you are to enjoy a slip-in here, as the recommender scores it; below this, it waits for a better moment. */
+/** How well a slip-in has to fit here, as the recommender scores it; below this, it waits for a better moment. */
 const LIKELY = 1;
-/** After this many gaps without a good moment, a slip-in that fits a little will do. */
+/** After this many gaps without a good moment, a slip-in that fits a little will do (it still has to fit). */
 const PATIENCE = 3;
 const FAIR = 0.5;
+/** How much fitting the song after the slip-in counts, next to fitting the one before it. */
+const NEXT_WEIGHT = 0.6;
+const sat = (n: number) => n / (n + 2);
 
 /**
- * How much you'd enjoy each slip-in right after what's playing, from the
- * recommender's autoplay ranking (the songs around it, playlists you keep
- * together, what you usually play next, what listeners play together, your
- * likes). A song that keeps getting skipped scores less.
+ * How well each slip-in fits between the song playing and the one after it,
+ * from the recommender's autoplay ranking. Only songs it finds a connection
+ * for count: the same artist, a playlist you keep them together in, what you
+ * usually play next, what listeners play together. Your likes and saves add
+ * to that but never stand in for it, so a favourite that doesn't fit waits.
+ * A song that keeps getting skipped scores less. Best fit first.
  */
-function likelihood(s: AppState, ids: string[], seedId: string) {
-  const ranked = recommend(
-    { tracks: s.tracks, artists: s.artists, playlists: s.playlists, taste: s.taste, trackIds: ids, playable: (t) => isPlayable(t, s) },
-    { mode: "autoplay", seedId, limit: ids.length },
-  );
-  return ranked.map((r) => ({ id: r.id, score: r.score / (1 + songs[r.id].skipStreak) }));
+function likelihood(s: AppState, ids: string[], beforeId: string, afterId: string) {
+  const rank = (seedId: string) =>
+    recommend(
+      { tracks: s.tracks, artists: s.artists, playlists: s.playlists, taste: s.taste, trackIds: ids, playable: (t) => isPlayable(t, s) },
+      { mode: "autoplay", seedId, requireRelated: true, limit: ids.length },
+    );
+  const fit = new Map<string, { score: number; reason: string }>();
+  for (const r of rank(beforeId)) fit.set(r.id, { score: r.score, reason: r.reason });
+  if (afterId !== beforeId) {
+    for (const r of rank(afterId)) {
+      const had = fit.get(r.id);
+      fit.set(r.id, { score: (had?.score ?? 0) + NEXT_WEIGHT * r.score, reason: had?.reason || r.reason });
+    }
+    // The ranking above follows the song after it as a seed (what you play after that song); a slip-in
+    // plays before it, so what you usually play right before that song counts too.
+    const p = tasteProfile(s);
+    const next = s.tracks[afterId];
+    for (const id of ids) {
+      const led = p.after.get(id)?.get(afterId) ?? 0;
+      if (led <= 0 || s.taste.hidden[id]) continue;
+      const had = fit.get(id);
+      const value = NEXT_WEIGHT * 2.5 * sat(led * 2) * reasonWeight(s.taste, "after");
+      fit.set(id, { score: (had?.score ?? 0) + value, reason: had?.reason || (next ? `You often play this before “${next.title}”` : "") });
+    }
+  }
+  return [...fit]
+    .map(([id, f]) => ({ id, reason: f.reason, score: f.score / (1 + songs[id].skipStreak) }))
+    .sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
 }
 
 /** A slip-in to play before `nextId`, or null to carry on with the list. */
@@ -175,16 +208,15 @@ function pick(state: AppState, nextId: string): string | null {
   const now = Date.now();
   const ids = Object.keys(songs).filter((id) => !listed.has(id) && isPlayable(s.tracks[id], s) && !snoozedUntil(s, id, now) && !(now - (songs[id].lastAt ?? 0) < REST));
   if (!ids.length) return null;
-  // It plays when you're likely to enjoy it after what's playing; otherwise it waits for a better moment.
+  // The slip-in that fits best between this song and the next plays, once it fits well enough;
+  // otherwise it waits for a better moment. (It rests an hour after playing, so others get their turn.)
   const bar = sinceLast >= gap * PATIENCE ? FAIR : LIKELY;
-  const candidates = likelihood(s, ids, s.currentId ?? nextId).filter((c) => c.score >= bar);
-  if (!candidates.length) return null;
-  // A weighted draw, so the likeliest is likeliest without always winning.
-  const weights = candidates.map((c) => c.score);
-  let r = Math.random() * weights.reduce((a, b) => a + b, 0);
-  const chosen = candidates[weights.findIndex((w) => (r -= w) <= 0)] ?? candidates[0];
+  const chosen = likelihood(s, ids, s.currentId ?? nextId, nextId)[0];
+  if (!chosen || chosen.score < bar) return null;
   sinceLast = 0;
   gap = nextGap(frequency);
+  if (chosen.reason) reasons.set(chosen.id, chosen.reason);
+  else reasons.delete(chosen.id);
   publish({ ...songs, [chosen.id]: { ...songs[chosen.id], slipped: songs[chosen.id].slipped + 1, lastAt: now } });
   return chosen.id;
 }
