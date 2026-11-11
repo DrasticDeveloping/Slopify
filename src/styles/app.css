@@ -1489,6 +1489,18 @@ button.th:not(:disabled):hover { color: var(--text); }
 .menu-item .kbd { opacity: 0.75; }
 .menu-caret { color: var(--text-3); transition: transform 160ms var(--ease-out), color 120ms; }
 .menu-item:hover .menu-caret, .menu-item.open .menu-caret { color: var(--text-2); transform: translateX(2px); }
+/* Under a cover-coloured header (and in its submenus) the menu is plain black, so the cover's colour is the only one
+   in it: the wash fades into the black past the quick actions, icons drop their tiles, and rows light up white. */
+.menu.plain { --menu-top: rgb(30 30 32 / 0.95); --menu-body: rgb(22 22 22 / 0.95); background: var(--menu-body); }
+.menu.sheet.plain { --menu-top: #1e1e20; --menu-body: #161616; }
+.menu.plain:is(.has-art, .has-quick) { background: linear-gradient(180deg, color-mix(in oklab, var(--menu-tint, var(--accent)) 30%, var(--menu-top)), color-mix(in oklab, var(--menu-tint, var(--accent)) 10%, var(--menu-body)) 150px, var(--menu-body)); }
+.menu.plain .menu-icon { background: none; }
+.menu.plain .menu-item:not(.danger, .accent) .menu-icon { color: #b6b6b6; }
+.menu.plain .menu-item:not(.danger, .accent):is(:hover:not(:disabled), :focus-visible, .open) { background: rgb(255 255 255 / 0.09); }
+.menu.plain .menu-item:is(:hover:not(:disabled), :focus-visible, .open) .menu-icon { background: none; }
+.menu.plain .menu-item:not(.danger, .accent):is(:hover:not(:disabled), :focus-visible, .open) .menu-icon,
+.menu.plain .menu-item[aria-checked="true"] .menu-icon { color: var(--text); }
+.menu.plain .menu-item:focus-visible { box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.55); }
 
 .toasts { position: fixed; left: 50%; bottom: calc(var(--player-h) + 26px); transform: translateX(-50%); z-index: 90; display: flex; flex-direction: column-reverse; align-items: center; gap: 8px; pointer-events: none; width: min(460px, calc(100vw - 24px)); }
 .toast { position: relative; overflow: hidden; pointer-events: auto; display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 10px 11px 16px; border-radius: 14px; background: color-mix(in oklab, var(--panel-solid) 94%, white); border: 1px solid var(--line-strong); box-shadow: 0 18px 40px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3); animation: toast-in 420ms var(--ease-spring); }
