@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { hashString, paletteFromSeed } from "../data/library";
 import { openTrackMenu } from "../lib/menus";
-import type { DiscoveredSong, DiscoveryQuery } from "../recommend/discover";
+import { artistName, type DiscoveredSong, type DiscoveryQuery } from "../recommend/discover";
 import { useDiscovery } from "../recommend/useDiscovery";
 import { hideDiscovery, navigate, playList, togglePlay } from "../state/actions";
 import { addDiscoveredSong, canStream, registerStreams, streamTrackId } from "../state/importer";
@@ -103,7 +103,7 @@ function DiscoveryCard({ song, onPlay, menuContext, showReason }: { song: Discov
       </div>
       <button type="button" className="card-link" onClick={() => (track ? navigate({ name: "album", id: track.albumId }) : onPlay())}>
         <strong>{song.title}</strong>
-        <span>{song.artist}</span>
+        <span>{artistName(song.artist)}</span>
       </button>
       {showReason ? <p className="rec-reason">{song.reason}</p> : null}
       {song.owned ? <span className="small muted rec-save"><Icon name="check" size={14} />In your library</span> : null}

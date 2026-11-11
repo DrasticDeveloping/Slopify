@@ -9,7 +9,7 @@ import { hashString, paletteFromSeed } from "../data/library";
 import type { Artist } from "../data/types";
 import { plural } from "../lib/format";
 import { openArtist, useArtistMetadata, type ArtistMetadata, type ArtistProfiles } from "../recommend/artist";
-import type { DiscoveryQuery } from "../recommend/discover";
+import { artistName, cleanArtist, type DiscoveryQuery } from "../recommend/discover";
 import { relatedFor } from "../recommend/service";
 import { navigate, startCollectionRadio, toast } from "../state/actions";
 import { useStore, type Route } from "../state/store";
@@ -22,15 +22,21 @@ export function ArtistView({ id }: { id: string }) {
 }
 
 function ArtistPage({ artist }: { artist: Artist }) {
-  const { id, name } = artist;
+  const { id } = artist;
+  // "Eggtan - Topic" (a YouTube channel name) is shown, looked up and counted as "Eggtan".
+  const name = artistName(artist.name);
   const tracks = useStore((s) => s.tracks);
+  const artists = useStore((s) => s.artists);
   const metadata = useArtistMetadata(id, name, artist.musicBrainzId);
   const profiles = metadata.result?.profiles ?? [];
   const route: Route = { name: "artist", id };
   // Library songs only; streamed suggestions are not in the library.
   const popular = useMemo(
-    () => Object.values(tracks).filter((t) => creditsArtist(t, id) && !t.stream).sort((a, b) => b.plays - a.plays).map((t) => t.id),
-    [tracks, id],
+    () => Object.values(tracks)
+      .filter((t) => !t.stream && (creditsArtist(t, id) || cleanArtist(artists[t.artistId]?.name) === cleanArtist(name)))
+      .sort((a, b) => b.plays - a.plays)
+      .map((t) => t.id),
+    [tracks, artists, id, name],
   );
   // A single verified profile's picture; a collaboration has no one picture.
   // Without one (the profile couldn't be loaded, say), the artist's saved picture.
