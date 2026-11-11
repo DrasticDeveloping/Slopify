@@ -72,6 +72,8 @@ export const cleanTitle = (title: string | null | undefined) => normalize((title
 /** Artist names compared without channel suffixes, spacing or punctuation: "DuaLipaVEVO" and "Dua Lipa - Topic" are "dualipa". */
 export const cleanArtist = (artist: string | null | undefined) =>
   normalize((artist ?? "").replace(/\s+-\s+topic$/iu, "").replace(/vevo$/iu, "")).replace(/[^\p{L}\p{N}]+/gu, "");
+/** An artist's name as shown, without YouTube's channel suffix: "Eggtan - Topic" is "Eggtan". */
+export const artistName = (artist: string) => artist.replace(/\s+-\s+topic$/iu, "").trim() || artist;
 /** A collaborator's own artist page includes songs explicitly credited to that collaborator. */
 export const creditedArtist = (credit: string, name: string) => cleanArtist(credit) === cleanArtist(name)
   || credit.split(/\s*(?:&|,|\bfeat\.?\s|\bft\.?\s|\bwith\b)\s*/iu).some((part) => cleanArtist(part) === cleanArtist(name));
@@ -272,7 +274,7 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       if (!discoverable(candidate)) return;
       const meta = candidate.importMetadata ?? candidate;
       let title = (meta.title || candidate.title || "").replace(DECORATION, " ").trim();
-      let artist = meta.artist || candidate.artist || "Unknown artist";
+      let artist = artistName(meta.artist || candidate.artist || "Unknown artist");
       // Uploads often put the artist in the title ("Dua Lipa - New Rules" on a channel called DuaLipaVEVO).
       const credited = title.match(/^(.+?)\s+[-–—]\s+(.+)$/u);
       if (credited && [query.artist, artist].some((a) => a && creditedArtist(credited[1], a))) [artist, title] = [credited[1].trim(), credited[2].trim()];

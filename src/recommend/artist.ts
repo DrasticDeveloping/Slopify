@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { hashString, paletteFromSeed } from "../data/library";
 import type { Artist } from "../data/types";
 import { navigate } from "../state/actions";
+import { artistName, cleanArtist } from "./discover";
 import { getState, setState } from "../state/store";
 
 export interface ArtistTrack { title: string; artist: string; album: string; artwork?: string; sourceUrl: string }
@@ -72,11 +73,15 @@ function adoptImage(artistId: string, result: ArtistProfiles) {
  * Opens the artist page for an artist found online (search, "Fans also like"),
  * reusing the library artist of that name unless their MusicBrainz ids differ.
  */
-export function openArtist(found: { name: string; musicBrainzId?: string; image?: string }) {
+export function openArtist(asked: { name: string; musicBrainzId?: string; image?: string }) {
   const s = getState();
-  const same = (a: Artist) => a.name.toLowerCase() === found.name.toLowerCase() && (!a.musicBrainzId || !found.musicBrainzId || a.musicBrainzId === found.musicBrainzId);
+  // A YouTube channel's name ("Eggtan - Topic") is the artist ("Eggtan"), who may already be in your library.
+  const found = { ...asked, name: artistName(asked.name) };
+  const same = (a: Artist) => cleanArtist(a.name) === cleanArtist(found.name) && (!a.musicBrainzId || !found.musicBrainzId || a.musicBrainzId === found.musicBrainzId);
   const seed = hashString(`${found.name}|${found.musicBrainzId ?? ""}`);
-  const base: Artist = Object.values(s.artists).find(same) ?? { id: `ar_online_${seed.toString(36)}`, name: found.name, genre: "indie", listeners: 0, palette: paletteFromSeed(seed) };
+  // Your library's artist first, ahead of one an earlier visit made for an online name.
+  const online = (a: Artist) => Number(a.id.startsWith("ar_online_"));
+  const base: Artist = Object.values(s.artists).filter(same).sort((a, b) => online(a) - online(b))[0] ?? { id: `ar_online_${seed.toString(36)}`, name: found.name, genre: "indie", listeners: 0, palette: paletteFromSeed(seed) };
   const artist: Artist = { ...base, ...(found.image ? { image: found.image } : {}), ...(found.musicBrainzId ? { musicBrainzId: found.musicBrainzId } : {}) };
   if (JSON.stringify(artist) !== JSON.stringify(s.artists[artist.id])) setState({ artists: { ...s.artists, [artist.id]: artist } });
   navigate({ name: "artist", id: artist.id });
