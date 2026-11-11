@@ -558,7 +558,7 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
             <>
               <h3 className="set-section">Recommendations</h3>
               <div className="set-group">
-                <Row icon="library" title="Include songs from your library" desc="Recommended for you shows only new songs by default. Turn this on to also get suggestions from songs you already have.">
+                <Row icon="library" title="Include songs from your library" desc="Recommended for you and smart shuffle offer only new songs by default. Turn this on to also get suggestions from songs you already have.">
                   <Toggle checked={settings.recommendLibrary} onChange={set("recommendLibrary")} label="Include songs from your library" />
                 </Row>
                 <Row

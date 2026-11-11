@@ -74,6 +74,8 @@ export interface ConfirmState {
   title: string;
   body?: string;
   confirmLabel: string;
+  /** The answer that does nothing (Escape and clicking outside give it too); "Cancel" unless set. */
+  cancelLabel?: string;
   danger?: boolean;
   icon?: string;
 }

@@ -463,6 +463,8 @@ async function resolveSoundCloudAudio(source, signal, fetchImpl = fetch) {
     track,
     streamingURL: probe.url || payload.url,
     contentLength,
+    // Its storage's ETag, usually the file's MD5, which names its exact bytes (duplicate checks compare it).
+    etag: probe.headers.get("etag") || null,
     contentType: "audio/mpeg",
     durationSeconds: track.durationSeconds,
     sourceURL: track.sourceURL,
@@ -480,25 +482,70 @@ async function writeAll(file, bytes) {
   }
 }
 
-async function downloadResolvedSoundCloudAudio(resolved, destination, signal, onProgress = () => {}, fetchImpl = fetch) {
+/** The verified length of a `Content-Range: bytes start-end/total` answer, or 0 when it isn't the range asked for. */
+function verifiedSoundCloudRange(value, start, end, total) {
+  const match = typeof value === "string" ? /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(value.trim()) : null;
+  if (!match || Number(match[1]) !== start || Number(match[2]) !== end || Number(match[3]) !== total) return 0;
+  return end - start + 1;
+}
+
+/** Bytes `start` up to (not including) `end` of a resolved stream, without downloading the rest (see the duplicate check). */
+async function fetchResolvedSoundCloudRange(resolved, start, end, signal, fetchImpl = fetch) {
+  const last = Math.min(end, resolved.contentLength) - 1;
+  if (!Number.isSafeInteger(start) || start < 0 || last < start) return Buffer.alloc(0);
   const response = await fetchWithValidatedRedirects(resolved.streamingURL, {
-    headers: STREAM_HEADERS,
+    headers: { ...STREAM_HEADERS, Range: `bytes=${start}-${last}` },
     signal,
-  }, safeMediaURL, fetchImpl, "downloading");
-  if (!response.ok || !safeMediaURL(response.url || resolved.streamingURL) || !response.body) {
-    throw providerFailure(response, "audio stream", "downloading");
+  }, safeMediaURL, fetchImpl, "inspecting_source");
+  const expected = response.status === 206 && safeMediaURL(response.url || resolved.streamingURL)
+    ? verifiedSoundCloudRange(response.headers.get("content-range"), start, last, resolved.contentLength)
+    : 0;
+  if (!expected || !response.body) {
+    await response.body?.cancel().catch(() => undefined);
+    throw soundCloudError("SOUNDCLOUD_INVALID_STREAM", "SoundCloud returned an unverifiable audio range.", { stage: "inspecting_source" });
   }
-  const declared = Number(response.headers.get("content-length") || 0);
-  if (declared !== resolved.contentLength) {
-    await response.body.cancel().catch(() => undefined);
-    throw soundCloudError("SOUNDCLOUD_SIZE_MISMATCH", "SoundCloud returned an unverifiable audio size.", { stage: "downloading" });
+  const bytes = await readResponseBytes(response, expected, soundCloudError("SOUNDCLOUD_SIZE_MISMATCH", "SoundCloud returned more audio than asked for.", { stage: "inspecting_source" }));
+  if (bytes.length !== expected) throw soundCloudError("SOUNDCLOUD_SIZE_MISMATCH", "SoundCloud ended an audio range early.", { stage: "inspecting_source" });
+  return bytes;
+}
+
+/**
+ * `prefix`: the stream's first bytes, already fetched (by the duplicate check), so only the rest
+ * is downloaded. They are written and hashed as if they had just arrived.
+ */
+async function downloadResolvedSoundCloudAudio(resolved, destination, signal, onProgress = () => {}, fetchImpl = fetch, { prefix = null } = {}) {
+  if (prefix && (!Buffer.isBuffer(prefix) || prefix.length > resolved.contentLength)) prefix = null;
+  const skip = prefix?.length || 0;
+  const rest = resolved.contentLength - skip;
+  let response = null;
+  if (rest > 0) {
+    response = await fetchWithValidatedRedirects(resolved.streamingURL, {
+      headers: skip ? { ...STREAM_HEADERS, Range: `bytes=${skip}-${resolved.contentLength - 1}` } : STREAM_HEADERS,
+      signal,
+    }, safeMediaURL, fetchImpl, "downloading");
+    if (!response.ok || !safeMediaURL(response.url || resolved.streamingURL) || !response.body) {
+      throw providerFailure(response, "audio stream", "downloading");
+    }
+    const declared = Number(response.headers.get("content-length") || 0);
+    const rangeOK = !skip || (response.status === 206
+      && verifiedSoundCloudRange(response.headers.get("content-range"), skip, resolved.contentLength - 1, resolved.contentLength) === rest);
+    if (declared !== rest || !rangeOK) {
+      await response.body.cancel().catch(() => undefined);
+      throw soundCloudError("SOUNDCLOUD_SIZE_MISMATCH", "SoundCloud returned an unverifiable audio size.", { stage: "downloading" });
+    }
   }
   const file = await fs.open(destination, "wx");
   const hash = createHash("sha256");
   let completed = 0;
   try {
-    const reader = response.body.getReader();
-    while (true) {
+    if (skip) {
+      hash.update(prefix);
+      await writeAll(file, prefix);
+      completed = skip;
+      onProgress(completed, resolved.contentLength);
+    }
+    const reader = response ? response.body.getReader() : null;
+    while (reader) {
       const { done, value } = await reader.read();
       if (done) break;
       completed += value.byteLength;
@@ -545,6 +592,7 @@ module.exports = {
   directSoundCloudCandidate,
   downloadResolvedSoundCloudAudio,
   downloadSoundCloudAudio,
+  fetchResolvedSoundCloudRange,
   isSoundCloudURL,
   parseSoundCloudHydration,
   parseSoundCloudTrack,

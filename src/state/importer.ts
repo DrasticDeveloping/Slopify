@@ -5,7 +5,7 @@ import { isUploadLink, splitArtists, uploadCredit, uploadTitle } from "../lib/cr
 import type { Album, Artist, ClipRange, Genre, Track } from "../data/types";
 import { meaningfulArtist, type ReasonKind } from "../recommend/taste";
 import {
-  addToPlaylist, cancelServerDelete, connectStreams, createPlaylist, hideDiscovery, isServerDeletePending, keepDiscovery, linkSavedStream, navigate,
+  addToPlaylist, ask, cancelServerDelete, connectStreams, createPlaylist, hideDiscovery, isServerDeletePending, keepDiscovery, linkSavedStream, navigate,
   playList, retryServerDeletes, toast, togglePlay, updateToast, type StreamMedia,
 } from "./actions";
 import { dropFromDevice } from "./device";
@@ -98,7 +98,7 @@ export interface ImportFailure {
 }
 
 export type Stage =
-  | "idle" | "resolving_metadata" | "searching_candidates" | "awaiting_selection" | "inspecting_source" | "downloading"
+  | "idle" | "resolving_metadata" | "searching_candidates" | "awaiting_selection" | "inspecting_source" | "checking_library" | "downloading"
   | "processing" | "saving_local" | "local_complete" | "complete" | "failed" | "cancelled";
 
 export interface ImportState {
@@ -245,6 +245,7 @@ const STAGE_LABELS: Partial<Record<Stage, string>> = {
   resolving_metadata: "Reading link",
   searching_candidates: "Searching for sources",
   inspecting_source: "Preparing download",
+  checking_library: "Checking your library",
   downloading: "Downloading",
   processing: "Processing download",
   saving_local: "Saving download",
@@ -1196,9 +1197,31 @@ function importMetadata(c: Candidate, meta: SourceTrack) {
   };
 }
 
-type StartResult = { kind: "created" | "duplicate"; track: ServerSong };
+/**
+ * What saving a source came to. "duplicate": the library has it already (the same upload or the
+ * same sound data), and `track` is that song. "similar": it sounds the same as `track` (an
+ * acoustic match, maybe from another site), and nothing was saved: ask, then save it with
+ * `allowSimilar` if wanted.
+ */
+type StartResult = { kind: "created" | "duplicate" | "similar"; track: ServerSong; similarity?: { ber: number; overlapSeconds: number } };
 
-function startDownload(c: Candidate, meta: SourceTrack, kind: MediaKind, signal: AbortSignal) {
+type SimilarPair = { saving: { title: string; artist: string }; match: ServerSong };
+
+/** The question for songs that sound like ones already in the library. Its "no" (Skip, Escape) saves nothing. */
+function similarQuestion(pairs: SimilarPair[], kind: MediaKind) {
+  const noun = kind === "video" ? "video" : "song";
+  const line = ({ saving, match }: SimilarPair) => `“${saving.title}” sounds the same as “${match.title}” by ${match.artist}`;
+  const answers = { confirmLabel: "Save anyway", cancelLabel: "Skip", icon: "copy" };
+  if (pairs.length === 1) return { title: "Already in your library?", body: `${line(pairs[0])}, which you already have.`, ...answers };
+  const more = pairs.length > 3 ? `; and ${pairs.length - 3} more` : "";
+  return {
+    title: `${pairs.length} ${noun}s may already be in your library`,
+    body: `${pairs.slice(0, 3).map(line).join("; ")}${more}. Skipping keeps the ones you have.`,
+    ...answers,
+  };
+}
+
+function startDownload(c: Candidate, meta: SourceTrack, kind: MediaKind, signal: AbortSignal, allowSimilar = false) {
   const metadata = importMetadata(c, meta);
   return streamCall<StartResult>("/api/import/start", {
     sourceURL: c.sourceURL,
@@ -1206,6 +1229,7 @@ function startDownload(c: Candidate, meta: SourceTrack, kind: MediaKind, signal:
     mediaKind: kind,
     metadata,
     durationSeconds: metadata.durationSeconds,
+    ...(allowSimilar ? { allowSimilar: true } : {}),
   }, signal, (p) => {
     if (importController?.signal !== signal) return;
     set({ stage: p.stage, progress: p.total ? { completed: p.completed ?? 0, total: p.total } : null });
@@ -1240,8 +1264,20 @@ export async function confirmImport() {
   discovery = null;
   const controller = begin(meta.title || candidate.title || (kind === "video" ? "Video import" : "Audio import"));
   try {
-    const result = await startDownload(candidate, meta, kind, controller.signal);
+    let result = await startDownload(candidate, meta, kind, controller.signal);
     if (!result.ok) throw result.error;
+    let skippedFor: ServerSong | null = null;
+    if (result.result.kind === "similar") {
+      const match = result.result.track;
+      const save = await ask(similarQuestion([{ saving: importMetadata(candidate, meta), match }], kind));
+      if (controller.signal.aborted) throw new DOMException("Import cancelled", "AbortError");
+      if (save) {
+        set({ stage: "inspecting_source", progress: null });
+        showTransfer();
+        result = await startDownload(candidate, meta, kind, controller.signal, true);
+        if (!result.ok) throw result.error;
+      } else skippedFor = match;
+    }
     const id = addServerTrack(result.result.track);
     if (discovered) {
       keepDiscovery(discovered.kind);
@@ -1250,7 +1286,9 @@ export async function confirmImport() {
     }
     const title = result.result.track.title;
     const play = { label: "Play", run: () => playList([id], id, { label: "Imported", route: { name: "library" } }) };
-    if (result.result.kind === "duplicate") {
+    if (skippedFor) {
+      finishTransfer(`Skipped “${importMetadata(candidate, meta).title}”`, { detail: `You already have “${skippedFor.title}”.`, action: play });
+    } else if (result.result.kind === "duplicate") {
       finishTransfer(`“${title}” is already in your library`, { action: play });
     } else {
       finishTransfer(`${kind === "video" ? "Downloaded" : "Imported"} “${title}”`, {
@@ -1328,8 +1366,11 @@ async function confirmPlaylist(resolution: Resolution) {
   const first = queue[0].importMetadata?.title || queue[0].title || "Playlist item 1";
   batchProgress = { index: 0, total: queue.length };
   const controller = begin(`1 of ${queue.length} • ${first}`);
-  const imported: string[] = [];
+  // Each kept song by its place in the queue, so ones settled later (below) still land where they were.
+  const slots: string[] = [];
   const failures: string[] = [];
+  // Songs that sound like ones already saved: asked about together once the rest are in, then put in their place.
+  const similar: (SimilarPair & { option: Candidate; meta: SourceTrack; at: number })[] = [];
   let created = 0;
   let duplicates = 0;
   let cancelled = false;
@@ -1346,11 +1387,13 @@ async function confirmPlaylist(resolution: Resolution) {
       showTransfer();
       const options = [candidate, ...(candidate.fallbackCandidates ?? []).filter(isDownloadable)];
       let result: ApiResult<StartResult> | null = null;
+      let used = candidate;
       // Each source gets three tries, then the next matched source is used.
       sources: for (const option of options) {
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             if (attempt) await sleep(attempt === 1 ? 400 : 1200, controller.signal);
+            used = option;
             result = await startDownload(option, meta, kind, controller.signal);
           } catch (error) {
             if (asFailure(error, "inspecting_source").code === "CANCELLED") {
@@ -1370,12 +1413,56 @@ async function confirmPlaylist(resolution: Resolution) {
         failures.push(`${meta.title || "Untitled"}${meta.artist ? ` — ${meta.artist}` : ""}`);
         continue;
       }
-      const id = addServerTrack(result.result.track);
-      if (!imported.includes(id)) imported.push(id);
+      if (result.result.kind === "similar") {
+        similar.push({ saving: importMetadata(used, meta), match: result.result.track, option: used, meta, at: index });
+        continue;
+      }
+      slots[index] = addServerTrack(result.result.track);
       if (result.result.kind === "duplicate") duplicates++;
       else created++;
     }
+    if (!cancelled && similar.length) {
+      const save = await ask(similarQuestion(similar, kind));
+      for (const [n, item] of similar.entries()) {
+        if (controller.signal.aborted) {
+          cancelled = true;
+          break;
+        }
+        // Skipped: the song already saved stands in for it (in the playlist too).
+        let id = "";
+        if (save) {
+          set({ transferName: `${n + 1} of ${similar.length} • ${item.saving.title}`, stage: "inspecting_source", progress: null });
+          showTransfer();
+          let again: ApiResult<StartResult> | null = null;
+          try {
+            again = await startDownload(item.option, item.meta, kind, controller.signal, true);
+          } catch (error) {
+            if (asFailure(error, "inspecting_source").code === "CANCELLED") {
+              cancelled = true;
+              break;
+            }
+          }
+          if (!again?.ok) {
+            if (again?.error.code === "CANCELLED") {
+              cancelled = true;
+              break;
+            }
+            failures.push(`${item.saving.title}${item.saving.artist ? ` — ${item.saving.artist}` : ""}`);
+            continue;
+          }
+          id = addServerTrack(again.result.track);
+          if (again.result.kind === "created") created++;
+          else duplicates++;
+        } else {
+          id = addServerTrack(item.match);
+          duplicates++;
+        }
+        slots[item.at] = id;
+      }
+    }
   } finally {
+    // In queue order, each song once (a playlist can list one twice, or two of its songs be one already saved).
+    const imported = [...new Set(slots.filter(Boolean))];
     let playlistId: string | null = null;
     if (imported.length) {
       // Same name as the source playlist; importing it again tops it up.

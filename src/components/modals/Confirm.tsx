@@ -43,7 +43,7 @@ export function ConfirmHost() {
         footer={
           <>
             <span className="spacer" />
-            <button type="button" className="btn ghost" onClick={no} data-autofocus>Cancel</button>
+            <button type="button" className="btn ghost" onClick={no} data-autofocus>{shown.cancelLabel ?? "Cancel"}</button>
             <button type="button" className={`btn ${shown.danger ? "danger solid" : "primary"}`} onClick={() => answerConfirm(true)}>
               {shown.danger ? <Icon name={shown.icon ?? "trash"} size={16} /> : null}
               {shown.confirmLabel}

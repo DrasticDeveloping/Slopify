@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { readDurably, writeDurably } from "./durable-file.mjs";
+import { sourceKeys } from "./duplicates/keys.mjs";
 
 const { youtubeVideoID } = createRequire(import.meta.url)("./providers/local-import-core.cjs");
 
@@ -204,9 +205,13 @@ export class SongStore {
     return this.songs?.find((s) => s.id === id) ?? null;
   }
 
-  /** The song already saved from this source, if any. */
+  /**
+   * The song already saved from this source, if any: one sharing a source key (the same
+   * upload, however its link is written; see duplicates/keys.mjs), or the very same link.
+   */
   findBySource(sourceURL, sourceIdentity, savedAs) {
-    return this.songs?.find((s) => s.savedAs === savedAs && ((sourceIdentity && s.sourceIdentity === sourceIdentity) || (sourceURL && s.sourceURL === sourceURL))) ?? null;
+    const keys = sourceKeys({ sourceURL, sourceIdentity });
+    return this.songs?.find((s) => s.savedAs === savedAs && ((sourceURL && s.sourceURL === sourceURL) || [...sourceKeys(s)].some((key) => keys.has(key)))) ?? null;
   }
 
   add(song) {
