@@ -12,7 +12,7 @@ import { Bars, Icon } from "./Icon";
 import { PlatformBadge } from "./TrackList";
 import { VideoSurface } from "./VideoSurface";
 import { LyricsView } from "./Lyrics";
-import { useSlippedIn } from "../state/slipins";
+import { slipInReason, useSlippedIn } from "../state/slipins";
 import { useSmartAdded } from "../recommend/smart-shuffle";
 import { useArtistMetadata } from "../recommend/artist";
 import type { Artist } from "../data/types";
@@ -177,7 +177,7 @@ function DetailsView() {
         <div className="title-text">
           <button type="button" className="link np-title" onClick={() => navigate({ name: "album", id: album.id })}>{track.title}</button>
           <span className="np-artist"><ArtistLinks track={track} /></span>
-          {slipped === track.id ? <span className="small muted slipped-note" title="A song you marked to slip into your listening. Skip it if you're not feeling it; your list carries on next.">Slipped in</span> : null}
+          {slipped === track.id ? <span className="small muted slipped-note" title="A song you marked to slip into your listening. Skip it if you're not feeling it; your list carries on next.">Slipped in{slipInReason(track.id) ? ` · ${slipInReason(track.id)}` : ""}</span> : null}
         </div>
         <button type="button" className={`icon-btn like-btn${liked ? " on" : ""}`} onClick={() => toggleLike(track.id)} aria-pressed={liked} aria-label={liked ? "Remove from Liked Songs" : "Add to Liked Songs"}>
           <Icon name={liked ? "heartFill" : "heart"} size={22} />
