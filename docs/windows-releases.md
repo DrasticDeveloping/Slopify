@@ -34,7 +34,7 @@ Your development library, saved songs, playlists, logs, environment files, and c
 Slopify updates work like T3 Code's nightly builds. There are two channels:
 
 - **Stable** follows normal releases, numbered from `package.json` (`0.0.1`).
-- **Nightly** also gets nightly builds, made as often as every night. A nightly is numbered from the next patch version plus the UTC date and time it was built, like `0.0.2-nightly.20261012.930`. The final numeric identifier records seconds and milliseconds, so builds within a minute also sort correctly. Every nightly sorts after the one before it and before the stable `0.0.2`. When `0.0.2` ships, nightly users move to it, then on to the `0.0.3` nightlies.
+- **Nightly** also gets nightly builds, made as often as every 6 hours. A nightly is numbered from the next patch version plus the UTC date and time it was built, like `0.0.2-nightly.20261012.930`. The final numeric identifier records seconds and milliseconds, so builds within a minute also sort correctly. Every nightly sorts after the one before it and before the stable `0.0.2`. When `0.0.2` ships, nightly users move to it, then on to the `0.0.3` nightlies.
 
 People choose their channel in **Settings → General → Update channel**. A nightly build starts on Nightly, and a stable build starts on Stable. Moving from Nightly to Stable installs the newest stable release, even if its version is older than the nightly they're running.
 
@@ -89,7 +89,7 @@ Build an older and a newer version with any `updateRepo` set (for example `SLOPI
 
 `.github/workflows/release.yml` builds Slopify on GitHub's Windows machines:
 
-- **Every night at 09:00 UTC**, once nightlies are switched on, it builds a nightly of `master` and publishes it. It skips the build when `master` hasn't changed since the last nightly, using the `Source:` commit in each release's notes.
+- **Every 6 hours** (00:17, 06:17, 12:17 and 18:17 UTC), once nightlies are switched on, it builds a nightly of `master` and publishes it. GitHub often starts scheduled runs late. It skips the build when `master` hasn't changed since the last nightly, using the `Source:` commit in each release's notes.
 - **On demand**, from Actions → Release → Run workflow, it builds a nightly or stable release from any branch.
 
 Each release's notes list the commits since the previous release on the same channel (the last Nightly for a Nightly, the last Stable for a Stable), newest first, with their pull request numbers and a full-changelog link. Merge commits are left out. If GitHub can't supply the list, the release is published without it.
@@ -102,7 +102,7 @@ Nightlies are off until you switch them on, so nothing is published on a schedul
 gh variable set SLOPIFY_PUBLISH_NIGHTLIES --repo DrasticDeveloping/Slopify --body true
 ```
 
-Once on, the schedule can publish the first Nightly without a previous release: an empty release list does not skip the build. Subsequent unchanged nights skip packaging. Releases are tagged at the exact clean source commit recorded in `build.json`, rather than whichever commit happens to be the default branch tip when publishing. Local publishing rejects dirty builds; commit and push the source, then rebuild before publishing.
+Once on, the schedule can publish the first Nightly without a previous release: an empty release list does not skip the build. Later runs skip packaging while `master` is unchanged. Releases are tagged at the exact clean source commit recorded in `build.json`, rather than whichever commit happens to be the default branch tip when publishing. Local publishing rejects dirty builds; commit and push the source, then rebuild before publishing.
 
 ## Build again after changes
 

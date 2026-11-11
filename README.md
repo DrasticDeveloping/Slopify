@@ -41,7 +41,7 @@ With the app already built, `node server/main.mjs --open` also opens the Electro
 
 For a Windows desktop app you can send to someone, run `npm.cmd run dist:win` (or `npm.cmd run dist:win:nightly` for a nightly). It produces a portable EXE and an installer in `release/<version>/`, with the backend and FFmpeg included. Installed copies update themselves from Stable or Nightly, chosen in **Settings → General**. See [the Windows release process](docs/windows-releases.md) for setup, sharing, and updates.
 
-Source and desktop releases share the public `DrasticDeveloping/Slopify` repository. The Release workflow uses GitHub's built-in token: manual runs can keep artifacts without publishing, and the 09:00 UTC schedule publishes a Nightly when `master` has changed.
+Source and desktop releases share the public `DrasticDeveloping/Slopify` repository. The Release workflow uses GitHub's built-in token: manual runs can keep artifacts without publishing, and the 6-hourly schedule publishes a Nightly when `master` has changed.
 
 Build once with `npm run build`, then run `npm start`. Open Slopify in Chrome or Edge and choose **Install Slopify** from the profile menu, or **Settings → General → Install**. The browser also offers its own install option. On iPhone or iPad, use **Share → Add to Home Screen**.
 

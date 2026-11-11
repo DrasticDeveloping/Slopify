@@ -1,5 +1,5 @@
 # Builds Slopify for Windows, like T3 Code's nightly releases:
-# - every night, a nightly build of master, skipped when nothing changed since the last one.
+# - every 6 hours, a nightly build of master, skipped when nothing changed since the last one.
 #   Scheduled builds only run once nightlies are switched on: set the repository
 #   variable SLOPIFY_PUBLISH_NIGHTLIES to "true" (see docs/windows-releases.md);
 # - on demand (Actions → Release → Run workflow), a nightly or stable build.
@@ -11,7 +11,8 @@ name: Release
 
 on:
   schedule:
-    - cron: "0 9 * * *"
+    # 00:17, 06:17, 12:17 and 18:17 UTC. Off the hour, when GitHub delays scheduled runs the most.
+    - cron: "17 */6 * * *"
   workflow_dispatch:
     inputs:
       channel:
