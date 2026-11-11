@@ -9,6 +9,7 @@ import {
   playList, retryServerDeletes, toast, togglePlay, updateToast, type StreamMedia,
 } from "./actions";
 import { dropFromDevice } from "./device";
+import { keepPicture, prunePictures } from "./pictures";
 import { downloadTracks, keepLibraryOnDevice } from "./server";
 import { listSongs, pendingSongChanges, updateSong, type ServerSong } from "./song-api";
 import { getState, setState, subscribe as subscribeApp, type AppState } from "./store";
@@ -842,7 +843,8 @@ export async function fillArtistPictures() {
       tried = JSON.parse(localStorage.getItem(PICTURES_TRIED) || "{}") as Record<string, number>;
     } catch { /* Start afresh. */ }
     const s = getState();
-    const used = new Set(Object.values(s.tracks).filter((t) => !t.stream).map((t) => t.artistId));
+    // Artists credited alongside another are listed in the sidebar too.
+    const used = libraryArtistIds(s);
     const wanted = Object.values(s.artists).filter((a) =>
       used.has(a.id) && !a.image && meaningfulArtist(a.name) && !(Date.now() - (tried[a.name.toLowerCase()] ?? 0) < PICTURE_RETRY));
     for (let i = 0; i < wanted.length; i += 12) {
@@ -873,7 +875,20 @@ export async function fillArtistPictures() {
     // Offline or the server is unavailable: try at the next sync.
   } finally {
     fillingPictures = false;
+    keepArtistPictures();
   }
+}
+
+const libraryArtistIds = (s: AppState) => new Set(Object.values(s.tracks).filter((t) => !t.stream).flatMap((t) => [t.artistId, ...(t.featuring ?? [])]));
+
+/** The pictures of your library's artists. */
+const libraryPictures = (s: AppState) => [...libraryArtistIds(s)].map((id) => s.artists[id]?.image).filter((url): url is string => Boolean(url));
+
+/** Keeps your library artists' pictures on this device (for the sidebar), and lets go of the rest. */
+function keepArtistPictures() {
+  // One at a time, so a large library doesn't fetch them all at once.
+  void libraryPictures(getState()).reduce<Promise<unknown>>((done, url) => done.then(() => keepPicture(url)), Promise.resolve())
+    .then(() => prunePictures(libraryPictures(getState())));
 }
 
 function applyServerLibrary(s: AppState, { artists, albums, tracks, clips, fresh, gone }: {
