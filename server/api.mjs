@@ -20,6 +20,7 @@ import { runFolder, sweepOldTemp, sweepRunFolders } from "./run-folders.mjs";
 import { SongFiles } from "./song-files.mjs";
 import { SongStore } from "./songs.mjs";
 import { lockLibrary } from "./library-lock.mjs";
+import { createDuplicateFinder } from "./duplicates/index.mjs";
 
 const require = createRequire(import.meta.url);
 const { checkoutDataDir } = require("./data-dir.cjs");
@@ -309,10 +310,14 @@ function downloadLink(song) {
   return candidates.find(downloadable) ?? null;
 }
 
-/** Downloads a saved song from its source link into `dir` (a temporary copy; see song-files.mjs). */
-async function prepareSongFile(song, dir, signal) {
+/**
+ * Downloads a saved song from its source link into `dir` (a temporary copy; see song-files.mjs).
+ * With `duplicates`, a song not yet fingerprinted in full is fingerprinted from this download.
+ */
+async function prepareSongFile(song, dir, signal, duplicates = null) {
   const sourceURL = downloadLink(song);
   if (!sourceURL) throw Object.assign(new Error("This song has no source link to fetch it from."), { status: 404 });
+  const study = duplicates?.wants(song.id);
   const download = () => importConfirmedSource({
     sourceURL,
     sourceIdentity: song.sourceIdentity,
@@ -321,6 +326,7 @@ async function prepareSongFile(song, dir, signal) {
     existing: [],
     destinationDirectory: dir,
     temporaryRoot: os.tmpdir(),
+    analyzeSource: study ? (file, options) => duplicates.analyzeFile(file, options) : undefined,
   }, signal, () => {});
   let result;
   try {
@@ -330,6 +336,7 @@ async function prepareSongFile(song, dir, signal) {
     if (signal.aborted) throw error;
     result = await download();
   }
+  if (result.analysis && duplicates) void duplicates.learn(song.id, result.analysis).catch(() => undefined);
   return { filePath: result.filePath, size: result.size, sha256: result.contentSha256 };
 }
 
@@ -400,7 +407,10 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
     if (!owned()) throw Object.assign(new Error("Another Slopify took over this library. Restart this one to use it again."), { status: 409 });
   };
   const songs = new SongStore(dataDir, stillOwned);
-  const songFiles = new SongFiles(prepareSongFile, dataDir);
+  const duplicates = createDuplicateFinder({ dataDir, songs, downloadLink, beforeSave: stillOwned });
+  const songFiles = new SongFiles((song, dir, signal) => prepareSongFile(song, dir, signal, duplicates), dataDir);
+  // Songs whose sound this server still stores (from before links) are fingerprinted from it, once.
+  setTimeout(() => void duplicates.studyStoredFiles().catch(() => undefined), 15_000).unref();
   const previews = new Previews(dataDir);
   // Leftovers from servers that didn't stop cleanly go now, not on first use.
   void previews.sweep();
@@ -492,6 +502,11 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
   /**
    * Saves a song from the web: the server records its source link and details,
    * and keeps the file it fetched only briefly, for this device to take its own copy.
+   *
+   * First it checks the library (see duplicates/index.mjs). A song it certainly
+   * has answers "duplicate"; one that only sounds the same answers "similar"
+   * with the song it sounds like, and nothing is saved: the app asks, and sends
+   * `allowSimilar: true` to save it anyway.
    */
   async function startImport(req, res) {
     const body = await readJSON(req);
@@ -499,25 +514,39 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
     const stream = ndjson(res);
     const mediaKind = body.mediaKind === "video" ? "video" : "audio";
     const sourceURL = String(body.sourceURL || "");
+    const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
     let temp = null;
     try {
-      // Already saved from this link: nothing to fetch.
-      const known = songs.findBySource(sourceURL, body.sourceIdentity, mediaKind);
-      if (known) {
+      const checked = await duplicates.check({
+        sourceURL,
+        sourceIdentity: body.sourceIdentity,
+        savedAs: mediaKind,
+        metadata,
+        durationSeconds: Number(body.durationSeconds) || null,
+        allowSimilar: body.allowSimilar === true,
+      }, stream.signal, stream.progress);
+      if (checked.kind === "duplicate") {
         stream.progress({ stage: "local_complete", duplicate: true });
-        stream.finish({ ok: true, result: { kind: "duplicate", track: songs.publicSong(known) } });
+        stream.finish({ ok: true, result: { kind: "duplicate", track: songs.publicSong(checked.song), layer: checked.layer } });
         return;
       }
+      if (checked.kind === "similar") {
+        const { ber, overlapSeconds } = checked.match;
+        stream.finish({ ok: true, result: { kind: "similar", track: songs.publicSong(checked.song), similarity: { ber, overlapSeconds } } });
+        return;
+      }
+      const { probe } = checked;
       temp = await fs.mkdtemp(path.join(os.tmpdir(), "slopify-save-"));
       const result = await importConfirmedSource({
         sourceURL,
         sourceIdentity: body.sourceIdentity,
         mediaKind,
-        metadata: body.metadata && typeof body.metadata === "object" ? body.metadata : {},
+        metadata,
         existing: songs.songs.filter((s) => s.savedAs === mediaKind),
         destinationDirectory: temp,
         temporaryRoot: os.tmpdir(),
-      }, stream.signal, stream.progress);
+        analyzeSource: (file, options) => duplicates.analyzeFile(file, options),
+      }, stream.signal, stream.progress, duplicates.downloadAdapters(probe, mediaKind));
 
       if (result.kind === "duplicate") {
         stream.progress({ stage: "local_complete", duplicate: true });
@@ -553,6 +582,8 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
         legacyFile: null,
       });
       await songFiles.adopt(id, { filePath: result.filePath, size: result.size, sha256: result.contentSha256 });
+      // What the next check compares against. It is only ever worked out again, so a failure loses nothing.
+      await duplicates.record(id, { probe, analysis: result.analysis }).catch(() => undefined);
       stream.progress({ stage: "local_complete" });
       stream.finish({ ok: true, result: { kind: "created", track: songs.publicSong(song) } });
       scheduleBackfill();
@@ -730,6 +761,7 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
         if (parts.length === 2 && method === "DELETE") {
           await songs.remove(id);
           await songFiles.drop(id);
+          await duplicates.remove(id).catch(() => undefined);
           return sendJSON(res, 200, { ok: true });
         }
         if (parts.length === 3 && parts[2] === "file" && (method === "GET" || method === "HEAD")) return await sendSongFile(req, res, song);

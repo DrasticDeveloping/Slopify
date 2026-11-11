@@ -490,6 +490,8 @@ async function probeResolvedStream(stream, signal, fetchImpl, mediaKind = "audio
     await reader.cancel().catch(() => undefined);
     throw youtubeError("YOUTUBE_STREAM_UNAVAILABLE", `YouTube returned an unverifiable ${media} stream body.`);
   }
+  // The stream's ETag, when its server gives one, names its exact bytes (duplicate checks compare it).
+  return { etag: response.headers.get("etag") || null };
 }
 
 function safeThumbnailURL(value) {
@@ -590,12 +592,13 @@ async function resolveYouTubeAudio(source, signal, fetchImpl = fetch) {
   const videoID = YOUTUBE_VIDEO_ID.test(source) ? source : youtubeVideoID(source);
   if (!videoID) throw youtubeError("INVALID_YOUTUBE_VIDEO", "Enter a supported YouTube video URL.");
   let format = null;
+  let probed = null;
   const { player, streamingHeaders } = await fetchYouTubePlayer(videoID, signal, fetchImpl, async (candidatePlayer, headers) => {
     format = chooseM4AFormat(candidatePlayer);
     if (!format) {
       throw youtubeError("YOUTUBE_NO_VERIFIED_M4A", "YouTube did not provide a direct, verifiable M4A audio stream for this video.");
     }
-    await probeResolvedStream({
+    probed = await probeResolvedStream({
       streamingURL: safeStreamingURL(format.url),
       streamingHeaders: headers,
       contentLength: numericValue(format.contentLength),
@@ -627,6 +630,7 @@ async function resolveYouTubeAudio(source, signal, fetchImpl = fetch) {
     itag: numericValue(format.itag),
     contentLength,
     contentType: AUDIO_CONTENT_TYPE,
+    etag: probed?.etag || null,
     streamingURL: safeStreamingURL(format.url),
     streamingHeaders,
     sourceURL: `https://www.youtube.com/watch?v=${videoID}`,
@@ -723,8 +727,13 @@ function verifiedContentRangeForKind(value, expectedStart, expectedEnd, expected
   return expectedEnd - expectedStart + 1;
 }
 
-async function downloadResolvedMedia(resolved, destination, signal, onProgress = () => {}, fetchImpl = fetch, mediaKind = "audio") {
+/**
+ * `prefix`: the stream's first bytes, already fetched (by the duplicate check), so only the rest
+ * is downloaded. They are written and hashed as if they had just arrived.
+ */
+async function downloadResolvedMedia(resolved, destination, signal, onProgress = () => {}, fetchImpl = fetch, mediaKind = "audio", { prefix = null } = {}) {
   const media = mediaKind === "video" ? "video" : "audio";
+  if (prefix && (!Buffer.isBuffer(prefix) || prefix.length > resolved.contentLength)) prefix = null;
   const file = await fs.open(destination, "wx");
   const hash = createHash("sha256");
   let completed = 0;
@@ -732,7 +741,13 @@ async function downloadResolvedMedia(resolved, destination, signal, onProgress =
   let link = { streamingURL: resolved.streamingURL, streamingHeaders: resolved.streamingHeaders };
   let refreshed = false;
   try {
-    for (let start = 0; start < resolved.contentLength; start += AUDIO_CHUNK_SIZE) {
+    if (prefix?.length) {
+      await writeAll(file, prefix);
+      hash.update(prefix);
+      completed = prefix.length;
+      onProgress(completed, resolved.contentLength);
+    }
+    for (let start = completed; start < resolved.contentLength; start += AUDIO_CHUNK_SIZE) {
       if (signal?.aborted) throw signal.reason || new DOMException("Cancelled", "AbortError");
       const end = Math.min(resolved.contentLength - 1, start + AUDIO_CHUNK_SIZE - 1);
       let response;
@@ -830,8 +845,42 @@ async function downloadResolvedMedia(resolved, destination, signal, onProgress =
   }
 }
 
-async function downloadResolvedAudio(resolved, destination, signal, onProgress = () => {}, fetchImpl = fetch) {
-  return downloadResolvedMedia(resolved, destination, signal, onProgress, fetchImpl, "audio");
+async function downloadResolvedAudio(resolved, destination, signal, onProgress = () => {}, fetchImpl = fetch, options = {}) {
+  return downloadResolvedMedia(resolved, destination, signal, onProgress, fetchImpl, "audio", options);
+}
+
+/**
+ * Bytes `start` up to (not including) `end` of a resolved audio stream, without downloading the
+ * rest: the duplicate check reads a song's first seconds this way. Asked for once more if refused.
+ */
+async function fetchResolvedAudioRange(resolved, start, end, signal, fetchImpl = fetch) {
+  const last = Math.min(end, resolved.contentLength) - 1;
+  if (!Number.isSafeInteger(start) || start < 0 || last < start) return Buffer.alloc(0);
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetchWithValidatedRedirects(safeStreamingURL(resolved.streamingURL), {
+      headers: { ...resolved.streamingHeaders, "Accept-Encoding": "identity", Range: `bytes=${start}-${last}` },
+      signal,
+      stage: "inspecting_source",
+    }, (value) => {
+      try { safeStreamingURL(value); return true; } catch { return false; }
+    }, fetchImpl, "YouTube returned an unsafe audio redirect.");
+    try { safeStreamingURL(response.url || resolved.streamingURL); }
+    catch (error) { await response.body?.cancel().catch(() => undefined); throw error; }
+    if (response.status === 429) {
+      await response.body?.cancel().catch(() => undefined);
+      throw youtubeError("YOUTUBE_RATE_LIMITED", "YouTube rate-limited the audio check.", { stage: "inspecting_source", retryAfter: response.headers.get("retry-after") });
+    }
+    if (response.status !== 206 || !response.body) {
+      await response.body?.cancel().catch(() => undefined);
+      if (attempt >= 1) throw youtubeError("YOUTUBE_DOWNLOAD_FAILED", "The YouTube audio stream could not be read.", { stage: "inspecting_source" });
+      await delay(500, signal);
+      continue;
+    }
+    const expected = verifiedContentRangeForKind(response.headers.get("content-range"), start, last, resolved.contentLength, "audio");
+    const bytes = await readResponseBytes(response, expected, () => youtubeError("YOUTUBE_RANGE_OVERFLOW", "YouTube returned more audio data than requested.", { stage: "inspecting_source" }));
+    if (bytes.length !== expected) throw youtubeError("YOUTUBE_RANGE_TRUNCATED", "YouTube ended an audio range before it was complete.", { stage: "inspecting_source" });
+    return bytes;
+  }
 }
 
 async function downloadResolvedVideo(resolved, destination, signal, onProgress = () => {}, fetchImpl = fetch) {
@@ -922,6 +971,7 @@ module.exports = {
   downloadYouTubeVideo,
   extractYouTubeCookieHeader,
   extractYouTubeVisitorData,
+  fetchResolvedAudioRange,
   inspectYouTubeAudio,
   inspectYouTubeVideo,
   highestQualityThumbnailURL,

@@ -900,6 +900,20 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
     );
   }
   let savedPath = null;
+  // Slopify: `input.analyzeSource(path, { mediaKind, signal })` studies the download as it came
+  // (for the duplicate check's fingerprints). Optional: its failure never fails the import.
+  let pendingAnalysis = null;
+  const analyze = (filePath) => {
+    if (typeof input.analyzeSource !== "function") return Promise.resolve(null);
+    pendingAnalysis = Promise.resolve()
+      .then(() => input.analyzeSource(filePath, { mediaKind, signal }))
+      .catch((error) => {
+        if (error?.name === "AbortError") throw error;
+        return null;
+      });
+    pendingAnalysis.catch(() => undefined);
+    return pendingAnalysis;
+  };
   try {
     assertNotAborted(signal);
     if (!soundCloudSource) {
@@ -958,6 +972,8 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
       if (!sourceSha256) throw localImportError("processing", "VIDEO_HASH_FAILED", "The completed video could not be verified.");
       const existingDuplicate = duplicateTrack(input.existing, sourceSha256);
       if (existingDuplicate) return { kind: "duplicate", track: existingDuplicate, sourceIdentity: completedSourceIdentity };
+      // The sound as YouTube sent it (its own stream, when picture and sound came apart).
+      const analysis = await analyze(result.separateStreams?.audio?.path || sourcePath);
       assertNotAborted(signal);
       onStage({ stage: "saving_local" });
       const artworkPath = await artworkFetch(metadata.artworkURL, temporary, signal).catch((error) => {
@@ -983,11 +999,14 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
         sourceIdentity: completedSourceIdentity,
         artwork,
         metadata,
+        analysis,
       };
     }
     const existingDuplicate = duplicateTrack(input.existing, result.download.sha256);
     if (existingDuplicate) return { kind: "duplicate", track: existingDuplicate, sourceIdentity: completedSourceIdentity };
     onStage({ stage: "processing", progress: null });
+    // Studied while it is tagged: both only read the download.
+    const analysisTask = analyze(sourcePath);
     const artwork = await artworkFetch(metadata.artworkURL, temporary, signal).catch((error) => {
       if (error?.name === "AbortError") throw error;
       return null;
@@ -1017,6 +1036,7 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
     const contentSha256 = await fileHash(finalPath);
     const processedDuplicate = duplicateTrack(input.existing, result.download.sha256, contentSha256);
     if (processedDuplicate) return { kind: "duplicate", track: processedDuplicate, sourceIdentity: completedSourceIdentity };
+    const analysis = await analysisTask;
     assertNotAborted(signal);
     onStage({ stage: "saving_local" });
     await fs.mkdir(input.destinationDirectory, { recursive: true });
@@ -1037,11 +1057,14 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
       sourceURL: metadata.sourceURL,
       sourceIdentity: completedSourceIdentity,
       metadata,
+      analysis,
     };
   } catch (error) {
     if (savedPath) await fs.rm(savedPath, { force: true }).catch(() => undefined);
     throw error;
   } finally {
+    // A study still reading the download finishes (or stops, if cancelled) before its folder goes.
+    await pendingAnalysis?.catch(() => undefined);
     await fs.rm(temporary, { recursive: true, force: true }).catch(() => undefined);
   }
 }
@@ -1049,9 +1072,12 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
 module.exports = {
   PREPARED_SOUNDCLOUD_AUDIO_TTL_MS,
   artworkFileDataURL,
+  completedSoundCloudDownload,
   createPreparedSoundCloudAudioHandoff,
   duplicateTrack,
   fetchArtwork,
+  ffmpegExecutable,
+  hasFFmpeg,
   importConfirmedSource,
   m4aTagArguments,
   mp4MuxArguments,
