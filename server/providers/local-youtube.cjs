@@ -63,6 +63,59 @@ function youtubeError(code, message, options = {}) {
   return new LocalImportError(options.stage || "inspecting_source", code, message, options);
 }
 
+const VERIFICATION_MESSAGE = "YouTube asked to confirm this isn't a bot, so it won't play this video right now. Try again later, or choose another version.";
+
+/*
+ * Fewer trips to YouTube: every request from this computer counts toward how YouTube
+ * judges its traffic. The anonymous session (a whole watch page to fetch) is kept for a
+ * while instead of fetched for every song. A video's player answer is shared by its audio
+ * and its video, and by lookups made at the same time. A video YouTube refused isn't asked
+ * about again for an hour, and right after a refusal background fetches wait (see
+ * youtubeCoolingDown).
+ */
+const SESSION_TTL = 30 * 60_000;
+const PLAYER_TTL = 10 * 60_000;
+const REFUSED_TTL = 60 * 60_000;
+const COOL_DOWN = 5 * 60_000;
+/** Answers about a video that hold for a while: asking again (or as another app) only adds requests. */
+const LASTING_REFUSALS = new Set([
+  "YOUTUBE_PLAYBACK_VERIFICATION_REQUIRED",
+  "YOUTUBE_SIGN_IN_REQUIRED",
+  "YOUTUBE_PRIVATE",
+  "YOUTUBE_MEMBERS_ONLY",
+  "YOUTUBE_REGION_BLOCKED",
+  "YOUTUBE_UNAVAILABLE",
+]);
+/** Kept per fetch implementation, so a test's made-up YouTube never shares answers with the real one. */
+const trafficByFetch = new WeakMap();
+function traffic(fetchImpl) {
+  let state = trafficByFetch.get(fetchImpl);
+  if (!state) trafficByFetch.set(fetchImpl, (state = { session: null, players: new Map(), probes: new Map(), refused: new Map(), refusedAt: 0 }));
+  return state;
+}
+
+/** Whether YouTube refused this video, or asked to confirm this isn't a bot, in a way that holds for a while. */
+function isLastingRefusal(error) {
+  return LASTING_REFUSALS.has(error?.code);
+}
+
+/** True for a few minutes after YouTube refused a video or rate-limited this computer: fetches nobody is waiting for should hold off. */
+function youtubeCoolingDown(fetchImpl = fetch) {
+  return Date.now() - traffic(fetchImpl).refusedAt < COOL_DOWN;
+}
+
+/** `promise`, given up on when `signal` aborts (without stopping the work, which other lookups may share). */
+function untilAborted(promise, signal) {
+  if (!signal) return promise;
+  const reason = () => signal.reason ?? new DOMException("Aborted", "AbortError");
+  if (signal.aborted) return Promise.reject(reason());
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(reason());
+    signal.addEventListener("abort", stop, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+  });
+}
+
 function cleanLabel(value, fallback) {
   if (typeof value !== "string") return fallback;
   const cleaned = value.replace(/\s+/g, " ").trim();
@@ -176,10 +229,7 @@ function youtubePlaybackFailure(reasons) {
     return youtubeError("YOUTUBE_MEMBERS_ONLY", "This members-only YouTube video cannot be imported anonymously.");
   }
   if (/proof of origin|po.?token|confirm.*not a bot|automated traffic/i.test(message)) {
-    return youtubeError(
-      "YOUTUBE_PLAYBACK_VERIFICATION_REQUIRED",
-      "YouTube requires playback verification for this video. Try another candidate.",
-    );
+    return youtubeError("YOUTUBE_PLAYBACK_VERIFICATION_REQUIRED", VERIFICATION_MESSAGE);
   }
   if (/age|sign[ -]?in|login|required.*account/i.test(message)) {
     return youtubeError("YOUTUBE_SIGN_IN_REQUIRED", "YouTube requires sign-in or age verification for this video.");
@@ -262,10 +312,11 @@ async function fetchVisitorSession(videoID, signal, fetchImpl) {
       continue;
     }
     if (response.status === 429) {
+      // Rate-limited: the other pages would only add to it.
       rateLimited = true;
       retryAfter ||= response.headers.get("retry-after");
       await response.body?.cancel().catch(() => undefined);
-      continue;
+      break;
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -316,10 +367,11 @@ async function fetchDirectPlayer(videoID, client, session, signal, fetchImpl) {
       continue;
     }
     if (response.status === 429) {
+      // Rate-limited: asking the other address would only add to it.
       rateLimited = true;
       retryAfter ||= response.headers.get("retry-after");
       await response.body?.cancel().catch(() => undefined);
-      continue;
+      break;
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
@@ -337,35 +389,110 @@ async function fetchDirectPlayer(videoID, client, session, signal, fetchImpl) {
     const status = player?.playabilityStatus?.status;
     if (status === "OK") return player;
     lastError = youtubePlaybackFailure(playabilityReasons(player?.playabilityStatus, [typeof status === "string" ? status : ""]));
+    // A real answer (refused, unavailable, private…) is the same from the other address.
+    if (lastError.code !== "YOUTUBE_RESOLVE_FAILED") throw lastError;
   }
   if (rateLimited) throw youtubeError("YOUTUBE_RATE_LIMITED", "YouTube rate-limited this request.", { retryAfter });
   throw lastError || youtubeError("YOUTUBE_RESOLVE_FAILED", "YouTube could not resolve this video.");
 }
 
-async function fetchYouTubePlayer(videoID, signal, fetchImpl, validatePlayer = async () => {}) {
-  const session = await fetchVisitorSession(videoID, signal, fetchImpl);
+/** The anonymous session, kept for a while and shared by lookups (a new one costs a whole watch page). */
+function sharedSession(videoID, signal, fetchImpl) {
+  const state = traffic(fetchImpl);
+  if (!state.session || Date.now() - state.session.at > SESSION_TTL) {
+    const entry = { at: Date.now(), promise: fetchVisitorSession(videoID, undefined, fetchImpl) };
+    entry.promise.catch(() => {
+      if (state.session === entry) state.session = null;
+    });
+    state.session = entry;
+  }
+  return untilAborted(state.session.promise, signal);
+}
+
+const playerKey = (videoID, client) => `${videoID}:${client.client.clientName}`;
+
+/** Whether an earlier lookup's player answer (or one under way) would be used. */
+function hasKeptPlayer(videoID, client, fetchImpl) {
+  const entry = traffic(fetchImpl).players.get(playerKey(videoID, client));
+  return Boolean(entry && Date.now() - entry.at <= PLAYER_TTL);
+}
+
+/** One app's player answer for a video, shared by its audio and video lookups for a few minutes; `fresh` asks again. */
+function sharedPlayer(videoID, client, session, signal, fetchImpl, fresh) {
+  const { players } = traffic(fetchImpl);
+  const key = playerKey(videoID, client);
+  const cached = players.get(key);
+  if (!cached || fresh || Date.now() - cached.at > PLAYER_TTL) {
+    for (const [other, entry] of players) if (Date.now() - entry.at > PLAYER_TTL) players.delete(other);
+    const entry = { at: Date.now(), promise: fetchDirectPlayer(videoID, client, session, undefined, fetchImpl) };
+    entry.promise.catch(() => {
+      if (players.get(key) === entry) players.delete(key);
+    });
+    players.set(key, entry);
+  }
+  return untilAborted(players.get(key).promise, signal);
+}
+
+/** A stream's one-byte check, shared by lookups that picked the same stream (a video's audio, say) for a few minutes. */
+function sharedProbe(stream, signal, fetchImpl, mediaKind = "audio") {
+  const { probes } = traffic(fetchImpl);
+  const key = `${mediaKind}:${stream.streamingURL}`;
+  const cached = probes.get(key);
+  if (!cached || Date.now() - cached.at > PLAYER_TTL) {
+    for (const [other, entry] of probes) if (Date.now() - entry.at > PLAYER_TTL) probes.delete(other);
+    const entry = { at: Date.now(), promise: probeResolvedStream(stream, undefined, fetchImpl, mediaKind) };
+    entry.promise.catch(() => {
+      if (probes.get(key) === entry) probes.delete(key);
+    });
+    probes.set(key, entry);
+  }
+  return untilAborted(probes.get(key).promise, signal);
+}
+
+async function fetchYouTubePlayer(videoID, signal, fetchImpl, validatePlayer = async () => {}, { fresh = false } = {}) {
+  const state = traffic(fetchImpl);
+  const refused = state.refused.get(videoID);
+  if (refused && Date.now() < refused.until) throw youtubeError(refused.code, refused.message);
   const clients = [
     { client: VISIONOS_CLIENT, clientNumber: "101", userAgent: VISIONOS_USER_AGENT, origin: "https://www.youtube.com" },
     { client: ANDROID_VR_CLIENT, clientNumber: "28", userAgent: ANDROID_VR_USER_AGENT, origin: "https://www.youtube.com" },
   ];
-  let verificationError = null;
   let lastError = null;
-  for (const client of clients) {
-    try {
-      const player = await fetchDirectPlayer(videoID, client, session, signal, fetchImpl);
+  try {
+    const session = await sharedSession(videoID, signal, fetchImpl);
+    for (const client of clients) {
       const streamingHeaders = { "User-Agent": client.userAgent, Origin: client.origin };
-      await validatePlayer(player, streamingHeaders);
-      return {
-        player,
-        streamingHeaders,
-      };
-    } catch (error) {
-      if (!(error instanceof LocalImportError)) throw error;
-      if (error.code === "YOUTUBE_PLAYBACK_VERIFICATION_REQUIRED") verificationError = error;
-      else lastError = error;
+      const kept = !fresh && hasKeptPlayer(videoID, client, fetchImpl);
+      try {
+        let player = await sharedPlayer(videoID, client, session, signal, fetchImpl, fresh);
+        try {
+          await validatePlayer(player, streamingHeaders);
+        } catch (error) {
+          // A kept answer whose stream was turned away may just be stale: asked again once, fresh.
+          if (!kept || error?.code !== "YOUTUBE_STREAM_FORBIDDEN") throw error;
+          player = await sharedPlayer(videoID, client, session, signal, fetchImpl, true);
+          await validatePlayer(player, streamingHeaders);
+        }
+        return {
+          player,
+          streamingHeaders,
+        };
+      } catch (error) {
+        if (!(error instanceof LocalImportError)) throw error;
+        // A refusal or a rate limit holds for the other app too: asking it would only add requests.
+        if (isLastingRefusal(error) || error.code === "YOUTUBE_RATE_LIMITED") throw error;
+        lastError = error;
+      }
     }
+  } catch (error) {
+    if (isLastingRefusal(error)) {
+      for (const [other, entry] of state.refused) if (Date.now() >= entry.until) state.refused.delete(other);
+      state.refused.set(videoID, { code: error.code, message: error.message, until: Date.now() + REFUSED_TTL });
+    }
+    if (error?.code === "YOUTUBE_PLAYBACK_VERIFICATION_REQUIRED" || error?.code === "YOUTUBE_RATE_LIMITED") state.refusedAt = Date.now();
+    throw error;
   }
-  throw verificationError || lastError || youtubeError("YOUTUBE_RESOLVE_FAILED", "YouTube could not resolve this video.");
+  throw lastError || youtubeError("YOUTUBE_RESOLVE_FAILED", "YouTube could not resolve this video.");
 }
 
 function originalAudioPreference(format) {
@@ -462,11 +589,9 @@ async function probeResolvedStream(stream, signal, fetchImpl, mediaKind = "audio
     throw youtubeError("YOUTUBE_STREAM_UNAVAILABLE", `The YouTube ${media} stream could not be verified.`);
   }
   if (response.status === 403) {
+    // This one stream turned away (its address expired, or this app needs more for it): not the whole video refused.
     await response.body?.cancel().catch(() => undefined);
-    throw youtubeError(
-      "YOUTUBE_PLAYBACK_VERIFICATION_REQUIRED",
-      "YouTube requires playback verification for this stream. Trying another playback client.",
-    );
+    throw youtubeError("YOUTUBE_STREAM_FORBIDDEN", VERIFICATION_MESSAGE);
   }
   if (response.status === 429) {
     await response.body?.cancel().catch(() => undefined);
@@ -588,7 +713,8 @@ async function resolveYouTubeMetadata(source, signal, fetchImpl = fetch) {
   };
 }
 
-async function resolveYouTubeAudio(source, signal, fetchImpl = fetch) {
+/** `fresh` asks YouTube again instead of using a player answer from the last few minutes (for a refresh after a failed download). */
+async function resolveYouTubeAudio(source, signal, fetchImpl = fetch, { fresh = false } = {}) {
   const videoID = YOUTUBE_VIDEO_ID.test(source) ? source : youtubeVideoID(source);
   if (!videoID) throw youtubeError("INVALID_YOUTUBE_VIDEO", "Enter a supported YouTube video URL.");
   let format = null;
@@ -598,13 +724,13 @@ async function resolveYouTubeAudio(source, signal, fetchImpl = fetch) {
     if (!format) {
       throw youtubeError("YOUTUBE_NO_VERIFIED_M4A", "YouTube did not provide a direct, verifiable M4A audio stream for this video.");
     }
-    probed = await probeResolvedStream({
+    probed = await sharedProbe({
       streamingURL: safeStreamingURL(format.url),
       streamingHeaders: headers,
       contentLength: numericValue(format.contentLength),
       contentType: AUDIO_CONTENT_TYPE,
     }, signal, fetchImpl);
-  });
+  }, { fresh });
   const details = player.videoDetails;
   if (details?.videoId && details.videoId !== videoID) throw youtubeError("YOUTUBE_MISMATCH", "YouTube returned the wrong video.");
   if (details?.isLive || details?.isLiveContent || details?.isUpcoming) {
@@ -634,11 +760,11 @@ async function resolveYouTubeAudio(source, signal, fetchImpl = fetch) {
     streamingURL: safeStreamingURL(format.url),
     streamingHeaders,
     sourceURL: `https://www.youtube.com/watch?v=${videoID}`,
-  }, (downloadSignal) => resolveYouTubeAudio(source, downloadSignal ?? signal, fetchImpl));
+  }, (downloadSignal) => resolveYouTubeAudio(source, downloadSignal ?? signal, fetchImpl, { fresh: true }));
 }
 
 /** `maxHeight` (say 1080) picks the best video no taller than that, when there is one. */
-async function resolveYouTubeVideo(source, signal, fetchImpl = fetch, { maxHeight = 0 } = {}) {
+async function resolveYouTubeVideo(source, signal, fetchImpl = fetch, { maxHeight = 0, fresh = false } = {}) {
   const videoID = YOUTUBE_VIDEO_ID.test(source) ? source : youtubeVideoID(source);
   if (!videoID) throw youtubeError("INVALID_YOUTUBE_VIDEO", "Enter a supported YouTube video URL.");
   let selected = null;
@@ -647,21 +773,21 @@ async function resolveYouTubeVideo(source, signal, fetchImpl = fetch, { maxHeigh
     if (!selected.format || (selected.useAdaptive && !selected.audioFormat)) {
       throw youtubeError("YOUTUBE_NO_VERIFIED_MP4", "YouTube did not provide verifiable MP4 video and M4A audio streams for this video.");
     }
-    await probeResolvedStream({
+    await sharedProbe({
       streamingURL: safeStreamingURL(selected.format.url, "video"),
       streamingHeaders: headers,
       contentLength: numericValue(selected.format.contentLength),
       contentType: VIDEO_CONTENT_TYPE,
     }, signal, fetchImpl, "video");
     if (selected.audioFormat) {
-      await probeResolvedStream({
+      await sharedProbe({
         streamingURL: safeStreamingURL(selected.audioFormat.url),
         streamingHeaders: headers,
         contentLength: numericValue(selected.audioFormat.contentLength),
         contentType: AUDIO_CONTENT_TYPE,
       }, signal, fetchImpl);
     }
-  });
+  }, { fresh });
   const details = player.videoDetails;
   if (details?.videoId && details.videoId !== videoID) throw youtubeError("YOUTUBE_MISMATCH", "YouTube returned the wrong video.");
   if (details?.isLive || details?.isLiveContent || details?.isUpcoming) {
@@ -682,7 +808,7 @@ async function resolveYouTubeVideo(source, signal, fetchImpl = fetch, { maxHeigh
   const thumbnails = Array.isArray(details?.thumbnail?.thumbnails) ? details.thumbnail.thumbnails : [];
   const thumbnailURL = highestQualityThumbnailURL(thumbnails);
   // A refresh follows the download it's for, which may be stopped on its own (its partner stream failed).
-  const again = (downloadSignal) => resolveYouTubeVideo(source, downloadSignal ?? signal, fetchImpl, { maxHeight });
+  const again = (downloadSignal) => resolveYouTubeVideo(source, downloadSignal ?? signal, fetchImpl, { maxHeight, fresh: true });
   const resolved = {
     videoID,
     title: cleanLabel(details?.title, videoID),
@@ -974,6 +1100,7 @@ module.exports = {
   fetchResolvedAudioRange,
   inspectYouTubeAudio,
   inspectYouTubeVideo,
+  isLastingRefusal,
   highestQualityThumbnailURL,
   preferredYouTubeArtworkURL,
   resolveYouTubeMetadata,
@@ -981,5 +1108,6 @@ module.exports = {
   resolveYouTubeVideo,
   safeStreamingURL,
   writeAll,
+  youtubeCoolingDown,
   youtubePlaybackFailure,
 };

@@ -72,8 +72,8 @@ export interface StreamMedia {
   picture?: Promise<string | null>;
 }
 interface StreamHooks {
-  /** The full song's audio, or its video. */
-  source(id: string): Promise<StreamMedia>;
+  /** The full song's audio, or its video. `background`: fetched ahead, so the server may put it off (see fetchStream). */
+  source(id: string, options?: { background?: boolean }): Promise<StreamMedia>;
   /** Downloads the song into the library (one at a time, in order), then hands `then` its library id. */
   save(id: string, then?: (libraryId: string) => void): void;
   dismiss(id: string): void;
@@ -107,7 +107,7 @@ export const dismissStream = (id: string) => streamHooks?.dismiss(id);
  * and for at most five minutes; it is used once, then fetched (and checked) again.
  */
 const streamUrls = new Map<string, { url: string; at: number; usable: boolean }>();
-const fetchingStreams = new Map<string, Promise<string>>();
+const fetchingStreams = new Map<string, { task: Promise<string>; background: boolean }>();
 /** Audio a streamed video plays from until its picture is ready. */
 const standIns = new Set<string>();
 const PROTECT_REFRESH = 60_000;
@@ -132,13 +132,17 @@ function protectStreams() {
   void fetch("/api/import/protect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokens }) }).catch(() => {});
 }
 
-/** Fetches a streamed song's audio, sharing a fetch already under way. */
-function fetchStream(id: string) {
+/**
+ * Fetches a streamed song's audio, sharing a fetch already under way. A `background` fetch (the next
+ * song, ahead of time) may be put off by the server while YouTube is cooling down, so playing the
+ * song then fetches it for real.
+ */
+function fetchStream(id: string, { background = false } = {}): Promise<string> {
   if (!streamHooks) return Promise.reject(new Error("Streaming is unavailable."));
   const pending = fetchingStreams.get(id);
-  if (pending) return pending;
+  if (pending) return pending.background && !background ? pending.task.catch(() => fetchStream(id)) : pending.task;
   const task = streamHooks
-    .source(id)
+    .source(id, { background })
     .then(({ url, picture }) => {
       streamUrls.set(id, { url, at: Date.now(), usable: true });
       setState((s) => (s.tracks[id] ? { tracks: { ...s.tracks, [id]: { ...s.tracks[id], mediaUrl: url } } } : {}));
@@ -150,7 +154,7 @@ function fetchStream(id: string) {
       return url;
     })
     .finally(() => fetchingStreams.delete(id));
-  fetchingStreams.set(id, task);
+  fetchingStreams.set(id, { task, background });
   return task;
 }
 /** A streamed video's picture is ready: the song switches from its audio to the video, carrying on from where it is. */
@@ -170,7 +174,7 @@ function prefetchNext() {
   radioHooks?.refill();
   protectStreams();
   const n = peekNext(getState());
-  if (n && getState().tracks[n.id]?.stream && !streamReady(n.id)) void fetchStream(n.id).catch(() => undefined);
+  if (n && getState().tracks[n.id]?.stream && !streamReady(n.id)) void fetchStream(n.id, { background: true }).catch(() => undefined);
 }
 /** The streamed song waiting for its audio, if any. */
 let pendingStream: string | null = null;

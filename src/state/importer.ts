@@ -482,13 +482,13 @@ export const streamLink = (id: string) => streamSources.get(id)?.candidate.sourc
 /** Videos being prepared for streamed songs, so playing one again meanwhile doesn't prepare it twice. */
 const pictures = new Map<string, Promise<string | null>>();
 
-async function streamSource(id: string): Promise<StreamMedia> {
+async function streamSource(id: string, { background = false } = {}): Promise<StreamMedia> {
   const source = streamSources.get(id);
   if (!source) throw new Error("This suggestion is no longer available.");
   const fetchPreview = async (mediaKind: MediaKind) => {
-    const res = await fetch("/api/import/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceURL: source.candidate.sourceURL, mediaKind }) });
+    const res = await fetch("/api/import/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceURL: source.candidate.sourceURL, mediaKind, background }) });
     const body = (await res.json().catch(() => null)) as ApiResult<{ url: string }> | null;
-    if (!body || !body.ok) throw new Error(body && !body.ok ? body.error.message : "Its source isn't available right now.");
+    if (!body || !body.ok) throw Object.assign(new Error(body && !body.ok ? body.error.message : "Its source isn't available right now."), { code: body && !body.ok ? body.error.code : undefined });
     return body.result.url;
   };
   if (!source.video) return { url: await fetchPreview("audio") };
@@ -497,20 +497,31 @@ async function streamSource(id: string): Promise<StreamMedia> {
    * and joined), so the song starts on its audio, which comes much sooner, and the
    * picture joins once it's ready. A video prepared already starts as one.
    */
-  let picture = pictures.get(id);
-  if (!picture) {
-    picture = fetchPreview("video").then(
-      (url) => url,
-      () => {
-        // A video YouTube won't hand over as one MP4 plays on as audio.
-        source.video = false;
-        setState((s) => (s.tracks[id] ? { tracks: { ...s.tracks, [id]: { ...s.tracks[id], kind: "audio" } } } : {}));
-        return null;
-      },
-    );
-    pictures.set(id, picture);
-    void picture.finally(() => pictures.delete(id));
+  const fetchPicture = () => fetchPreview("video").then(
+    (url) => url,
+    (error: { code?: string }) => {
+      // Put off (YouTube is cooling down), not refused: left for when the song plays.
+      if (error?.code === "YOUTUBE_COOLING_DOWN") throw error;
+      // A video YouTube won't hand over as one MP4 plays on as audio.
+      source.video = false;
+      setState((s) => (s.tracks[id] ? { tracks: { ...s.tracks, [id]: { ...s.tracks[id], kind: "audio" } } } : {}));
+      return null;
+    },
+  );
+  let pending = pictures.get(id);
+  if (!pending) {
+    pending = fetchPicture();
+    pictures.set(id, pending);
+    const done = () => pictures.delete(id);
+    void pending.then(done, done);
   }
+  if (background) {
+    // Fetched ahead, the song waits for its picture: one put off fails this fetch, and playing the song asks again.
+    const url = await pending;
+    return { url: url ?? (await fetchPreview("audio")) };
+  }
+  // Played now: a picture a fetch-ahead was put off for is asked for again.
+  const picture = pending.catch(() => fetchPicture());
   type First = { url: string } | { error: unknown } | { video: string };
   const audio: Promise<First> = fetchPreview("audio").then((url) => ({ url }), (error: unknown) => ({ error }));
   const first = await Promise.race([audio, picture.then((url): First | Promise<First> => (url ? { video: url } : audio))]);
