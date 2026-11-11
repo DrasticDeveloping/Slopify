@@ -1,6 +1,7 @@
 import { creditsArtist } from "../lib/credits";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Art } from "../components/Artwork";
+import { discographyOf, ReleaseCards, useOwnedReleases } from "../components/Discography";
 import { DiscoveryShelf } from "../components/DiscoveryShelf";
 import { Icon } from "../components/Icon";
 import { Card, PlayFab, Shelf, SkeletonCards } from "../components/Shelf";
@@ -11,7 +12,7 @@ import { plural } from "../lib/format";
 import { openArtist, useArtistMetadata, type ArtistMetadata, type ArtistProfiles } from "../recommend/artist";
 import { artistName, cleanArtist, type DiscoveryQuery } from "../recommend/discover";
 import { relatedFor } from "../recommend/service";
-import { navigate, startCollectionRadio, toast } from "../state/actions";
+import { navigate, startCollectionRadio } from "../state/actions";
 import { useStore, type Route } from "../state/store";
 import { Missing } from "./Collection";
 
@@ -28,7 +29,7 @@ function ArtistPage({ artist }: { artist: Artist }) {
   const tracks = useStore((s) => s.tracks);
   const artists = useStore((s) => s.artists);
   const metadata = useArtistMetadata(id, name, artist.musicBrainzId);
-  const profiles = metadata.result?.profiles ?? [];
+  const profiles = useMemo(() => metadata.result?.profiles ?? [], [metadata.result]);
   const route: Route = { name: "artist", id };
   // Library songs only; streamed suggestions are not in the library.
   const popular = useMemo(
@@ -69,7 +70,7 @@ function ArtistPage({ artist }: { artist: Artist }) {
         </>
       ) : null}
       <DiscoveryShelf title="Popular" subtitle="Their best-known songs, from your library and online" queries={popularQueries(name, profiles)} limit={12} route={route} withOwned hideWhenEmpty fixedSubtitle />
-      <Discography profiles={profiles} loading={metadata.loading} />
+      <Discography artistId={id} profiles={profiles} loading={metadata.loading} />
       {profiles.filter((p) => p.biography.trim()).map((p) => (
         <About key={p.name} profile={p} heading={metadata.result?.collaboration ? `About ${p.name}` : "About"} />
       ))}
@@ -123,68 +124,13 @@ function popularQueries(name: string, profiles: ArtistMetadata[]): DiscoveryQuer
   return [...top, ...names.map((n): DiscoveryQuery => ({ text: n, artist: n, because: `Popular · ${n}`, affinity: 0, kind: "discover-search" }))];
 }
 
-const bareTitle = (s: string) => s.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-
-/**
- * Opens a release from the artist's discography on its page in the app: the
- * same release in the music catalog, found by artist and title. One the catalog
- * doesn't have is searched for instead.
- */
-async function openRelease(r: ArtistMetadata["releases"][number]) {
-  try {
-    const res = await fetch("/api/catalog/releases", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ artists: [r.artist] }) });
-    const body = (await res.json()) as { ok?: boolean; result?: { artists: Array<{ releases: Array<{ id: string; title: string }> }> } };
-    const releases = body.ok ? body.result?.artists[0]?.releases ?? [] : [];
-    const want = bareTitle(r.title);
-    // The same title, else one that only adds an edition ("Love Sick (Deluxe)").
-    const match = releases.find((x) => bareTitle(x.title) === want) ?? releases.find((x) => want && bareTitle(x.title).startsWith(want));
-    if (match) return navigate({ name: "release", id: match.id });
-  } catch {
-    // The catalog is unreachable: search instead.
-  }
-  toast(`“${r.title}” isn't in the music catalog`, { detail: "Showing search results for it instead." });
-  navigate({ name: "search", q: `${r.artist} ${r.title}` });
-}
-
-function Discography({ profiles, loading }: { profiles: ArtistMetadata[]; loading: boolean }) {
-  const [opening, setOpening] = useState<string | null>(null);
-  const tracks = useStore((s) => s.tracks);
-  const albums = useStore((s) => s.albums);
-  const artists = useStore((s) => s.artists);
-  // Library songs per release, matched by album title and artist name.
-  const owned = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const t of Object.values(tracks)) {
-      if (t.stream) continue;
-      const key = `${albums[t.albumId]?.title.toLowerCase()}|${artists[t.artistId]?.name.toLowerCase()}`;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    return counts;
-  }, [tracks, albums, artists]);
-  const releases = profiles.flatMap((p) => p.releases);
+function Discography({ artistId, profiles, loading }: { artistId: string; profiles: ArtistMetadata[]; loading: boolean }) {
+  const owned = useOwnedReleases();
+  const releases = useMemo(() => discographyOf(profiles), [profiles]);
   if (!releases.length && !loading) return null;
   return (
-    <Shelf title="Discography" subtitle="Albums, EPs and singles">
-      {releases.map((r) => (
-        <div className="card" key={r.id}>
-          <div className="card-art">
-            <Art palette={paletteFromSeed(hashString(r.id))} glyph={3} image={r.artwork} />
-          </div>
-          <button
-            type="button"
-            className="card-link"
-            disabled={opening === r.id}
-            onClick={() => {
-              setOpening(r.id);
-              void openRelease(r).finally(() => setOpening(null));
-            }}
-          >
-            <strong>{r.title}</strong>
-            <span>{opening === r.id ? "Opening…" : [r.year, r.type].filter(Boolean).join(" · ")}</span>
-          </button>
-          {owned.get(`${r.title.toLowerCase()}|${r.artist.toLowerCase()}`) ? <span className="small muted rec-save"><Icon name="check" size={14} />In your library</span> : null}
-        </div>
-      ))}
+    <Shelf title="Discography" subtitle="Albums, EPs and singles, newest first" onShowAll={releases.length ? () => navigate({ name: "discography", id: artistId }) : undefined}>
+      <ReleaseCards releases={releases.slice(0, 20)} owned={owned} />
       {!releases.length ? <SkeletonCards label="Finding releases…" /> : null}
     </Shelf>
   );

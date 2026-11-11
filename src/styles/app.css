@@ -2257,3 +2257,17 @@ button.th:not(:disabled):hover { color: var(--text); }
   .ce .ce-tools .ce-pill { width: 44px; padding: 0; }
   .ce .ce-tools { gap: 0; }
 }
+
+
+/* ───────────────────────── Discography, Popular and song pages ───────────────────────── */
+
+.shelf-actions .show-all { margin-right: 2px; }
+/* A full page of cards (Discography, Similar songs): rows that wrap rather than one that scrolls. */
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(clamp(140px, 17cqi, 196px), 1fr)); gap: 8px; margin: 0 -10px; padding-bottom: 8px; }
+.card-grid .card { scroll-snap-align: none; }
+.card-grid .shelf-empty { width: auto; }
+
+.page-filters { flex-wrap: wrap; justify-content: space-between; }
+.page-filters .chips { margin: 0; }
+.chip-count { margin-left: 4px; font-variant-numeric: tabular-nums; opacity: 0.6; font-weight: 650; }
+.sort-toggle { gap: 6px; }

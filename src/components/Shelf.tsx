@@ -3,13 +3,24 @@ import { playList, togglePlay } from "../state/actions";
 import { useStore, type Route } from "../state/store";
 import { Icon } from "./Icon";
 
-export function Shelf({ title, subtitle, action, children }: { title: string; subtitle?: string; action?: ReactNode; children: ReactNode }) {
+interface ShelfProps {
+  title: string;
+  subtitle?: string;
+  action?: ReactNode;
+  /** Opens the shelf's full page ("Show all"). */
+  onShowAll?: () => void;
+  /** Wraps cards into rows (a full page) instead of one row that scrolls sideways. */
+  grid?: boolean;
+  children: ReactNode;
+}
+
+export function Shelf({ title, subtitle, action, onShowAll, grid = false, children }: ShelfProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ start: true, end: false });
 
   useEffect(() => {
     const el = scroller.current;
-    if (!el) return;
+    if (!el || grid) return;
     const update = () => setEdges({ start: el.scrollLeft < 4, end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 4 });
     update();
     el.addEventListener("scroll", update, { passive: true });
@@ -23,7 +34,7 @@ export function Shelf({ title, subtitle, action, children }: { title: string; su
       ro.disconnect();
       mo.disconnect();
     };
-  }, []);
+  }, [grid]);
 
   const page = (dir: 1 | -1) => {
     const el = scroller.current;
@@ -39,8 +50,13 @@ export function Shelf({ title, subtitle, action, children }: { title: string; su
         </div>
         <div className="shelf-actions">
           {action}
+          {onShowAll ? (
+            <button type="button" className="text-btn show-all" onClick={onShowAll} aria-label={`Show all: ${title}`}>
+              Show all
+            </button>
+          ) : null}
           {/* Arrows only when there's more to scroll to, so a short or loading shelf isn't cluttered with dead buttons. */}
-          {edges.start && edges.end ? null : (
+          {grid || (edges.start && edges.end) ? null : (
             <>
               <button type="button" className="icon-btn round" onClick={() => page(-1)} disabled={edges.start} aria-label={`Scroll ${title} back`}>
                 <Icon name="chevronLeft" size={18} />
@@ -52,7 +68,7 @@ export function Shelf({ title, subtitle, action, children }: { title: string; su
           )}
         </div>
       </header>
-      <div className={`shelf-row${edges.start ? "" : " fade-start"}${edges.end ? "" : " fade-end"}`} ref={scroller}>
+      <div className={grid ? "card-grid" : `shelf-row${edges.start ? "" : " fade-start"}${edges.end ? "" : " fade-end"}`} ref={scroller}>
         {children}
       </div>
     </section>

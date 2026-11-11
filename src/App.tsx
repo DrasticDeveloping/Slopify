@@ -27,6 +27,7 @@ import { HomeView } from "./views/Home";
 import { MixView } from "./views/Mix";
 import { LibraryView, PlaylistsView } from "./views/Library";
 import { ArtistView } from "./views/Artist";
+import { DiscographyView } from "./views/Discography";
 // Plugs web-discovery radio into the player (see connectRadio).
 import "./recommend/radio";
 import "./recommend/smart-shuffle";
@@ -56,6 +57,8 @@ function View({ route }: { route: Route }) {
       return <AlbumView id={route.id} />;
     case "artist":
       return <ArtistView id={route.id} />;
+    case "discography":
+      return <DiscographyView id={route.id} />;
     case "release":
       return <ReleaseView id={route.id} />;
     case "storage":
