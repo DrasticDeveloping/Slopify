@@ -92,6 +92,8 @@ Build an older and a newer version with any `updateRepo` set (for example `SLOPI
 - **Every night at 09:00 UTC**, once nightlies are switched on, it builds a nightly of `master` and publishes it. It skips the build when `master` hasn't changed since the last nightly, using the `Source:` commit in each release's notes.
 - **On demand**, from Actions → Release → Run workflow, it builds a nightly or stable release from any branch.
 
+Each release's notes list the commits since the previous release on the same channel (the last Nightly for a Nightly, the last Stable for a Stable), newest first, with their pull request numbers and a full-changelog link. Merge commits are left out. If GitHub can't supply the list, the release is published without it.
+
 The workflow needs the work committed and pushed. Manual runs default to publishing disabled and retain a downloadable `slopify-windows-nightly` or `slopify-windows-stable` artifact for 14 days. GitHub-hosted Actions runners are free for this public repository.
 
 Nightlies are off until you switch them on, so nothing is published on a schedule before you're ready. To switch them on, set the repository variable (**Settings → Secrets and variables → Actions → Variables**, or the command below); to pause them, set it to anything else or delete it:
