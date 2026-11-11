@@ -48,6 +48,8 @@
   transition: --accent 900ms ease, --accent-2 900ms ease, --accent-3 900ms ease;
 }
 
+/* Dynamic: the accents come from the playing song's cover (App.tsx), and its deep colour tints the backdrop and panels. */
+:root[data-theme="dynamic"] { --bg: color-mix(in oklab, var(--accent-3) 20%, #07070a); --panel-solid: color-mix(in oklab, var(--accent-3) 12%, #121218); --panel: color-mix(in oklab, var(--panel-solid) 82%, transparent); --menu: color-mix(in oklab, color-mix(in oklab, var(--accent-3) 10%, #1e1e26) 94%, transparent); }
 :root[data-theme="midnight"] { --accent: #a78bfa; --accent-2: #6366f1; --accent-3: #1e1b4b; }
 :root[data-theme="ocean"] { --accent: #38bdf8; --accent-2: #2563eb; --accent-3: #082f49; --bg: #05080d; --panel: rgb(13 19 28 / 0.84); --panel-solid: #0d131c; }
 :root[data-theme="forest"] { --accent: #4ade80; --accent-2: #059669; --accent-3: #052e16; --bg: #050906; --panel: rgb(13 21 17 / 0.84); --panel-solid: #0d1511; }

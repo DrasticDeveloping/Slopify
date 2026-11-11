@@ -11,6 +11,7 @@ import { Toasts } from "./components/Toasts";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { TopBar } from "./components/TopBar";
 import { activeCustomTheme, builtinThemes, onAccent } from "./state/themes";
+import { backdropTint, useCoverPalette } from "./lib/art-colors";
 import {
   answerConfirm, closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume, takeScrollRestore, trackScroll,
   toggleLike, toggleMute, togglePlay, cycleShuffle, wireEngine,
@@ -77,12 +78,18 @@ function routeKey(route: Route) {
   return JSON.stringify(route);
 }
 
+/** How much of the song's deep colour tints the Dynamic backdrop (matches `:root[data-theme="dynamic"]` in app.css). */
+const DYNAMIC_TINT = 0.2;
+
 function useTheme() {
   const theme = useStore((s) => s.settings.theme);
   const custom = useStore((s) => activeCustomTheme(s.settings));
   const reduce = useStore((s) => s.settings.reduceMotion);
   const compact = useStore((s) => s.settings.compact);
-  const palette = useStore((s) => (s.currentId ? s.albums[s.tracks[s.currentId]?.albumId]?.palette : undefined));
+  const album = useStore((s) => (s.currentId ? s.albums[s.tracks[s.currentId]?.albumId] : undefined));
+  // Dynamic reads its colours from the playing song's cover (the album's generated colours when it has none).
+  const dynamic = !custom && (theme === "dynamic" || theme.startsWith("custom-"));
+  const palette = useCoverPalette(dynamic ? album?.artworkUrl : undefined, album?.palette);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -105,7 +112,8 @@ function useTheme() {
       root.style.setProperty("--accent-3", p.c);
     }
     const meta = document.querySelector('meta[name="theme-color"]');
-    meta?.setAttribute("content", custom?.background ?? builtinThemes.find((t) => t.id === shown)?.swatch[2] ?? "#08080c");
+    const dynamicBg = shown === "dynamic" ? backdropTint(palette?.c ?? "#1e1b4b", DYNAMIC_TINT) : undefined;
+    meta?.setAttribute("content", custom?.background ?? dynamicBg ?? builtinThemes.find((t) => t.id === shown)?.swatch[2] ?? "#08080c");
   }, [theme, custom, reduce, compact, palette]);
 }
 
