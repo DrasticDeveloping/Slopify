@@ -13,6 +13,8 @@ const USER_AGENT = process.env.SLOPIFY_METADATA_USER_AGENT || "Slopify/2.0 (http
 const SPACING = { "www.theaudiodb.com": 2100, "musicbrainz.org": 1500 };
 const DEFAULT_SPACING = 1500;
 const MAX_BYTES = 2_000_000;
+/** Release groups come 100 to a page; a very prolific artist's discography stops at 400. */
+const MAX_RELEASE_PAGES = 4;
 const DAY = 86_400_000;
 const CACHE_SIZE = 100;
 const NOT_ARTISTS = new Set(["unknownartist", "localfiles", "variousartists"]);
@@ -137,6 +139,29 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
     for (const [key, value] of Object.entries({ ...params, fmt: "json" })) url.searchParams.set(key, value);
     return request(url, signal);
   };
+  /**
+   * Every release group of a MusicBrainz artist, 100 at a time (up to
+   * MAX_RELEASE_PAGES pages). A later page failing keeps the ones already loaded
+   * and reports `cut`, so the profile counts as partial and is asked for again.
+   */
+  async function allReleaseGroups(artistId, signal) {
+    const groups = [];
+    let cut = false;
+    for (let page = 0; page < MAX_RELEASE_PAGES; page++) {
+      let data;
+      try {
+        data = await musicBrainz("release-group", { artist: artistId, limit: "100", offset: String(page * 100) }, signal);
+      } catch (error) {
+        if (!page || signal.aborted) throw error;
+        cut = true;
+        break;
+      }
+      const rows = data["release-groups"] ?? [];
+      groups.push(...rows);
+      if (rows.length < 100 || groups.length >= (Number(data["release-group-count"]) || 0)) break;
+    }
+    return { data: { "release-groups": groups }, cut };
+  }
   const wikipediaSummary = (title, signal) => request(new URL(`https://en.wikipedia.org/api/rest_v1/page/summary/${title}`), signal);
 
   /** The Wikipedia summary for a musician of exactly this name, if there is one. */
@@ -163,6 +188,8 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
       title: text(group.title, 250),
       artist,
       year: group["first-release-date"]?.slice(0, 4) ?? "",
+      /** As precise as MusicBrainz knows it ("2002", "2002-05" or "2002-05-14"), for newest-first order. */
+      released: /^\d{4}(?:-\d{2}){0,2}$/.test(group["first-release-date"] ?? "") ? group["first-release-date"] : "",
       type: group["primary-type"] ?? "Release",
       artwork: covers.get(normalize(group.title)) || coverArt(group.id),
       sourceUrl: `https://musicbrainz.org/release-group/${group.id}`,
@@ -199,8 +226,10 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
       try {
         // TheAudioDB's album art is kept for the releases both sources know.
         const covers = new Map(profile.releases.map((r) => [normalize(r.title), r.artwork]));
-        const groups = releaseGroups(await musicBrainz("release-group", { artist: row.strMusicBrainzID, limit: "50" }, signal), profile.name, covers);
+        const { data, cut } = await allReleaseGroups(row.strMusicBrainzID, signal);
+        const groups = releaseGroups(data, profile.name, covers);
         if (groups.length) profile.releases = groups;
+        if (cut) profile.partial = true;
       } catch {
         profile.partial = true;
       }
@@ -221,10 +250,10 @@ export function createArtists({ fetchImpl = fetch, now = Date.now, wait = delay 
     };
     const [detail, releases] = await Promise.allSettled([
       musicBrainz(`artist/${artist.id}`, { inc: "url-rels" }, signal),
-      musicBrainz("release-group", { artist: artist.id, limit: "50" }, signal),
+      allReleaseGroups(artist.id, signal),
     ]);
-    profile.partial = detail.status === "rejected" || releases.status === "rejected";
-    if (releases.status === "fulfilled") profile.releases = releaseGroups(releases.value, artist.name);
+    profile.partial = detail.status === "rejected" || releases.status === "rejected" || (releases.status === "fulfilled" && releases.value.cut);
+    if (releases.status === "fulfilled") profile.releases = releaseGroups(releases.value.data, artist.name);
     const wiki = detail.status === "fulfilled"
       ? (detail.value.relations ?? []).find((r) => r.type === "wikipedia" && r.url?.resource?.startsWith("https://en.wikipedia.org/wiki/"))
       : undefined;

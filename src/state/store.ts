@@ -14,6 +14,8 @@ export type Route =
   /** A release from the music catalog, by catalog id ("dz123"). */
   | { name: "release"; id: string }
   | { name: "artist"; id: string }
+  /** An artist's whole discography, newest first (by artist id). */
+  | { name: "discography"; id: string }
   | { name: "mix"; id: string }
   | { name: "storage" }
   | { name: "server" }

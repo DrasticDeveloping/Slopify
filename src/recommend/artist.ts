@@ -6,7 +6,17 @@ import { artistName, cleanArtist } from "./discover";
 import { getState, setState } from "../state/store";
 
 export interface ArtistTrack { title: string; artist: string; album: string; artwork?: string; sourceUrl: string }
-export interface ArtistRelease { id: string; title: string; artist: string; year: string; type: string; artwork?: string; sourceUrl: string }
+export interface ArtistRelease {
+  id: string;
+  title: string;
+  artist: string;
+  year: string;
+  /** As precise as known ("2002", "2002-05" or "2002-05-14"); missing from profiles kept by older versions. */
+  released?: string;
+  type: string;
+  artwork?: string;
+  sourceUrl: string;
+}
 
 export interface ArtistMetadata {
   name: string;
