@@ -1,6 +1,7 @@
 import { useId, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { formatTime, plural } from "../lib/format";
 import { useCurrent } from "../lib/hooks";
+import { usePlays } from "../lib/plays";
 import { openTrackMenu } from "../lib/menus";
 import { focusFirstVisible } from "../lib/focus";
 import { rovingKey } from "../lib/roving";
@@ -147,6 +148,7 @@ export function QueueView() {
 function DetailsView() {
   const { id, track, artist, album, range } = useCurrent();
   const liked = useStore((s) => (id ? isLiked(id, s) : false));
+  const plays = usePlays(id ?? undefined);
   const slipped = useSlippedIn();
   const nextId = useStore((s) => (s.currentId ? nextTrackId() : null));
   const nextTrack = useStore((s) => (nextId ? s.tracks[nextId] : null));
@@ -211,7 +213,7 @@ function DetailsView() {
         <dl className="kv">
           <dt>Album</dt><dd><button type="button" className="link" onClick={() => navigate({ name: "album", id: album.id })}>{album.title}</button>{album.year ? ` · ${album.year}` : ""}</dd>
           <dt>Format</dt><dd>{track.kind === "video" ? "Video" : "Audio"} · {track.stream ? "Streaming online" : track.storage === "server" ? "From your music server" : track.storage === "downloads" ? "Downloaded" : "File on this device"}</dd>
-          <dt>Plays</dt><dd>{track.plays.toLocaleString("en")}</dd>
+          <dt>Plays</dt><dd>{plays.toLocaleString("en")}</dd>
           <dt>Clip</dt>
           <dd>
             {clipped ? `${formatTime(range.start)} – ${formatTime(range.end)}` : "Full song"}{" "}
