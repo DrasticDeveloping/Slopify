@@ -41,7 +41,7 @@ interface Props {
 }
 
 /** Songs outside the library, as cards that play in full, and can be dismissed or added to the library. */
-export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false, fixedSubtitle = false, seeds, ranked = false, openSong = false, exclude, onShowAll, grid = false }: Props) {
+export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTITLE, queries, limit = 30, route = { name: "home" }, withOwned = false, hideWhenEmpty = false, fixedSubtitle = false, seeds, ranked = false, openSong = true, exclude, onShowAll, grid = false }: Props) {
   const found = useDiscovery(title, { queries, seeds, limit, withOwned });
   const { loading, note, refresh } = found;
   const songs = useMemo(() => {

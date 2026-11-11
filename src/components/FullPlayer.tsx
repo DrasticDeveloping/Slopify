@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { useCurrent, useReducedMotion } from "../lib/hooks";
 import { focusFirstVisible, focusIsVisible } from "../lib/focus";
 import { openTrackMenu } from "../lib/menus";
-import { isLiked, navigate, nextTrackId, playPreviewedNext, toggleLike, togglePlay } from "../state/actions";
+import { isLiked, navigate, nextTrackId, playPreviewedNext, toggleLike, togglePlay, trackSongRoute } from "../state/actions";
 import { formatTime } from "../lib/format";
 import { getState, setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
@@ -197,7 +197,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
     <div className="fp-info">
       <div className="fp-titles" key={track.id}>
         <h2>
-          <button type="button" className="link" onClick={() => go({ name: "album", id: album.id })}>{track.title}</button>
+          <button type="button" className="link" onClick={() => go(trackSongRoute(track.id))}>{track.title}</button>
         </h2>
         <span className="fp-artist"><ArtistLinks track={track} go={go} /></span>
       </div>

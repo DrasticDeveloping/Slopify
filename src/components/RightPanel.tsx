@@ -5,7 +5,7 @@ import { usePlays } from "../lib/plays";
 import { openTrackMenu } from "../lib/menus";
 import { focusFirstVisible } from "../lib/focus";
 import { rovingKey } from "../lib/roving";
-import { clearUpNext, isLiked, togglePlay, jumpToOrderIndex, jumpToUpNext, navigate, nextTrackId, openModal, playTrackNow, removeFromUpNext, toggleLike } from "../state/actions";
+import { clearUpNext, isLiked, togglePlay, jumpToOrderIndex, jumpToUpNext, navigate, nextTrackId, openModal, playTrackNow, removeFromUpNext, toggleLike, trackSongRoute } from "../state/actions";
 import { setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
 import { Art, TrackArt } from "./Artwork";
@@ -177,7 +177,7 @@ function DetailsView() {
       )}
       <div className="np-title-row">
         <div className="title-text">
-          <button type="button" className="link np-title" onClick={() => navigate({ name: "album", id: album.id })}>{track.title}</button>
+          <button type="button" className="link np-title" onClick={() => navigate(trackSongRoute(track.id))}>{track.title}</button>
           <span className="np-artist"><ArtistLinks track={track} /></span>
           {slipped === track.id ? <span className="small muted slipped-note" title="A song you marked to slip into your listening. Skip it if you're not feeling it; your list carries on next.">Slipped in{slipInReason(track.id) ? ` · ${slipInReason(track.id)}` : ""}</span> : null}
         </div>
