@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, hideRecommendation, isPlayable, navigate,
-  isLiked, openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toast, toggleLike, unhideRecommendation,
+  addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, isPlayable, navigate,
+  isLiked, openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toast, toggleLike,
 } from "../state/actions";
 import { streamLink } from "../state/importer";
 import { shareOf } from "../state/social";
@@ -61,6 +61,11 @@ function likeItem(t: Track): MenuItem {
   return { label: liked ? "Remove from Liked Songs" : "Add to Liked Songs", short: liked ? "Liked" : "Like", icon: liked ? "heartFill" : "heart", quick: true, on: liked, run: () => toggleLike(t.id) };
 }
 
+/** Actions used less often (or not to be hit by accident), one step further in: a "More" submenu. */
+function moreItem(items: MenuItem[]): MenuItem {
+  return { label: "More", icon: "more", submenu: items };
+}
+
 /** Menu groups with a separator between each; empty groups are left out. */
 function grouped(...groups: MenuItem[][]): MenuItem[] {
   return groups.filter((g) => g.length).flatMap((g, i) => (i ? [{ separator: true }, ...g] : g));
@@ -87,12 +92,12 @@ function streamMenu(t: Track, opts: StreamMenuOptions = {}): MenuItem[] {
       { label: "Add to library", icon: "download", disabled: opts.save === null, run: opts.save ?? (() => saveStream(t.id)) },
       { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu([t.id]) },
     ],
-    [
-      { label: "Start song radio", icon: "radio", run: () => startRadio(t.id) },
+    [{ label: "Start song radio", icon: "radio", run: () => startRadio(t.id) }],
+    linkItems(songLink(t, opts.source)),
+    [moreItem([
       slipItem([t.id]),
       ...(opts.searchResult ? [] : [{ label: "Not interested", icon: "close", run: () => dismissStream(t.id) }]),
-    ],
-    linkItems(songLink(t, opts.source)),
+    ])],
   );
 }
 
@@ -128,25 +133,21 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
     ],
     [
       { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu(ids) },
-      ...removeFromPlaylistItem,
     ],
     [
       ...(single ? [{ label: "Start song radio", icon: "radio", disabled: !singlePlayable, run: () => startRadio(single.id) }] : []),
-      slipItem(ids),
       ...[snoozeItem(ids)].filter((item): item is MenuItem => item !== null),
-      ...(single
-        ? [s.taste.hidden[single.id]
-          ? { label: "Show in recommendations", icon: "sparkle", run: () => unhideRecommendation(single.id) }
-          : { label: "Hide from recommendations", icon: "close", run: () => hideRecommendation(single.id, opts.why) }]
-        : []),
       ...mixHide,
     ],
     single ? linkItems(songLink(single)) : [],
     [
       ...(single ? [{ label: "Edit clip…", icon: "scissors", disabled: !singlePlayable, run: () => openModal({ type: "clipEditor", trackId: single.id }) }] : []),
       ...(serverOnly.length ? [{ label: serverOnly.length === 1 ? "Download to device" : `Download ${serverOnly.length} songs`, icon: "download", run: () => downloadTracks(serverOnly.map((t) => t.id)) }] : []),
-      ...(downloaded.length ? [{ label: downloaded.length === 1 ? "Remove from device" : `Remove ${downloaded.length} from device`, icon: "downloaded", run: () => deleteFromDevice(downloaded.map((t) => t.id)) }] : []),
-      { label: single ? "Delete from library" : `Delete ${tracks.length} songs from library`, icon: "trash", danger: true, run: () => deleteFromLibrary(ids) },
+      moreItem([
+        ...removeFromPlaylistItem,
+        ...(downloaded.length ? [{ label: downloaded.length === 1 ? "Remove from device" : `Remove ${downloaded.length} from device`, icon: "downloaded", run: () => deleteFromDevice(downloaded.map((t) => t.id)) }] : []),
+        { label: single ? "Delete from library" : `Delete ${tracks.length} songs from library`, icon: "trash", danger: true, run: () => deleteFromLibrary(ids) },
+      ]),
     ],
   );
 }
