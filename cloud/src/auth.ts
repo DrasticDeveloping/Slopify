@@ -11,7 +11,11 @@ export interface AuthEnv {
   CLERK_JWT_KEY?: string;
 }
 
-export interface Caller { userId: string }
+export interface Caller {
+  userId: string;
+  /** The Clerk session the token was minted for (its `sid`), when it says. */
+  sessionId: string | null;
+}
 
 const SKEW_SECONDS = 10;
 const KEYS_TTL_MS = 60 * 60_000;
@@ -100,5 +104,5 @@ export async function verifySession(token: string | null | undefined, env: AuthE
   const host = frontendApi(env.CLERK_PUBLISHABLE_KEY);
   if (host && claims.iss !== `https://${host}`) throw new AuthError("Session token is from another Clerk app.");
   if (typeof claims.sub !== "string" || !claims.sub || claims.sub.length > 200) throw new AuthError("Invalid session token.");
-  return { userId: claims.sub };
+  return { userId: claims.sub, sessionId: typeof claims.sid === "string" && claims.sid.length <= 200 ? claims.sid : null };
 }
