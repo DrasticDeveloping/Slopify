@@ -1,6 +1,7 @@
 import { AuthError, verifySession, type AuthEnv } from "./auth";
 import { checkNotDeleted, deleteAccount, usernameAvailable, deleteSong, getProfile, getState, getStateUnless, HttpError, leftRooms, listSongs, noteLeftRoom, noteRoom, putSong, putState, saveProfile, tidy, type LibraryEnv } from "./library";
 import { ListenAlongRoom } from "./room";
+import { renewalTicket, type SessionEnv } from "./session";
 import {
   acceptFriend, dismissInbox, dropRequest, followShared, friendPlaylists, getShared, getSocial, profileWithCode, requestFriend, sendShared, setActivity,
   SHARE_ID, sharePlaylist, unfriend, unsharePlaylist,
@@ -42,6 +43,7 @@ import {
  *   POST   /v1/shared/:shareId/send    { friendIds }: send it to friends
  *   DELETE /v1/inbox/:shareId          dismiss a playlist a friend sent
  *   DELETE /v1/me                      delete the caller's profile and library
+ *   POST   /v1/me/session              { clientId } → { ticket }: a one-use Clerk sign-in token, to swap the session for a fresh one (src/session.ts)
  *   GET    /v1/sync?since=t&rev=r&social=1  one poll: { songs } as /v1/library/songs?since=t, { state } as /v1/library/state
  *                                      (only { rev, unchanged } while it's still rev r), and { social } as /v1/social if asked
  *   GET    /v1/library/songs?since=t   songs changed after t, and `until` for next time
@@ -56,7 +58,7 @@ import {
 
 export { ListenAlongRoom };
 
-interface Env extends AuthEnv, LibraryEnv {
+interface Env extends AuthEnv, LibraryEnv, SessionEnv {
   ROOMS: DurableObjectNamespace<ListenAlongRoom>;
   /** Calls per account, and per address (wrangler.jsonc `ratelimits`). Absent in local development. */
   USER_LIMIT?: RateLimit;
@@ -88,7 +90,7 @@ const CORS = {
 const reply = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...CORS } });
 const ok = (result: unknown) => reply(200, { ok: true, result });
-const fail = (status: number, message: string) => reply(status, { ok: false, error: { message } });
+const fail = (status: number, message: string, code?: string) => reply(status, { ok: false, error: code ? { code, message } : { message } });
 
 async function body(request: Request) {
   const length = Number(request.headers.get("Content-Length") || 0);
@@ -165,8 +167,8 @@ function routeOf(method: string, pathname: string) {
     if (i === 0) return root === "v1" || root === "p";
     if (root !== "v1") return false;
     if (i === 1) return SECTIONS.has(section);
-    // /v1/library/songs, /v1/library/state, /v1/me/activity, /v1/friends/requests (only POST and DELETE: a GET there is a friend's id)
-    if (i === 2) return (section === "library" && (sub === "songs" || sub === "state")) || (section === "me" && sub === "activity") || (section === "friends" && sub === "requests" && method !== "GET");
+    // /v1/library/songs, /v1/library/state, /v1/me/activity, /v1/me/session, /v1/friends/requests (only POST and DELETE: a GET there is a friend's id)
+    if (i === 2) return (section === "library" && (sub === "songs" || sub === "state")) || (section === "me" && (sub === "activity" || sub === "session")) || (section === "friends" && sub === "requests" && method !== "GET");
     // /v1/friends/:id/playlists, /v1/shared/:id/follow, /v1/shared/:id/send, /v1/rooms/:code/socket
     if (i === 3) return ACTIONS.has(parts[3]) && !kept(2);
     return false;
@@ -191,9 +193,12 @@ const service = {
 
       await limit(env.ADDRESS_LIMIT, request.headers.get("CF-Connecting-IP") ?? "unknown");
       const bearer = request.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");
-      const { userId } = await verifySession(bearer || url.searchParams.get("token"), env);
+      const caller = await verifySession(bearer || url.searchParams.get("token"), env);
+      const { userId } = caller;
       await limit(env.USER_LIMIT, userId);
       const method = request.method;
+
+      if (parts[1] === "me" && parts[2] === "session" && parts.length === 3 && method === "POST") return ok(await renewalTicket(env, caller, Boolean(bearer), await body(request)));
 
       if (parts[1] === "me" && parts[2] === "activity" && parts.length === 3 && method === "PUT") return ok(await setActivity(env, userId, await body(request)));
       if (parts[1] === "me" && parts.length === 2) {
@@ -309,7 +314,8 @@ const service = {
       }
       return fail(404, "Not found.");
     } catch (error) {
-      if (error instanceof AuthError || error instanceof HttpError) return fail(error.status, error.message);
+      if (error instanceof HttpError) return fail(error.status, error.message, error.code);
+      if (error instanceof AuthError) return fail(error.status, error.message);
       console.error(error);
       return fail(500, "Something went wrong on Slopify's server.");
     }

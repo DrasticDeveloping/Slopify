@@ -46,7 +46,42 @@ function ClerkBridge() {
       openUserProfile: () => clerk.openUserProfile(),
       signOut: () => clerk.signOut(),
       deleteUser: async () => {
-        await clerk.user?.delete();
+        // Never skipped quietly: the caller signs out instead and says the sign-in is still there.
+        if (!clerk.user) throw new Error("No one is signed in to delete.");
+        await clerk.user.delete();
+      },
+      clientId: () => clerk.client?.id ?? null,
+      sessionStarted: () => clerk.session?.createdAt.getTime() ?? null,
+      signedIn: () => Boolean(clerk.session),
+      swapSession: async (ticket) => {
+        // Only one session at a time (the Clerk app's setting), so the old one ends first.
+        // The callback stands in for Clerk's usual navigation after signing out, which would reload the page.
+        const userId = clerk.user?.id;
+        if (!userId) throw new Error("No one is signed in to renew.");
+        await clerk.signOut(async () => undefined);
+        // A dropped connection is tried again before giving up. The ticket works once, so after a
+        // failure the client is checked first: the sign-in may have gone through with its answer lost.
+        let sessionId: string | null = null;
+        for (let attempt = 1; ; attempt++) {
+          try {
+            const client = clerk.client;
+            if (!client) throw new Error("Clerk has no client to sign in with.");
+            if (!sessionId && attempt > 1) {
+              await client.reload();
+              sessionId = client.signedInSessions.find((session) => session.user?.id === userId)?.id ?? null;
+            }
+            if (!sessionId) {
+              const signIn = await client.signIn.create({ strategy: "ticket", ticket });
+              if (signIn.status !== "complete" || !signIn.createdSessionId) throw new Error(`Signing in again stopped at ${signIn.status}.`);
+              sessionId = signIn.createdSessionId;
+            }
+            await clerk.setActive({ session: sessionId });
+            return;
+          } catch (error) {
+            if (attempt >= 3 || clerk.session) throw error;
+            await new Promise((resolve) => window.setTimeout(resolve, attempt * 5_000));
+          }
+        }
       },
     });
   }, [clerk, getToken]);

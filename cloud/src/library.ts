@@ -11,7 +11,8 @@ import { socialDeletions } from "./social";
 export interface LibraryEnv { DB: D1Database }
 
 export class HttpError extends Error {
-  constructor(public status: number, message: string) {
+  /** `code`, when given, goes in the reply's error so the app can tell this failure apart. */
+  constructor(public status: number, message: string, public code?: string) {
     super(message);
   }
 }

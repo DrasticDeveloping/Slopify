@@ -80,6 +80,14 @@ interface ClerkBridge {
   signOut(): Promise<void>;
   /** Deletes the Clerk user (the sign-in itself), which also signs out. */
   deleteUser(): Promise<void>;
+  /** When the current session began (ms), or null when signed out. */
+  sessionStarted?(): number | null;
+  /** Whether Clerk has a session right now. */
+  signedIn?(): boolean;
+  /** This device's Clerk client (what holds its sign-in), which renewing a session must name. */
+  clientId?(): string | null;
+  /** Ends the current session and signs the same account in again with `ticket` (see renewSession). */
+  swapSession?(ticket: string): Promise<void>;
 }
 let clerk: ClerkBridge | null = null;
 
@@ -106,10 +114,14 @@ export function signIn() {
 }
 export const manageAccount = () => clerk?.openUserProfile();
 export async function signOut() {
+  accountActions++;
+  await swapping;
   await clerk?.signOut();
 }
 /** Deletes the sign-in (after the service's data is gone: see deleteAccount in sync.ts). */
 export async function deleteSignIn() {
+  accountActions++;
+  await swapping;
   await clerk?.deleteUser();
 }
 
@@ -119,6 +131,7 @@ export const checkUsername = (username: string, signal?: AbortSignal) =>
 
 /** A fresh session token for the online service (Clerk refreshes them as needed), or null when signed out. */
 export async function sessionToken() {
+  await swapping;
   if (account.status !== "signedIn" || !clerk) return null;
   return clerk.getToken();
 }
@@ -135,6 +148,8 @@ export function connectClerk(bridge: ClerkBridge) {
  * connection at sign-in), it tries again on its own until it works.
  */
 export async function clerkChanged(user: { id: string; name: string | null; username?: string | null; email: string | null; imageUrl: string | null } | null) {
+  // Signed out for a moment while the session is renewed, or a report that's already out of date: still signed in.
+  if (!user && account.userId && (swapping || clerk?.signedIn?.())) return;
   clerkReady = true;
   window.clearTimeout(profileRetry);
   if (!user) {
@@ -163,6 +178,7 @@ export async function clerkChanged(user: { id: string; name: string | null; user
     set({ status: "signedIn", profile, error: null });
     adoptProfile(profile);
     signedInListeners.forEach((l) => l());
+    void renewSession();
   } catch (error) {
     if (account.userId !== user.id) return;
     set({ status: "signedIn", profile: null, error: message(error) });
@@ -178,6 +194,73 @@ export async function clerkChanged(user: { id: string; name: string | null; user
 let profileLoading: string | null = null;
 let profileRetry: number | undefined;
 let profileAttempts = 0;
+
+/* ───────────────────────── staying signed in ───────────────────────── */
+
+/*
+ * Clerk ends a session 7 days after sign-in (its free plan can't change that),
+ * however much it's used. So Slopify renews it: each time it opens, and once a
+ * day while it stays open, it swaps the session for a fresh one. The online
+ * service hands out a one-use sign-in ticket for the account (cloud/src/session.ts),
+ * and the app signs in again with it. Only if Slopify isn't opened for a week
+ * does the sign-in run out.
+ */
+/** At launch, a session older than this is renewed (a newer one is a sign-in just made). */
+const RENEW_ON_OPEN = 60 * 60_000;
+/** While Slopify stays open, a session is renewed once it's this old. */
+const RENEW_WHILE_OPEN = 24 * 60 * 60_000;
+const RENEW_CHECK_EVERY = 60 * 60_000;
+/** The session swap under way: calls wait for it rather than finding no one signed in. */
+let swapping: Promise<void> | null = null;
+let renewing = false;
+/** The account whose renewal this launch is done (or wasn't needed): until then, checks renew sooner. */
+let renewedFor: string | null = null;
+/** Counts sign-outs and deletions: one that starts while a renewal fetches its ticket calls the renewal off. */
+let accountActions = 0;
+/** The service can't renew sessions (no Clerk secret key there, or older than renewal): stop asking. */
+let renewUnavailable = false;
+
+async function renewSession() {
+  const started = clerk?.sessionStarted?.() ?? null;
+  const userId = account.userId;
+  if (renewing || renewUnavailable || !clerk?.swapSession || started === null || account.status !== "signedIn" || !userId) return;
+  if (Date.now() - started < (renewedFor === userId ? RENEW_WHILE_OPEN : RENEW_ON_OPEN)) {
+    renewedFor = userId;
+    return;
+  }
+  const clientId = clerk.clientId?.();
+  if (!clientId) return;
+  const actions = accountActions;
+  renewing = true;
+  try {
+    let ticket: string;
+    try {
+      ({ ticket } = await cloudCall<{ ticket: string }>("/v1/me/session", { method: "POST", body: { clientId }, as: userId }));
+    } catch (error) {
+      const code = error instanceof CloudError ? (error.body as { error?: { code?: string } } | undefined)?.error?.code : undefined;
+      // 404: a service from before renewal. Anything else (offline, a hiccup) is tried again at the next check.
+      if (code === "RENEW_UNAVAILABLE" || (error instanceof CloudError && error.status === 404)) renewUnavailable = true;
+      return;
+    }
+    if (account.userId !== userId || accountActions !== actions) return;
+    let done!: () => void;
+    swapping = new Promise((resolve) => (done = resolve));
+    try {
+      await clerk.swapSession(ticket);
+      renewedFor = userId;
+    } catch (error) {
+      console.warn("Slopify couldn't renew the sign-in.", error);
+    } finally {
+      swapping = null;
+      done();
+    }
+    // The swap failed after the old session ended: signed out after all.
+    if (!clerk.signedIn?.()) await clerkChanged(null);
+  } finally {
+    renewing = false;
+  }
+}
+if (cloudEnabled) window.setInterval(() => void renewSession(), RENEW_CHECK_EVERY);
 
 /** Things to start once signed in (library sync). */
 const signedInListeners = new Set<() => void>();
@@ -224,6 +307,7 @@ let outdated: CloudError | null = null;
  */
 export async function cloudCall<T>(path: string, { method = "GET", body, signal, as }: { method?: string; body?: unknown; signal?: AbortSignal; as?: string } = {}): Promise<T> {
   if (outdated) throw outdated;
+  await swapping;
   const token = await clerk?.getToken();
   if (!token) throw new CloudError(401, "Sign in first.");
   if (as !== undefined && (tokenUser(token) !== as || account.userId !== as)) throw new CloudError(0, "You signed in to another account.");
@@ -290,6 +374,7 @@ function tokenUser(token: string) {
 /** The WebSocket address for a Listen Along room, carrying a fresh token (browsers can't send headers on WebSockets). */
 export async function roomSocketUrl(code: string) {
   if (outdated) throw outdated;
+  await swapping;
   const token = await clerk?.getToken();
   if (!token) throw new CloudError(401, "Sign in to use Listen Along.");
   const url = new URL(`${cloudConfig.url}/v1/rooms/${encodeURIComponent(code)}/socket`);
