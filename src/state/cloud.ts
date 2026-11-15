@@ -283,7 +283,8 @@ export async function saveProfile(patch: Partial<Pick<CloudProfile, "displayName
 /* ───────────────────────── calling the service ───────────────────────── */
 
 export class CloudError extends Error {
-  constructor(public status: number, message: string, public body?: unknown) {
+  /** `transient`: the call didn't get through or wasn't answered in time (a dropped connection, say), so trying again may work. */
+  constructor(public status: number, message: string, public body?: unknown, public transient = false) {
     super(message);
   }
 }
@@ -321,12 +322,14 @@ export async function cloudCall<T>(path: string, { method = "GET", body, signal,
       cache: "no-store",
     });
   } catch (error) {
-    if ((error as Error)?.name === "AbortError") throw error;
-    throw new CloudError(0, "Couldn't reach Slopify's online service. Check your connection.");
+    const name = (error as Error)?.name;
+    if (name === "AbortError") throw error;
+    if (name === "TimeoutError") throw new CloudError(0, "Slopify's online service took too long to answer.", undefined, true);
+    throw new CloudError(0, "Couldn't reach Slopify's online service. Check your connection.", undefined, true);
   }
   const json = (await res.json().catch(() => null)) as { ok?: boolean; result?: T; error?: { code?: string; message?: string } } | null;
   // The music server passing the call on couldn't reach the service: the same as not reaching it.
-  if (res.status === 502 && json?.error?.code === "CLOUD_UNREACHABLE") throw new CloudError(0, json.error.message || "Couldn't reach Slopify's online service.");
+  if (res.status === 502 && json?.error?.code === "CLOUD_UNREACHABLE") throw new CloudError(0, json.error.message || "Couldn't reach Slopify's online service.", undefined, true);
   if (res.status === 426 && json?.error?.code === "UPDATE_REQUIRED") {
     outdated = new CloudError(426, json.error.message || "This version of Slopify is too old for your account. Update Slopify to keep syncing.", json);
     checkForUpdates();

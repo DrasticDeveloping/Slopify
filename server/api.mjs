@@ -362,6 +362,29 @@ async function prepareSongFile(song, dir, signal, duplicates = null) {
   return { filePath: result.filePath, size: result.size, sha256: result.contentSha256 };
 }
 
+/**
+ * A service path for the log, as the service logs it (cloud/src/index.ts routeOf):
+ * route words are kept by position, and anything else (a room code, share id,
+ * username…) becomes ":id", since those can grant access.
+ */
+const CLOUD_SECTIONS = new Set(["health", "me", "usernames", "social", "friends", "shares", "shared", "inbox", "library", "sync", "rooms"]);
+const CLOUD_ACTIONS = new Set(["playlists", "follow", "send", "socket"]);
+function cloudRoute(method, path) {
+  const parts = path.split("/").filter(Boolean);
+  const [root, section, sub] = parts;
+  const kept = (i) => {
+    if (i === 0) return root === "v1";
+    if (root !== "v1") return false;
+    if (i === 1) return CLOUD_SECTIONS.has(section);
+    // /v1/library/songs, /v1/library/state, /v1/me/activity, /v1/me/session, /v1/friends/requests (only POST and DELETE: a GET there is a friend's id)
+    if (i === 2) return (section === "library" && (sub === "songs" || sub === "state")) || (section === "me" && (sub === "activity" || sub === "session")) || (section === "friends" && sub === "requests" && method !== "GET");
+    // /v1/friends/:id/playlists, /v1/shared/:id/follow, /v1/shared/:id/send, /v1/rooms/:code/socket
+    if (i === 3) return CLOUD_ACTIONS.has(parts[3]) && !kept(2);
+    return false;
+  };
+  return "/" + parts.map((part, i) => (kept(i) ? part : ":id")).join("/");
+}
+
 /** What the online service accepts in one call (cloud/src/index.ts MAX_BODY_BYTES). */
 const MAX_CLOUD_BODY_BYTES = 1024 * 1024;
 
@@ -409,8 +432,11 @@ async function proxyCloud(req, res, url, cloudUrl) {
     if (res.destroyed) return;
     res.writeHead(upstream.status, { "Content-Type": upstream.headers.get("content-type") || "application/json; charset=utf-8", "Cache-Control": "no-store" });
     res.end(reply);
-  } catch {
+  } catch (error) {
     if (res.destroyed) return;
+    // Why it didn't get through (DNS, refused, reset, timed out…), without ids, the query or headers, which may identify the account.
+    const cause = error?.cause;
+    console.warn(`[slopify] ${method} /api/cloud${cloudRoute(method, path)} couldn't reach the online service:`, cause?.code || error?.name || "Error", cause?.message || error?.message || "");
     sendJSON(res, 502, { ok: false, error: { code: "CLOUD_UNREACHABLE", message: "Couldn't reach Slopify's online service. Check your connection." } });
   } finally {
     res.off("close", closed);

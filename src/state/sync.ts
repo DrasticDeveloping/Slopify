@@ -48,6 +48,11 @@ const CLOUD_POLL = 30_000;
 const CLOUD_SLOW = 5 * 60_000;
 /** A failed account sync waits this long before an automatic retry. */
 const CLOUD_RETRY = 60_000;
+/**
+ * A first failure to get through to the account (a Wi-Fi blip, say) is retried
+ * this soon, unannounced; only a second one in a row is told.
+ */
+const CLOUD_BLIP_RETRY = 15_000;
 /** Coming back to the window checks the account if it hasn't been checked for this long. */
 const CLOUD_ON_FOCUS = 30_000;
 const MAX_LISTENS = 500;
@@ -793,6 +798,19 @@ async function retryPendingUnlink() {
 
 /** The account sync failure last told (see syncWithAccount). */
 let toldAccountError = "";
+/** The account whose sync didn't get through and is being retried quietly, or "". Cleared by a sync that works, and by signing in. */
+let accountBlipped = "";
+/**
+ * That quiet retry. Its own timer, as `schedule` keeps only the soonest sync,
+ * and a sooner one would skip the account (not due yet) and leave nothing behind.
+ */
+let blipRetry = 0;
+/** Set while syncWithAccount runs. */
+let accountSyncing = false;
+function forgetBlip() {
+  accountBlipped = "";
+  window.clearTimeout(blipRetry);
+}
 
 /** The account's songs, then its playlists, likes and settings. A failure here never stops this computer's own sync. */
 async function syncWithAccount() {
@@ -825,9 +843,23 @@ async function syncWithAccount() {
     }, true);
     setState((s) => ({ server: { ...s.server, cloudSyncedAt: Date.now(), cloudError: undefined } }));
     toldAccountError = "";
+    forgetBlip();
   } catch (error) {
     // Another account signed in partway through: its own sync starts afresh.
     if (getAccount().userId !== userId) return;
+    // Didn't get through: most often a moment without a connection, so try again soon before saying anything.
+    if (error instanceof CloudError && error.transient && accountBlipped !== userId) {
+      forgetBlip();
+      accountBlipped = userId;
+      blipRetry = window.setTimeout(() => {
+        // Only for that account, and not while a sync with it is already under way (that one is the retry).
+        if (accountSyncing || accountBlipped !== userId || getAccount().userId !== userId) return;
+        // Due now: whichever sync runs next (this one, or the one after a sync already running) contacts the account.
+        wantAccount(0);
+        void syncLibraryData().catch(() => undefined);
+      }, CLOUD_BLIP_RETRY);
+      return;
+    }
     const message = error instanceof Error ? error.message : "Couldn't sync with your account.";
     setState((s) => ({ server: { ...s.server, cloudError: message } }));
     // Said once per problem; a sync with the account that works lets it be said again.
@@ -877,6 +909,8 @@ function accountWanted() {
 
 // Signing in brings the account's library here straight away.
 onSignedIn(() => {
+  // A new session starts with a quiet retry to spare, whichever account it is.
+  forgetBlip();
   wantAccount(0);
   void syncLibraryData().catch(() => undefined);
 });
@@ -913,7 +947,12 @@ export function syncLibraryData(): Promise<void> {
     if (getAccount().status === "signedIn" && accountWanted()) {
       accountDue = Infinity;
       accountCheckedAt = Date.now();
-      await syncWithAccount();
+      accountSyncing = true;
+      try {
+        await syncWithAccount();
+      } finally {
+        accountSyncing = false;
+      }
       if (getState().server.cloudError) wantAccount(CLOUD_RETRY);
     }
   })().catch((error: unknown) => {
