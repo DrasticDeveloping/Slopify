@@ -167,6 +167,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
               role={item.on !== undefined ? "menuitemcheckbox" : "menuitem"}
               aria-checked={item.on}
               aria-label={item.label}
+              title={item.short ? item.label : undefined}
               className={`menu-tile${item.on ? " on" : ""}`}
               style={{ "--i": i } as CSSProperties}
               disabled={item.disabled}
