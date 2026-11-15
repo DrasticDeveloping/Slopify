@@ -1,11 +1,12 @@
-import { useEffect } from "react";
+import { useEffect, type MouseEvent } from "react";
 import { hashString, paletteFromSeed } from "../data/library";
+import { openSearchResultMenu, openTrackMenu } from "../lib/menus";
 import type { DiscoveredSong } from "../recommend/discover";
 import { ownedCopies, ownedIndex } from "../recommend/owned";
 import { useDiscovery } from "../recommend/useDiscovery";
 import { addToPlaylist, hideDiscovery, playList, togglePlay } from "../state/actions";
 import { addDiscoveredSong, canStream, registerStreams, streamTrackId } from "../state/importer";
-import { getState, useStore } from "../state/store";
+import { getState, useStore, type Route } from "../state/store";
 import { Art } from "./Artwork";
 import { Icon } from "./Icon";
 
@@ -24,10 +25,17 @@ export function PlaylistSuggestions({ id, name, seedIds }: { id: string; name: s
   const ids = songs.filter((song) => canStream(song.candidate)).map((song) => streamTrackId(song.key));
   const currentId = useStore((s) => s.currentId);
   const isPlaying = useStore((s) => s.isPlaying);
+  const context: { label: string; route: Route; ids: string[] } = { label: `Suggestions for ${name}`, route: { name: "playlist", id }, ids };
   const play = (song: DiscoveredSong) => {
     if (currentId === streamTrackId(song.key)) togglePlay();
-    else if (canStream(song.candidate)) playList(ids, streamTrackId(song.key), { label: `Suggestions for ${name}`, route: { name: "playlist", id } });
+    else if (canStream(song.candidate)) playList(ids, streamTrackId(song.key), context);
     else void addDiscoveredSong(song.candidate, song.kind);
+  };
+  // Streamable suggestions are songs the player knows, with the full song menu; the rest can still be saved.
+  const menu = (e: MouseEvent, song: DiscoveredSong) => {
+    const trackId = streamTrackId(song.key);
+    if (getState().tracks[trackId]) openTrackMenu(e, [trackId], { context, why: song.kind });
+    else openSearchResultMenu(e, song.title, song.artist, { save: () => void addDiscoveredSong(song.candidate, song.kind, { play: false }) });
   };
   const status = loading ? "Finding songs for this playlist…" : note || "";
   if (!songs.length && !loading) return null;
@@ -45,7 +53,7 @@ export function PlaylistSuggestions({ id, name, seedIds }: { id: string; name: s
         const current = currentId === streamTrackId(song.key);
         const playing = current && isPlaying;
         return (
-          <div className={`suggestion-row${current ? " current" : ""}`} key={song.key} onDoubleClick={() => play(song)}>
+          <div className={`suggestion-row${current ? " current" : ""}`} key={song.key} onDoubleClick={() => play(song)} onContextMenu={(e) => menu(e, song)}>
             <div className="suggestion-art">
               <Art palette={paletteFromSeed(hashString(song.key))} image={song.artwork} glyph={3} />
               <button type="button" className="suggestion-play" aria-label={`${playing ? "Pause" : "Play"} ${song.title}`} onClick={() => play(song)}>
