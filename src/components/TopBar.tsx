@@ -5,6 +5,7 @@ import { getState, useStore, type MenuState } from "../state/store";
 import { installApp, usePwa } from "../state/pwa";
 import { cloudEnabled, manageAccount, signIn, signOut, useAccount } from "../state/cloud";
 import { openShared, parseShareLink } from "../state/social";
+import { HiddenEmail } from "./HiddenEmail";
 import { Icon } from "./Icon";
 import { useContextPlaying } from "./Shelf";
 
@@ -59,7 +60,7 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
       // Signed out, the name is only this device's: say plainly that no account is signed in.
       title: account.status === "signedIn" ? account.profile?.displayName ?? name ?? "You" : account.status === "disabled" ? name || "You" : "Not signed in",
       subtitle: account.status === "signedIn"
-        ? account.profile?.username ? `@${account.profile.username}` : account.email ?? "Signed in"
+        ? account.profile?.username ? `@${account.profile.username}` : account.email ? <HiddenEmail email={account.email} /> : "Signed in"
         : account.status === "loading" ? "Checking your account…"
         : account.status === "signedOut" ? account.error ?? "Sync your library and add friends" : `On ${thisDevice}`,
       items: [

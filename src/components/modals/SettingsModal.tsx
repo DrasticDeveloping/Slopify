@@ -13,6 +13,7 @@ import { installApp, installationHelp, updateApp, usePwa } from "../../state/pwa
 import { snoozedSongs, snoozeEnds, wake } from "../../state/snooze";
 import { defaultSettings, useStore, type CustomTheme, type Settings, type SettingsTab, type Theme } from "../../state/store";
 import { activeCustomTheme, builtinThemes, createTheme, customThemes, deleteTheme, MAX_CUSTOM_THEMES, randomColours, tooLight, updateTheme } from "../../state/themes";
+import { HiddenEmail } from "../HiddenEmail";
 import { Icon } from "../Icon";
 import { Slider } from "../Slider";
 import { Shell, Toggle } from "./Shell";
@@ -172,7 +173,7 @@ function ThemeEditor({ theme }: { theme: CustomTheme }) {
   );
 }
 
-function Row({ icon, title, desc, children, column }: { icon: string; title: string; desc?: ReactNode; children?: ReactNode; column?: boolean }) {
+function Row({ icon, title, desc, children, column }: { icon: string; title: ReactNode; desc?: ReactNode; children?: ReactNode; column?: boolean }) {
   const id = useId();
   return (
     <div className={`set-row${column ? " column" : ""}`}>
@@ -382,7 +383,7 @@ function AccountRows() {
   };
   return (
     <>
-      <Row icon="user" title={account.email ?? "Signed in"} desc={account.error ?? (syncError ? `Library sync: ${syncError}` : synced ? `Your library follows this account. Last synced ${new Date(synced).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.` : "Your library and profile follow this account.")}>
+      <Row icon="user" title={account.email ? <HiddenEmail email={account.email} /> : "Signed in"} desc={account.error ?? (syncError ? `Library sync: ${syncError}` : synced ? `Your library follows this account. Last synced ${new Date(synced).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.` : "Your library and profile follow this account.")}>
         <button type="button" className="btn sm" onClick={manageAccount}>Manage</button>
         <button type="button" className="btn sm" onClick={() => void signOut()}>Sign out</button>
       </Row>
