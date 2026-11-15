@@ -18,6 +18,8 @@ export interface PlaybackSpot {
   label?: string;
   route?: Route;
   ids: string[];
+  /** The list plays from its top after this song (a playlist switched to while it played). */
+  fromTop?: boolean;
 }
 
 const STORAGE_KEY = "slopify.playback-spot.v1";
@@ -89,6 +91,7 @@ function note() {
     label: s.context?.label,
     route: s.context?.route,
     ids: (s.context?.ids ?? [id]).filter(synced).slice(0, MAX_IDS),
+    ...(s.index < 0 ? { fromTop: true } : {}),
   });
 }
 
@@ -96,7 +99,7 @@ function cue(next: PlaybackSpot) {
   // Set first: cueing changes the song showing, which mustn't be noted as played here.
   const was = following;
   following = true;
-  if (cueSong(next.id, next.position, { label: next.label ?? "Library", route: next.route, ids: next.ids })) return true;
+  if (cueSong(next.id, next.position, { label: next.label ?? "Library", route: next.route, ids: next.ids, fromTop: next.fromTop === true })) return true;
   following = was;
   return false;
 }

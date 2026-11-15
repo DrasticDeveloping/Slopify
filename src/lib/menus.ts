@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, isPlayable, navigate,
-  isLiked, openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, startRadio, toast, toggleLike,
+  isLiked, openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, shufflePlay, startRadio, switchToAfterCurrent, toast, toggleLike,
 } from "../state/actions";
 import { streamLink } from "../state/importer";
 import { shareOf } from "../state/social";
@@ -189,7 +189,9 @@ export function openPlaylistMenu(e: ReactMouseEvent | HTMLElement, playlistId: s
     art: { playlistId: p.id },
     items: [
       { label: "Play", icon: "play", quick: true, disabled: !p.trackIds.length, run: () => playList(p.trackIds, undefined, { label: p.name, route }) },
-      { label: "Add to queue", short: "Queue", icon: "list", quick: true, disabled: !p.trackIds.length, run: () => addToQueue(p.trackIds) },
+      s.currentId
+        ? { label: "Switch to this playlist after this song", short: "Switch to", icon: "queue", quick: true, disabled: !p.trackIds.length, run: () => switchToAfterCurrent(p.trackIds, { label: p.name, route }) }
+        : { label: "Shuffle", icon: "shuffle", quick: true, disabled: !p.trackIds.length, run: () => shufflePlay(p.trackIds, { label: p.name, route }) },
       ...(p.system ? [] : [{ label: shareOf(p.id) ? "Sharing…" : "Share…", short: shareOf(p.id) ? "Sharing" : "Share", icon: "link", quick: true, run: () => openModal({ type: "sharePlaylist", id: p.id }) }]),
       { label: "Open", icon: "external", run: () => navigate(route) },
       ...(p.system ? [] : [

@@ -486,13 +486,18 @@ export function updateSettings(patch: Partial<Settings>) {
 
 /* ───────────────────────── playback ───────────────────────── */
 
-function shuffled(ids: string[], first?: string) {
+function shuffled(ids: string[], first?: string, avoid?: string) {
   const rest = ids.filter((id) => id !== first);
   for (let i = rest.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [rest[i], rest[j]] = [rest[j], rest[i]];
   }
-  return first ? [first, ...rest] : rest;
+  if (first) return [first, ...rest];
+  // Not starting with the song playing now (a list waiting to start after it), when there's another.
+  if (!avoid || rest.length < 2 || rest[0] !== avoid) return rest;
+  const j = 1 + Math.floor(Math.random() * (rest.length - 1));
+  [rest[0], rest[j]] = [rest[j], rest[0]];
+  return rest;
 }
 
 /** Where a song's file can be read from now (this session's file, this device's copy, or the music server), if anywhere. */
@@ -663,6 +668,41 @@ export function playList(ids: string[], startId?: string, ctx?: { label: string;
   load(first);
 }
 
+/**
+ * Switches what plays after the current song to `ids` (a playlist's Switch button): the song playing
+ * finishes, songs you queued yourself still come first, then the list plays (shuffled when shuffle is on).
+ * If the current song is in the list, the list carries on from it; otherwise it starts from the top.
+ * With nothing playing, the list just plays.
+ */
+export function switchToAfterCurrent(ids: string[], ctx: { label: string; route?: Route }) {
+  const s = getState();
+  if (!s.currentId) return playList(ids, undefined, ctx);
+  if (listenLocked()) return;
+  const playable = ids.filter((id) => isPlayable(s.tracks[id], s));
+  if (!playable.length) {
+    toast("Nothing playable here", { detail: s.server.status !== "connected" ? "Connect to your music server to stream these songs." : undefined });
+    return;
+  }
+  const current = s.currentId;
+  const inList = playable.includes(current);
+  // The current song counts even if snoozed: it's playing anyway.
+  if (!inList && !playable.some((id) => !snoozedUntil(s, id))) {
+    toast(playable.length === 1 ? "This song is snoozed" : "Every song here is snoozed", { detail: "Play one yourself, or stop snoozing them from its menu." });
+    return;
+  }
+  const order = s.shuffle ? shuffled(playable, inList ? current : undefined) : playable;
+  // Carry on from the current song when it's in the list with something after it; otherwise start
+  // from the top (-1 = before the first song, so Next plays order[0]).
+  const at = inList ? order.indexOf(current) : -1;
+  const index = at >= 0 && order.slice(at + 1).some((id) => !snoozedUntil(s, id)) ? at : -1;
+  setState({ context: { label: ctx.label, route: ctx.route, ids: playable }, order, index });
+  prefetchNext();
+  toast(`Switching to ${ctx.label}`, {
+    tone: "success",
+    detail: s.upNext.length ? "After this song and the ones you queued." : "After this song.",
+  });
+}
+
 /** A song shown paused where it was left (on this device or another), started from there when played. */
 let cued: { id: string; position: number } | null = null;
 
@@ -670,15 +710,18 @@ let cued: { id: string; position: number } | null = null;
  * Puts a song where it was left, paused, with the list it was playing from, so
  * Play carries on from there. Nothing is loaded (or counted as a play) until then.
  */
-export function cueSong(id: string, position: number, ctx?: { label: string; route?: Route; ids: string[] }) {
+export function cueSong(id: string, position: number, ctx?: { label: string; route?: Route; ids: string[]; fromTop?: boolean }) {
   const s = getState();
   if (s.isPlaying || listenLocked() || !isPlayable(s.tracks[id], s)) return false;
   if (s.currentId && s.currentId !== id) finishListening("changed");
   const listed = (ctx?.ids ?? []).filter((x) => isPlayable(s.tracks[x], s));
-  const ids = listed.includes(id) ? listed : [id];
-  const order = s.shuffle ? shuffled(ids, id) : ids;
+  // A song from outside its list (queued, or a playlist switched to after it), or one the list was
+  // waiting to start after, keeps the list, which plays from the top after it (index -1).
+  const ids = listed.length ? listed : [id];
+  const lead = ids.includes(id) && !ctx?.fromTop;
+  const order = s.shuffle ? shuffled(ids, lead ? id : undefined, id) : ids;
   cued = { id, position: Math.max(0, position) };
-  setState({ currentId: id, isPlaying: false, context: { label: ctx?.label ?? "Library", route: ctx?.route, ids }, order, index: order.indexOf(id) });
+  setState({ currentId: id, isPlaying: false, context: { label: ctx?.label ?? "Library", route: ctx?.route, ids }, order, index: lead ? order.indexOf(id) : -1 });
   updateMediaSession();
   return true;
 }
@@ -865,7 +908,8 @@ export function previous() {
     const id = s.history[prevIdx];
     // Keep the collection cursor in sync when the song belongs to it.
     let index = s.index;
-    for (let d = 0; d < s.order.length; d++) {
+    // `<=` so a cursor at -1 (list not started yet) still reaches the last song.
+    for (let d = 0; d <= s.order.length; d++) {
       if (s.order[s.index - d] === id) { index = s.index - d; break; }
       if (s.order[s.index + d] === id) { index = s.index + d; break; }
     }
@@ -952,8 +996,9 @@ export function toggleShuffle() {
   const on = !s.shuffle;
   if (s.context && s.currentId) {
     const ids = s.context.ids;
-    const inCollection = ids.includes(s.currentId);
-    const order = on ? shuffled(ids, inCollection ? s.currentId : undefined) : ids;
+    // A list waiting to start from its top after this song (a playlist switched to) keeps waiting.
+    const inCollection = ids.includes(s.currentId) && s.index >= 0;
+    const order = on ? shuffled(ids, inCollection ? s.currentId : undefined, s.currentId) : ids;
     // A song from outside the collection (queued, or added by smart shuffle) leaves the cursor on the last
     // collection song before it (-1 = before the first song, so Next plays order[0]).
     const anchor = s.order.slice(0, s.index + 1).reverse().find((id) => ids.includes(id));
