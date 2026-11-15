@@ -740,8 +740,15 @@ export function extendContext(route: Route, ids: string[]) {
   const playable = ids.filter((id) => isPlayable(s.tracks[id], s));
   const added = playable.filter((id) => !s.context!.ids.includes(id));
   if (!added.length || !playable.includes(s.currentId)) return;
-  // Smart shuffle may have queued one of the new songs already.
-  const order = s.shuffle ? [...s.order, ...added.filter((id) => !s.order.includes(id))] : playable;
+  // Smart shuffle may have queued one of the new songs already. In order, songs up to the one playing stay where
+  // they are; the rest follow in the list's order, and a new song from earlier in the list than the one playing
+  // comes after them, rather than behind the one playing, where this pass would never reach it.
+  const played = s.order.slice(0, s.order.indexOf(s.currentId) + 1);
+  const at = playable.indexOf(s.currentId);
+  const rest = playable.filter((id) => !played.includes(id));
+  const order = s.shuffle
+    ? [...s.order, ...added.filter((id) => !s.order.includes(id))]
+    : [...played, ...rest.filter((id) => playable.indexOf(id) > at), ...rest.filter((id) => playable.indexOf(id) < at)];
   setState({ context: { ...s.context, ids: playable }, order, index: order.indexOf(s.currentId) });
 }
 

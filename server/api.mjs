@@ -514,7 +514,7 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
     try {
       const result = link
         ? await resolveLocalImportSource(source, stream.signal, stream.progress, {}, { mediaKind })
-        : await searchAllPlatforms(source, stream.signal, fetch, { mediaKind });
+        : await searchAllPlatforms(source, stream.signal, fetch, { mediaKind, urgent: body.urgent === true });
       stream.finish({ ok: true, result });
     } catch (error) {
       stream.finish({ ok: false, error: failure(error, "resolving_metadata") });

@@ -262,6 +262,7 @@ async function findSongs(mix: Mix) {
   const taken = new Set(mixes.filter((m) => m.id !== mix.id).flatMap((m) => m.songs.map((song) => song.key)));
   const songs: DiscoveredSong[] = [];
   let note = "";
+  let failed = false;
   try {
     for (let n = 0; n < rounds && songs.length < target; n++) {
       const result = await discover({
@@ -273,7 +274,10 @@ async function findSongs(mix: Mix) {
       });
       songs.push(...result.songs);
       note = result.note;
+      failed ||= result.failed;
     }
+    // Nothing found because music search wasn't answering: retried later, not published as a finished, empty edition.
+    if (!songs.length && failed) throw new Error("Music search is unavailable.");
     // A mix filled at the same time (one opened while the others were being made) may have taken some meanwhile.
     const takenNow = new Set(mixes.filter((m) => m.id !== mix.id).flatMap((m) => m.songs.map((song) => song.key)));
     songs.splice(0, songs.length, ...songs.filter((song) => !takenNow.has(song.key)));

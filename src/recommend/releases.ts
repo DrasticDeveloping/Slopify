@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { cleanArtist, cleanTitle, creditedArtist, discoveryKey } from "./discover";
 import { ownedIndex } from "./owned";
-import { searchSongs } from "./service";
+import { demote, doubtful, searchMoreSongs, searchSongs, type Priority } from "./service";
 import { meaningfulArtist, tasteProfile } from "./taste";
-import { canStream, registerStreams, streamTrackId, type Candidate } from "../state/importer";
+import { canStream, registerStreams, setStreamRepair, streamTrackId, type Candidate } from "../state/importer";
 import { getState, useStore, type AppState } from "../state/store";
 
 /*
@@ -157,9 +157,20 @@ export function fetchRelease(id: string): Promise<ReleaseDetail> {
   return hit;
 }
 
+/**
+ * A title as matching compares it: also without a featured-artist credit written out without brackets, as video
+ * titles often are ("Cold ft. Future (Audio)" is the catalog's "Cold"). Only the credit goes: a version after it
+ * stays, so "Cold ft. Future (Kaskade Remix)" and "Cold ft. Future - Live" aren't the studio "Cold".
+ */
+const matchTitle = (title: string) =>
+  cleanTitle(title)
+    // "Song - Extended Mix", as Spotify writes a version, is "Song (Extended Mix)".
+    .replace(/\s+[-–—]\s+([^()[\]\-–—]+)$/u, " ($1)")
+    .replace(/\s+(?:feat\.?|ft\.|featuring)\s(?:(?!\s[-–—]\s)[^([])*/gu, " ").replace(/\s+/g, " ").trim();
+
 /** The search result that is this song: by its artist, with its title, and about as long. */
 function matchCandidate(candidates: Candidate[], track: Pick<ReleaseTrack, "title" | "artist" | "durationSeconds">): Candidate | undefined {
-  const wanted = cleanTitle(track.title);
+  const wanted = matchTitle(track.title);
   return candidates.find((c) => {
     if (!canStream(c)) return false;
     const meta = c.importMetadata ?? c;
@@ -168,7 +179,7 @@ function matchCandidate(candidates: Candidate[], track: Pick<ReleaseTrack, "titl
     const credited = title.match(/^(.+?)\s+[-–—]\s+(.+)$/u);
     if (credited && creditedArtist(credited[1], track.artist)) title = credited[2];
     if (!creditedArtist(artist, track.artist) && !(credited && creditedArtist(credited[1], track.artist))) return false;
-    if (cleanTitle(title) !== wanted) return false;
+    if (matchTitle(title) !== wanted) return false;
     const duration = meta.durationSeconds ?? c.durationSeconds;
     return !track.durationSeconds || !duration || Math.abs(duration - track.durationSeconds) <= 20;
   });
@@ -186,48 +197,233 @@ export interface SongToFind {
   released?: string;
 }
 
-/**
- * Finds a catalog song to play: in your library if you have it, otherwise on
- * YouTube or SoundCloud (registered as a streamed song). Never rejects.
+/*
+ * Songs found before, kept in localStorage for a week, so a list opened again (an artist's popular songs, an
+ * album) plays at once instead of searching for every song again: each search counts towards the pace YouTube
+ * puts up with. Its source is a link, which is looked up afresh when it plays.
  */
-export async function resolveSong(song: SongToFind, owned = ownedIndex(getState())): Promise<TrackStatus> {
+const FOUND_KEY = "slopify.found.v1";
+const FOUND_FOR = 7 * DAY;
+const FOUND_MAX = 400;
+let foundSongs: Map<string, { at: number; candidate: Candidate }> | null = null;
+function foundAll() {
+  if (foundSongs) return foundSongs;
+  foundSongs = new Map();
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(FOUND_KEY) ?? "[]");
+    if (Array.isArray(raw)) for (const entry of raw) if (Array.isArray(entry) && typeof entry[0] === "string" && entry[1]?.candidate && Date.now() - entry[1].at < FOUND_FOR) foundSongs.set(entry[0], entry[1]);
+  } catch {
+    // Unreadable: starts afresh.
+  }
+  return foundSongs;
+}
+function rememberFound(key: string, candidate: Candidate) {
+  const all = foundAll();
+  all.delete(key);
+  // Only what playing it needs: its source and details, and one other copy to fall back on.
+  all.set(key, { at: Date.now(), candidate: { ...candidate, fallbackCandidates: candidate.fallbackCandidates?.slice(0, 1).map(({ fallbackCandidates: _, ...c }) => c) } });
+  while (all.size > FOUND_MAX) all.delete(all.keys().next().value!);
+  saveFound();
+}
+let saving = 0;
+/** Written once a list's worth of finds and uses has settled, rather than once for each. */
+function saveFound() {
+  window.clearTimeout(saving);
+  saving = window.setTimeout(() => {
+    try {
+      localStorage.setItem(FOUND_KEY, JSON.stringify([...foundAll()]));
+    } catch {
+      // Full: kept for this session only.
+    }
+  }, 1_000);
+}
+
+/** Forgets a remembered song (its source has gone), so it's looked for afresh. */
+function forgetFound(key: string) {
+  if (foundAll().delete(key)) saveFound();
+}
+
+const songKey = (song: Pick<SongToFind, "artist" | "title">) => discoveryKey(song.artist, song.title);
+
+/** Registers a found copy as the song's streamed track. */
+function register(song: SongToFind, candidate: Candidate): TrackStatus {
+  const key = songKey(song);
+  registerStreams([{ key, candidate, title: song.title, artist: song.artist, artwork: song.artwork, kind: "discover-artist", album: song.album, released: song.released }]);
+  return { state: "ready", id: streamTrackId(key) };
+}
+
+/** The song's playable copy without searching: in your library, or found before. */
+export function knownSong(song: SongToFind, owned = ownedIndex(getState())): TrackStatus | null {
   const mine = owned.find({ artist: song.artist, title: song.title })[0];
   if (mine) return { state: "ready", id: mine };
+  const key = songKey(song);
+  const all = foundAll();
+  const known = all.get(key);
+  if (!known || Date.now() - known.at >= FOUND_FOR || !canStream(known.candidate)) return null;
+  // Used again: moved to the back, so the songs played least recently are the ones forgotten when it's full.
+  // Its week still counts from when it was found, so a source that has gone is looked for afresh in time.
+  all.delete(key);
+  all.set(key, known);
+  saveFound();
+  return register(song, known.candidate);
+}
+
+export interface FindOptions {
+  /** Who is waiting: a click (searched first, and once more after a moment if music search fails), the open page, or a shelf. */
+  priority?: Priority;
+  /** Calls off a click's search while it's still waiting for its turn. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Finds a catalog song to play: in your library if you have it (or found before), otherwise on
+ * YouTube or SoundCloud (registered as a streamed song). Never rejects.
+ */
+export async function resolveSong(song: SongToFind, owned = ownedIndex(getState()), { priority = "shelf", signal }: FindOptions = {}): Promise<TrackStatus> {
+  const known = knownSong(song, owned);
+  if (known) return known;
+  let found = await lookUp(song, priority, signal);
+  // Someone is waiting to play it: a provider's brief throttling gets one more try a few seconds later.
+  if (priority === "click" && !found.candidate && found.state === "failed" && !signal?.aborted) {
+    await new Promise((resolve) => window.setTimeout(resolve, URGENT_RETRY_MS));
+    if (!signal?.aborted) found = await lookUp(song, priority, signal);
+  }
+  return found.candidate ? register(song, found.candidate) : { state: found.state === "missing" ? "missing" : "failed" };
+}
+const URGENT_RETRY_MS = 5_000;
+
+interface LookedUp {
+  candidate?: Candidate;
+  state: "missing" | "failed" | "ready";
+}
+
+/** One search for the song, leaving out copies already known not to play (`refused`). Remembers what it finds. */
+async function lookUp(song: SongToFind, priority: Priority, signal?: AbortSignal, refused = new Set<string>()): Promise<LookedUp> {
   try {
-    const found = matchCandidate((await searchSongs(`${song.artist} ${song.title}`)).candidates, song);
-    if (!found) return { state: "missing" };
-    const key = discoveryKey(song.artist, song.title);
-    registerStreams([{ key, candidate: found, title: song.title, artist: song.artist, artwork: song.artwork, kind: "discover-artist", album: song.album, released: song.released }]);
-    return { state: "ready", id: streamTrackId(key) };
+    const result = await searchSongs(`${song.artist} ${song.title}`, priority, signal);
+    const usable = result.candidates.filter((c) => !refused.has(c.sourceURL ?? ""));
+    const match = matchCandidate(usable, song);
+    // Not found while YouTube or SoundCloud wasn't answering (or YouTube claimed to have nothing at all for a
+    // known song) isn't "missing": it may well be there.
+    if (!match) return { state: doubtful(result) ? "failed" : "missing" };
+    const candidate = refused.size ? { ...match, fallbackCandidates: match.fallbackCandidates?.filter((c) => !refused.has(c.sourceURL ?? "")) } : match;
+    rememberFound(songKey(song), candidate);
+    return { candidate, state: "ready" };
   } catch {
     return { state: "failed" };
   }
 }
 
 /**
- * Finds each of a release's songs: in your library if you have it, otherwise on
- * YouTube or SoundCloud (registered as a streamed song). Reports as each is found.
+ * Looks for many of an artist's songs with one search (the artist, or an album) and its next pages, matching
+ * every result against each song still to find: a few searches instead of one per song. A song it misses is
+ * left to its own search, never marked missing. Stops after `pages`, or at a page that finds nothing new.
+ */
+export async function findMany(query: string, songs: Array<SongToFind | null>, onFound: (i: number, status: TrackStatus) => void, { pages = 1, priority = "page", signal }: FindOptions & { pages?: number } = {}) {
+  const left = new Map(songs.flatMap((song, i) => (song ? [[i, song] as const] : [])));
+  let more: string | null | undefined;
+  for (let page = 0; page < pages && left.size && !signal?.aborted; page++) {
+    let result: Awaited<ReturnType<typeof searchSongs>>;
+    try {
+      result = page === 0 ? await searchSongs(query, priority) : await searchMoreSongs(more!, priority, signal);
+    } catch {
+      return;
+    }
+    if (signal?.aborted) return;
+    let found = 0;
+    for (const [i, song] of left) {
+      const match = matchCandidate(result.candidates, song);
+      if (!match) continue;
+      found++;
+      left.delete(i);
+      rememberFound(songKey(song), match);
+      onFound(i, register(song, match));
+    }
+    more = result.more;
+    if (!found || !more) return;
+  }
+}
+
+/*
+ * A streamed song whose copy has gone (taken down, made private, blocked here) is found again when it fails to
+ * play, after its other remembered copy: one fresh search that leaves out the copies that failed.
+ */
+setStreamRepair({
+  find: async ({ key, title, artist, duration }, refused) => {
+    forgetFound(key);
+    const song: SongToFind = { title, artist, durationSeconds: duration || null };
+    // Only songs found by artist and title (not, say, a video someone pasted a link to) can be looked for again.
+    if (songKey(song) !== key) return null;
+    return (await lookUp(song, "click", undefined, refused)).candidate ?? null;
+  },
+  replaced: (key, candidate) => {
+    if (foundAll().has(key)) rememberFound(key, candidate);
+  },
+});
+
+/** Failed lookups on a release's page are tried again after one, two, four and eight minutes. */
+const RETRY_MS = 60_000;
+const RETRIES = 4;
+
+/**
+ * Finds each of a release's songs: in your library if you have it (or found before), otherwise on YouTube or
+ * SoundCloud (registered as a streamed song), the album's own search first. Reports as each is found.
  */
 export function useReleaseTracks(release: ReleaseDetail | null) {
   const [status, setStatus] = useState<TrackStatus[]>([]);
   useEffect(() => {
     if (!release) return;
     let live = true;
-    const results: TrackStatus[] = release.tracks.map(() => ({ state: "finding" }));
-    setStatus([...results]);
     const owned = ownedIndex(getState());
-    let next = 0;
-    const worker = async () => {
-      while (live && next < release.tracks.length) {
-        const i = next++;
-        const track = release.tracks[i];
-        results[i] = await resolveSong({ ...track, artwork: release.artwork, album: release.title, released: release.released }, owned);
-        if (live) setStatus([...results]);
-      }
+    const songs: SongToFind[] = release.tracks.map((t) => ({ ...t, artwork: release.artwork, album: release.title, released: release.released }));
+    const results: TrackStatus[] = songs.map((song) => knownSong(song, owned) ?? { state: "finding" });
+    const show = () => {
+      if (live) setStatus([...results]);
     };
-    void Promise.all([worker(), worker(), worker()]);
+    show();
+    const timers = new Set<number>();
+    const closed = new AbortController();
+    const look = async (i: number, tries: number) => {
+      const found = await resolveSong(songs[i], owned, { priority: "page" });
+      if (!live) return;
+      results[i] = found;
+      show();
+      if (found.state !== "failed" || tries >= RETRIES) return;
+      const timer = window.setTimeout(() => {
+        timers.delete(timer);
+        if (!live) return;
+        results[i] = { state: "finding" };
+        show();
+        void look(i, tries + 1);
+      }, RETRY_MS * 2 ** tries);
+      timers.add(timer);
+    };
+    void (async () => {
+      const wanted = results.map((r, i) => (r.state === "finding" ? songs[i] : null));
+      if (wanted.filter(Boolean).length > 2) {
+        await findMany(`${release.artist} ${release.title}`, wanted, (i, found) => {
+          if (results[i].state !== "finding") return;
+          results[i] = found;
+          show();
+        }, { signal: closed.signal });
+      }
+      if (!live) return;
+      const todo = results.flatMap((r, i) => (r.state === "finding" ? [i] : []));
+      // Two at a time, which is all the shared queue runs anyway; leaving the page stops the rest.
+      const worker = async () => {
+        while (live && todo.length) await look(todo.shift()!, 0);
+      };
+      await Promise.all([worker(), worker()]);
+    })();
     return () => {
       live = false;
+      closed.abort();
+      timers.forEach((timer) => window.clearTimeout(timer));
+      // Its searches still waiting give way to the page that's open now.
+      demote(`${release.artist} ${release.title}`);
+      songs.forEach((song, i) => {
+        if (results[i].state === "finding") demote(`${song.artist} ${song.title}`);
+      });
     };
   }, [release]);
   return status;

@@ -112,7 +112,7 @@ export function ReleaseView({ id }: { id: string }) {
           ? `Finding ${plural(finding, "more song")} on YouTube and SoundCloud…`
           : [
               missing.length ? `Not found to play: ${missing.map((t) => t.title).join(", ")}.` : "",
-              failed.length ? `Music search isn't responding, so ${plural(failed.length, "song")} couldn't be looked up. Open this page again later to retry.` : "",
+              failed.length ? `Music search isn't responding, so ${plural(failed.length, "song")} couldn't be looked up. They'll be looked for again in a minute or two.` : "",
             ].filter(Boolean).join(" ")}
       </p>
       <p className="fine-print">Released {released}{release.label ? ` · ${release.label}` : ""}. Details from Deezer; songs play from YouTube or SoundCloud.</p>
