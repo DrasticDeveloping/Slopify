@@ -103,15 +103,17 @@ const PLAYING = { active: true, playing: true };
 const PAUSED = { active: true, playing: false };
 const IDLE = { active: false, playing: false };
 
-export function PlayFab({ ids, label, route, startId, size = "md", className }: { ids: string[]; label: string; route?: Route; startId?: string; size?: "sm" | "md" | "lg"; className?: string }) {
+/** `onEmpty`: what Play does while there's nothing to play yet (a list still finding its songs plays its first one as soon as it's found). */
+export function PlayFab({ ids, label, route, startId, size = "md", className, onEmpty }: { ids: string[]; label: string; route?: Route; startId?: string; size?: "sm" | "md" | "lg"; className?: string; onEmpty?: () => void }) {
   const state = useContextPlaying(route);
   const click = (e: MouseEvent) => {
     e.stopPropagation();
     if (state.active) togglePlay();
+    else if (!ids.length) onEmpty?.();
     else playList(ids, startId, { label, route });
   };
   return (
-    <button type="button" className={`play-fab ${size}${state.playing ? " is-playing" : ""}${className ? ` ${className}` : ""}`} onClick={click} disabled={!ids.length} aria-label={state.playing ? `Pause ${label}` : `Play ${label}`}>
+    <button type="button" className={`play-fab ${size}${state.playing ? " is-playing" : ""}${className ? ` ${className}` : ""}`} onClick={click} disabled={!ids.length && !onEmpty} aria-label={state.playing ? `Pause ${label}` : `Play ${label}`}>
       <Icon name={state.playing ? "pause" : "play"} size={size === "lg" ? 26 : size === "sm" ? 16 : 20} />
     </button>
   );

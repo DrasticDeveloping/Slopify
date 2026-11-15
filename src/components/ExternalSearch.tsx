@@ -5,9 +5,10 @@ import { playList, togglePlay } from "../state/actions";
 import { getState, useStore } from "../state/store";
 import {
   canStream, cancelImport, failureText, getImport, isAudioOnlySource, isDownloadable, isPlaylist, PROVIDERS, providerLabel, registerStreams,
-  saveSearchResults, searchDiscovery, searchMore, stageLabel, streamTrackId, useImport, type Candidate, type MediaKind, type Provider, type Resolution,
+  saveSearchResults, stageLabel, streamTrackId, useImport, type Candidate, type MediaKind, type Provider, type Resolution,
 } from "../state/importer";
 import { candidateSources, ownedIndex } from "../recommend/owned";
+import { searchTyped, searchTypedMore } from "../recommend/service";
 import { Icon } from "./Icon";
 
 /** Waits this long after typing stops before searching. */
@@ -52,7 +53,7 @@ function usePlatformSearch(query: string, kind: MediaKind, attempt: number) {
       return () => controller.abort();
     }
     const timer = window.setTimeout(() => {
-      searchDiscovery(query, AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]), kind)
+      searchTyped(query, AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]), kind)
         .then(show)
         .catch((e: unknown) => {
           if (controller.signal.aborted) return;
@@ -99,7 +100,7 @@ function useMoreResults(first: Resolution | null, kind: MediaKind) {
     running.current = controller;
     setLoading(true);
     setError("");
-    searchMore(current.more, kind, AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]))
+    searchTypedMore(current.more, AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]), kind)
       .then((page) => {
         if (controller.signal.aborted) return;
         setPages((p) => {

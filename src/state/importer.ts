@@ -88,6 +88,8 @@ export interface Resolution {
   candidates: Candidate[];
   playlist?: { title?: string; unavailableCount?: number; truncated?: boolean };
   unavailableProviders?: string[];
+  /** Providers that answered a search with nothing at all for its words (YouTube's "No results found"). */
+  emptyProviders?: string[];
   /** A search's next page of results, for searchMore; absent when there are no more. */
   more?: string | null;
 }
@@ -310,8 +312,9 @@ async function streamCall<T>(path: string, body: unknown, signal: AbortSignal, o
 /* ───────────────────────── discovery (Home → Discover new music) ───────────────────────── */
 
 /** A provider search for discovery. It has its own request, so an open import dialog is left alone. */
-export async function searchDiscovery(query: string, signal: AbortSignal, mediaKind: MediaKind = "audio"): Promise<Resolution> {
-  const result = await streamCall<Resolution>("/api/import/resolve", { source: query, mediaKind }, signal, () => undefined, "searching_candidates");
+/** `urgent`: someone clicked to play it, so the server asks providers it has paused and skips its cache. */
+export async function searchDiscovery(query: string, signal: AbortSignal, mediaKind: MediaKind = "audio", urgent = false): Promise<Resolution> {
+  const result = await streamCall<Resolution>("/api/import/resolve", { source: query, mediaKind, ...(urgent ? { urgent } : {}) }, signal, () => undefined, "searching_candidates");
   // Nothing found is an answer, not a failure.
   if (!result.ok && result.error.code === "NO_SEARCH_RESULTS") return { kind: "search_results", mediaKind: "audio", track: {}, candidates: [] };
   if (!result.ok) throw result.error;
@@ -394,7 +397,7 @@ export interface StreamSong {
   album?: string; released?: string;
 }
 
-const streamSources = new Map<string, { candidate: Candidate; kind: ReasonKind; key: string; video: boolean; saveVideo: boolean }>();
+const streamSources = new Map<string, { candidate: Candidate; kind: ReasonKind; key: string; video: boolean; saveVideo: boolean; title: string; artist: string; videoChoice?: boolean; refused?: Set<string> }>();
 
 /**
  * A result that is a YouTube video (not a YouTube Music track, and not a match
@@ -419,7 +422,7 @@ export function registerStreams(songs: StreamSong[]) {
     const id = streamTrackId(song.key);
     const youtube = song.candidate.sourceProvider !== "soundcloud";
     const video = youtube && (song.video ?? isYouTubeVideo(song.candidate));
-    streamSources.set(id, { candidate: song.candidate, kind: song.kind, key: song.key, video, saveVideo: youtube && song.video === true });
+    streamSources.set(id, { candidate: song.candidate, kind: song.kind, key: song.key, video, saveVideo: youtube && song.video === true, title: song.title, artist: song.artist, videoChoice: song.video });
     if (tracks[id]) continue;
     if (tracks === s.tracks) [tracks, artists, albums] = [{ ...tracks }, { ...artists }, { ...albums }];
     const credit = song.candidate.importMetadata?.provider !== "spotify" && isUploadLink(song.candidate.sourceURL) ? uploadCredit(song.artist, song.title) : { artist: song.artist, title: song.title };
@@ -482,7 +485,81 @@ export const streamLink = (id: string) => streamSources.get(id)?.candidate.sourc
 /** Videos being prepared for streamed songs, so playing one again meanwhile doesn't prepare it twice. */
 const pictures = new Map<string, Promise<string | null>>();
 
-async function streamSource(id: string, { background = false } = {}): Promise<StreamMedia> {
+/** Refusals that mean this copy of a song has gone (taken down, private, members only, blocked here), not that YouTube is being wary of this computer. */
+const GONE = new Set(["YOUTUBE_UNAVAILABLE", "YOUTUBE_PRIVATE", "YOUTUBE_REGION_BLOCKED", "YOUTUBE_MEMBERS_ONLY", "SOUNDCLOUD_NOT_FOUND"]);
+
+export interface StreamRepair {
+  /** Another copy of this song, leaving out the ones that failed (`refused`), or null. */
+  find: (song: { key: string; title: string; artist: string; duration: number }, refused: Set<string>) => Promise<Candidate | null>;
+  /** This copy plays in place of the one that has gone. */
+  replaced: (key: string, candidate: Candidate) => void;
+}
+let repair: StreamRepair | null = null;
+/** Set by recommend/releases, which can search for songs (and needs this module, so it plugs itself in). */
+export function setStreamRepair(hooks: StreamRepair) {
+  repair = hooks;
+}
+const repairing = new Map<string, Promise<boolean>>();
+
+/**
+ * Swaps a streamed song's gone copy (`failed`, the one that was tried) for another: its other remembered copy,
+ * else one found afresh. Shared per song. A failure that arrives after the song has already moved on to another
+ * copy only rules out the copy it was for, and the song tries its current one.
+ */
+function replaceSource(id: string, failed: string): Promise<boolean> {
+  const source = streamSources.get(id);
+  if (!source) return Promise.resolve(false);
+  // One list per song, so a copy ruled out by a late failure is left out by a repair already looking, too.
+  const refused = (source.refused ??= new Set());
+  if (failed) refused.add(failed);
+  if (source.candidate.sourceURL !== failed) return repairing.get(id) ?? Promise.resolve(true);
+  let task = repairing.get(id);
+  if (task) return task;
+  task = (async () => {
+    const others = (source.candidate.fallbackCandidates ?? []).filter((c) => canStream(c) && !refused.has(c.sourceURL ?? ""));
+    let next: Candidate | null = others.length
+      ? { ...others[0], searchProvider: source.candidate.searchProvider, importMetadata: source.candidate.importMetadata, fallbackCandidates: others.slice(1) }
+      : null;
+    if (!next && repair) next = await repair.find({ key: source.key, title: source.title, artist: source.artist, duration: getState().tracks[id]?.duration ?? 0 }, refused).catch(() => null);
+    if (!next || !canStream(next) || refused.has(next.sourceURL ?? "")) return false;
+    source.candidate = next;
+    // The copy that failed may have been turned into audio only (its picture failed too); the new one is judged afresh.
+    const video = next.sourceProvider !== "soundcloud" && (source.videoChoice ?? isYouTubeVideo(next));
+    if (video !== source.video) {
+      source.video = video;
+      setState((s) => (s.tracks[id] ? { tracks: { ...s.tracks, [id]: { ...s.tracks[id], kind: video ? "video" : "audio" } } } : {}));
+    }
+    repair?.replaced(source.key, next);
+    return true;
+  })().finally(() => repairing.delete(id));
+  repairing.set(id, task);
+  return task;
+}
+
+/**
+ * A streamed song's audio (and picture). A copy that has gone is swapped for another and tried again, up to
+ * twice (its other remembered copy, then one found afresh), so a removed video doesn't stop the song playing.
+ */
+async function streamSource(id: string, options: { background?: boolean } = {}): Promise<StreamMedia> {
+  let swaps = 0;
+  let staleRetried = false;
+  for (;;) {
+    const tried = streamSources.get(id)?.candidate.sourceURL ?? "";
+    try {
+      return await streamSourceOnce(id, options);
+    } catch (error) {
+      if (!GONE.has((error as { code?: string })?.code ?? "")) throw error;
+      // The song had already moved on to another copy (a failure that arrived late): that one is tried, once.
+      const stale = streamSources.get(id)?.candidate.sourceURL !== tried;
+      if (stale ? staleRetried : swaps >= 2) throw error;
+      if (!(await replaceSource(id, tried))) throw error;
+      if (stale) staleRetried = true;
+      else swaps++;
+    }
+  }
+}
+
+async function streamSourceOnce(id: string, { background = false } = {}): Promise<StreamMedia> {
   const source = streamSources.get(id);
   if (!source) throw new Error("This suggestion is no longer available.");
   const fetchPreview = async (mediaKind: MediaKind) => {

@@ -2,7 +2,6 @@ const { readResponseBytes } = require("./response-body.cjs");
 const {
   LocalImportError,
   extractYouTubeInitialData,
-  parseYouTubeMusicSearch,
   parseYouTubeSearchData,
   scoreAudioSource,
   spotifyArtworkURL,
@@ -37,7 +36,8 @@ function searchError(code, message) {
  */
 const PROVIDER_DEADLINE_MS = { spotify: 8_000, soundcloud: 12_000, youtube: 15_000 };
 const PAUSE_AFTER_FAILURES = 3;
-const PAUSE_MS = 5 * 60_000;
+/** YouTube's throttling of a burst of searches clears within about a minute, so its pause is short; a longer one outlasts it. */
+const PAUSE_MS = { spotify: 5 * 60_000, soundcloud: 5 * 60_000, youtube: 60_000 };
 const RESULT_CACHE_MS = 3 * 60_000;
 const PARTIAL_CACHE_MS = 30_000;
 const RESULT_CACHE_SIZE = 150;
@@ -50,7 +50,16 @@ function stateFor(fetchImpl) {
   return state;
 }
 
+/**
+ * A provider turning searches away for a while: an HTTP 429, or YouTube redirecting to its "unusual traffic" page
+ * (a redirect, which `providerResponse` doesn't follow). Asking again at once only prolongs it.
+ */
+function throttled(error) {
+  return error?.throttled === true || error?.status === 429 || (error instanceof TypeError && /redirect/i.test(String(error.cause?.message ?? error.cause ?? "")));
+}
+
 function temporaryFailure(error) {
+  if (throttled(error) || error?.retry === false) return false;
   if (error?.name === "TimeoutError" || error instanceof TypeError) return true;
   return error?.status === 429 || error?.status >= 500;
 }
@@ -64,25 +73,29 @@ function wait(ms, signal) {
   });
 }
 
-async function guardedSearch(provider, search, query, signal, fetchImpl) {
+async function guardedSearch(provider, search, query, signal, fetchImpl, urgent = false) {
   const { health } = stateFor(fetchImpl);
   const state = health.get(provider) ?? { failures: 0, pausedUntil: 0 };
   health.set(provider, state);
-  if (state.pausedUntil > Date.now()) throw searchError("SEARCH_PROVIDER_PAUSED", `${provider} search is paused after repeated failures.`);
+  // Someone clicked to play: the provider is asked anyway, since its throttling often clears before the pause does.
+  if (!urgent && state.pausedUntil > Date.now()) throw searchError("SEARCH_PROVIDER_PAUSED", `${provider} search is paused after repeated failures.`);
   for (let attempt = 0; ; attempt++) {
     try {
       const result = await search(query, AbortSignal.any([signal, AbortSignal.timeout(PROVIDER_DEADLINE_MS[provider])]), fetchImpl);
       state.failures = 0;
+      state.pausedUntil = 0;
       return result;
     } catch (error) {
       if (signal.aborted) throw error;
+      console.warn(`[slopify] ${provider} search for "${query.slice(0, 80)}" failed (attempt ${attempt + 1}): ${error?.code || error?.name || "error"}${error?.status ? ` HTTP ${error.status}` : ""} ${error?.message || ""}${error?.cause ? ` (cause: ${error.cause.code || error.cause.message || error.cause})` : ""}`);
       if (attempt === 0 && temporaryFailure(error)) {
         await wait(300 + Math.random() * 500, signal);
         continue;
       }
-      if (++state.failures >= PAUSE_AFTER_FAILURES) {
+      // Throttled: paused straight away, so the searches queued behind this one don't each run into it too.
+      if (throttled(error) || ++state.failures >= PAUSE_AFTER_FAILURES) {
         state.failures = 0;
-        state.pausedUntil = Date.now() + PAUSE_MS;
+        state.pausedUntil = Date.now() + PAUSE_MS[provider];
       }
       // A provider's own deadline isn't the caller giving up.
       if (error?.name === "TimeoutError" || error?.name === "AbortError") throw searchError("SEARCH_PROVIDER_TIMEOUT", `${provider} search took too long.`);
@@ -235,33 +248,41 @@ async function soundCloudPage(query, clientID, offset, signal, fetchImpl) {
   return { items, more };
 }
 
+/*
+ * YouTube search is the web results page only. YouTube Music's search page no longer carries its results in
+ * the page (they load afterwards), so fetching it found nothing and only doubled the requests that get this
+ * computer's searches throttled.
+ */
 async function searchYouTube(query, signal, fetchImpl) {
-  const musicURL = new URL("https://music.youtube.com/search");
-  musicURL.searchParams.set("q", query);
   const webURL = new URL("https://www.youtube.com/results");
   webURL.searchParams.set("search_query", query);
   webURL.searchParams.set("sp", "EgIQAQ%3D%3D");
-  const hosts = new Set(["music.youtube.com", "www.youtube.com", "m.youtube.com", "youtube.com"]);
-  const settled = await Promise.allSettled([musicURL, webURL].map(async (url) => {
-    const response = await providerResponse(url, signal, fetchImpl, hosts, "text/html,application/xhtml+xml");
-    return (await boundedBody(response)).toString("utf8");
-  }));
+  const hosts = new Set(["www.youtube.com", "m.youtube.com", "youtube.com"]);
+  const response = await providerResponse(webURL, signal, fetchImpl, hosts, "text/html,application/xhtml+xml");
+  const webHTML = (await boundedBody(response)).toString("utf8");
   signal.throwIfAborted();
-  // Both YouTube pages failing is YouTube failing (so it's retried, reported and paused), not "no results".
-  if (settled.every((result) => result.status === "rejected")) throw settled[0].reason;
+  const webData = extractYouTubeInitialData(webHTML);
+  // A page without search data (throttled into something else) is YouTube not answering: a failure, so it's
+  // retried and paused, not "no results".
+  // Throttled: paused straight away, not asked again at once.
+  if (!webData) throw Object.assign(searchError("SEARCH_PROVIDER_FAILED", "YouTube didn't return a search results page."), { status: 502, throttled: true });
   const unique = new Map();
-  const musicHTML = settled[0].status === "fulfilled" ? settled[0].value : null;
-  const webHTML = settled[1].status === "fulfilled" ? settled[1].value : null;
-  const web = webHTML ? parseYouTubeSearchData(extractYouTubeInitialData(webHTML)) : { candidates: [], continuation: null };
-  const configuration = webHTML ? youtubeSearchConfiguration(webHTML) : null;
-  for (const candidate of [
-    ...(musicHTML ? parseYouTubeMusicSearch(musicHTML) : []),
-    ...web.candidates,
-  ]) {
+  const web = parseYouTubeSearchData(webData);
+  if (!web.candidates.length) {
+    // YouTube's own "No results found" page (its empty-search icon) is an answer: nothing matches these words.
+    if (webHTML.includes('"iconType":"EMPTY_SEARCH"')) return { items: [], more: null, empty: true };
+    // Any other page without videos is what its throttling sometimes looks like, so it's a failure (tried again
+    // later), not proof the song isn't there.
+    // Not asked again at once (if it is throttling, that only prolongs it), but not paused straight away either: a
+    // real search can come back empty without YouTube's marker, so it pauses only after three in a row.
+    throw Object.assign(searchError("SEARCH_PROVIDER_FAILED", "YouTube returned an empty results page."), { status: 502, retry: false });
+  }
+  const configuration = youtubeSearchConfiguration(webHTML);
+  for (const candidate of web.candidates) {
     const existing = unique.get(candidate.videoID);
-    if (!existing || candidate.sourceProvider === "youtube_music") unique.set(candidate.videoID, candidate);
+    if (!existing) unique.set(candidate.videoID, candidate);
     else {
-      // YouTube Music's copy is kept, but only the web result has the channel avatar and the video's own thumbnail.
+      // Only the web result has the channel avatar and the video's own thumbnail.
       if (candidate.creatorAvatarURL && !existing.creatorAvatarURL) existing.creatorAvatarURL = candidate.creatorAvatarURL;
       if (candidate.videoThumbnailURL) existing.videoThumbnailURL = candidate.videoThumbnailURL;
     }
@@ -316,11 +337,13 @@ async function searchAllPlatforms(value, signal, fetchImpl = fetch, options = {}
   const cached = results.get(cacheKey);
   // A cached answer whose next page has since been dropped is searched again, so scrolling still works.
   const pageKept = (answer) => !answer.more || stateFor(fetchImpl).pages.has(answer.more);
-  if (cached && cached.until > Date.now() && pageKept(cached.value)) return structuredClone(cached.value);
+  // An urgent search (someone clicked to play) skips a cached answer, which may be one a provider left out.
+  const urgent = options?.urgent === true;
+  if (!urgent && cached && cached.until > Date.now() && pageKept(cached.value)) return structuredClone(cached.value);
   const settled = await Promise.allSettled([
-    guardedSearch("spotify", searchSpotify, query, signal, fetchImpl),
-    guardedSearch("soundcloud", searchSoundCloud, query, signal, fetchImpl),
-    guardedSearch("youtube", searchYouTube, query, signal, fetchImpl),
+    guardedSearch("spotify", searchSpotify, query, signal, fetchImpl, urgent),
+    guardedSearch("soundcloud", searchSoundCloud, query, signal, fetchImpl, urgent),
+    guardedSearch("youtube", searchYouTube, query, signal, fetchImpl, urgent),
   ]);
   signal.throwIfAborted();
   const rejectedAbort = settled.find((value) => value.status === "rejected" && value.reason?.name === "AbortError");
@@ -329,18 +352,31 @@ async function searchAllPlatforms(value, signal, fetchImpl = fetch, options = {}
   const soundCloud = settled[1].status === "fulfilled" ? settled[1].value : { items: [], more: null };
   const youtubeFound = settled[2].status === "fulfilled" ? settled[2].value : { items: [], more: null };
   const candidates = buildCandidates(query, mediaKind, spotifyTracks, soundCloud.items.slice(0, MAX_RESULTS_PER_PROVIDER), youtubeFound.items.slice(0, MAX_RESULTS_PER_PROVIDER), youtubeFound.items.slice(0, 12));
-  if (!candidates.length) throw searchError("NO_SEARCH_RESULTS", "Spotify, SoundCloud, and YouTube returned no previewable results for that search.");
   const unavailableProviders = SEARCH_PROVIDERS.filter((provider, index) => settled[index].status === "rejected");
+  // YouTube said it has nothing at all for these words. Believable for typed words, but not for a known song's
+  // artist and title, so callers looking for a song treat it with suspicion.
+  const emptyProviders = youtubeFound.empty ? ["youtube"] : [];
+  if (!candidates.length) {
+    // Nothing found while a source with audio didn't answer is a failed search, not proof the song isn't there.
+    const silent = unavailableProviders.filter((provider) => provider !== "spotify");
+    if (silent.length) {
+      const names = silent.map((provider) => ({ soundcloud: "SoundCloud", youtube: "YouTube" })[provider]).join(" and ");
+      throw Object.assign(searchError("SEARCH_PROVIDER_FAILED", `${names} search isn't responding right now.`), { status: 502 });
+    }
+    // Saying which provider found nothing, so a caller looking for a known song can doubt it. Not cached.
+    if (emptyProviders.length) return structuredClone(searchAnswer(query, mediaKind, [], unavailableProviders, null, emptyProviders));
+    throw searchError("NO_SEARCH_RESULTS", "Spotify, SoundCloud, and YouTube returned no previewable results for that search.");
+  }
   const more = savePage(fetchImpl, {
     query,
     mediaKind,
     soundcloud: { left: soundCloud.items.slice(MAX_RESULTS_PER_PROVIDER), more: soundCloud.more },
     youtube: { left: youtubeFound.items.slice(MAX_RESULTS_PER_PROVIDER), more: youtubeFound.more },
   });
-  const answer = searchAnswer(query, mediaKind, candidates, unavailableProviders, more);
+  const answer = searchAnswer(query, mediaKind, candidates, unavailableProviders, more, emptyProviders);
   // An answer missing a provider is kept only briefly, so that provider is asked again soon.
   results.delete(cacheKey);
-  results.set(cacheKey, { value: answer, until: Date.now() + (unavailableProviders.length ? PARTIAL_CACHE_MS : RESULT_CACHE_MS) });
+  results.set(cacheKey, { value: answer, until: Date.now() + (unavailableProviders.length || emptyProviders.length ? PARTIAL_CACHE_MS : RESULT_CACHE_MS) });
   while (results.size > RESULT_CACHE_SIZE) results.delete(results.keys().next().value);
   return structuredClone(answer);
 }
@@ -440,7 +476,7 @@ function buildCandidates(query, mediaKind, spotifyTracks, soundCloudTracks, yout
   return [...relevance.keys()].sort((left, right) => relevance.get(right) - relevance.get(left));
 }
 
-function searchAnswer(query, mediaKind, candidates, unavailableProviders, more) {
+function searchAnswer(query, mediaKind, candidates, unavailableProviders, more, emptyProviders = []) {
   const count = (provider) => candidates.filter((c) => c.searchProvider === provider).length;
   return {
     kind: "search_results",
@@ -448,6 +484,7 @@ function searchAnswer(query, mediaKind, candidates, unavailableProviders, more) 
     query,
     providerCounts: { spotify: count("spotify"), soundcloud: count("soundcloud"), youtube: count("youtube") },
     unavailableProviders,
+    ...(emptyProviders.length ? { emptyProviders } : {}),
     more,
     track: {
       provider: "search",
