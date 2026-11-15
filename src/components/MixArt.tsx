@@ -6,8 +6,6 @@ import { navigate } from "../state/actions";
 import { Art } from "./Artwork";
 import { Card } from "./Shelf";
 
-const KIND = { weekly: "Weekly", daily: "Daily", repeat: "On repeat" } as const;
-
 /** The covers and artist names of a mix's songs (library songs first, then its new finds), each once. */
 export function useMixFaces(mix: Mix) {
   const tracks = useStore((s) => s.tracks);
@@ -48,7 +46,7 @@ export function featuring(names: string[], max = 3) {
 
 /**
  * A mix's cover, made from its own music: four of its songs' covers (or one, if it has fewer),
- * with a band in the mix's colour carrying its name, as Spotify's Daily Mix covers do.
+ * with a frosted band (a blur of the covers behind it) carrying its name.
  * `bare` leaves the name off (where the name is set beside the cover).
  */
 /** Covers that failed to load this session, so no collage shows a broken image (some sources expire). */
@@ -65,7 +63,7 @@ export function MixArt({ mix, bare, className }: { mix: Mix; bare?: boolean; cla
   const palette = paletteFromSeed(mixSeed(mix));
   const glyph = mix.kind === "weekly" ? 5 : 2;
   return (
-    <div className={`mix-cover${className ? ` ${className}` : ""}`} style={{ "--band": palette.b, "--band-2": palette.c } as CSSProperties}>
+    <div className={`mix-cover${className ? ` ${className}` : ""}`} style={{ "--band-2": palette.c } as CSSProperties}>
       {images.length >= 4 ? (
         <div className="mix-collage" aria-hidden="true">
           {images.map((src) => <img key={src} src={src} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => fail(src)} />)}
@@ -75,7 +73,6 @@ export function MixArt({ mix, bare, className }: { mix: Mix; bare?: boolean; cla
       )}
       {bare ? null : (
         <span className="mix-band">
-          <span className="mix-tag">{KIND[mix.kind]}</span>
           <span className="mix-label">{mix.name}</span>
         </span>
       )}
