@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import { hashString, likedPlaylist, paletteFromSeed } from "../data/library";
 import type { HeaderInfo } from "../components/Hero";
 import type { Album, Artist, ClipRange, Playlist, Track } from "../data/types";
@@ -76,7 +76,7 @@ export interface MenuState {
   x: number;
   y: number;
   title?: string;
-  subtitle?: string;
+  subtitle?: ReactNode;
   art?: MenuArt;
   items: MenuItem[];
 }
