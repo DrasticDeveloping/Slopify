@@ -8,6 +8,8 @@ const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:n
 
 interface ShellProps {
   title: string;
+  /** A short label above the title. */
+  eyebrow?: ReactNode;
   subtitle?: ReactNode;
   children: ReactNode;
   size?: "sm" | "md" | "lg" | "xl";
@@ -24,7 +26,7 @@ interface ShellProps {
   layer?: "modal" | "confirm";
 }
 
-export function Shell({ title, subtitle, children, size = "md", footer, icon, art, tint, className, onClose = closeModal, layer = "modal" }: ShellProps) {
+export function Shell({ title, eyebrow, subtitle, children, size = "md", footer, icon, art, tint, className, onClose = closeModal, layer = "modal" }: ShellProps) {
   const closing = useContext(ClosingContext);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -78,6 +80,7 @@ export function Shell({ title, subtitle, children, size = "md", footer, icon, ar
         <header className="modal-head">
           {art ? <span className="modal-art">{art}</span> : icon ? <span className="modal-icon"><Icon name={icon} size={22} /></span> : null}
           <div>
+            {eyebrow ? <div className="modal-eyebrow">{eyebrow}</div> : null}
             <h2>{title}</h2>
             {subtitle ? <p className="muted small">{subtitle}</p> : null}
           </div>

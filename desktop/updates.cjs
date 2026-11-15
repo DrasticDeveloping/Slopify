@@ -1,6 +1,7 @@
-const { app, ipcMain, shell } = require("electron");
+const { app, ipcMain, net, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
+const { loadChangelog } = require("./changelog.cjs");
 
 /*
  * Updates for the desktop app, with two channels like T3 Code's nightly builds:
@@ -19,6 +20,8 @@ const path = require("node:path");
 const CHECK_EVERY = 10 * 60_000;
 /** How long the "Installing" banner shows before the app closes to install. */
 const INSTALL_NOTICE = 1500;
+/** How long after a failed request for an update's changes it's asked for again. */
+const CHANGELOG_RETRY = 30 * 60_000;
 /** An install that hasn't closed the app by then has failed. */
 const INSTALL_TIMEOUT = 30_000;
 const settingsFile = () => path.join(app.getPath("userData"), "updates.json");
@@ -65,6 +68,11 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
     status: feed ? "idle" : "unsupported",
     portable,
     available: null,
+    /** When the update was built (ISO), and its release page. */
+    releaseDate: null,
+    releaseUrl: null,
+    /** What's new since the installed version (desktop/changelog.cjs), or null if it couldn't be listed. */
+    changelog: null,
     progress: 0,
     error: null,
     checkedAt: null,
@@ -102,6 +110,8 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
   let downloadingFor = null;
   /** The check under way is the one made at startup, so what it finds installs as soon as it's downloaded. */
   let installWhenReady = false;
+  /** Each update's latest request for its changes, by version (see fetchChangelog). */
+  const changelogAsks = new Map();
 
   const useChannel = (channel) => {
     // "nightly" reads nightly.yml from the newest release (a nightly or a stable one),
@@ -125,7 +135,16 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
     // Found for the channel chosen before a switch: ignored, and checked again for the new one.
     if (stale()) return;
     downloadingFor = state.channel;
-    send({ status: portable ? "available" : "downloading", available: info.version, progress: 0, checkedAt: Date.now() });
+    // Already listed for this update (found again, or again after a channel switch): reused.
+    const asked = changelogAsks.get(info.version);
+    const known = asked?.done ? asked.result : null;
+    send({
+      status: portable ? "available" : "downloading", available: info.version, progress: 0, checkedAt: Date.now(),
+      releaseDate: info.releaseDate || null,
+      releaseUrl: testFeed ? null : `https://github.com/${feed.owner}/${feed.repo}/releases/tag/v${info.version}`,
+      changelog: known,
+    });
+    fetchChangelog(info.version);
     if (!portable) autoUpdater.downloadUpdate().catch(() => undefined); // Failures arrive as "error".
   });
   autoUpdater.on("download-progress", (p) => send({ status: "downloading", progress: Math.round(p.percent) }));
@@ -170,6 +189,28 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
     install();
     // Still running a while later: the install never started, so it's offered again.
     setTimeout(() => { if (state.status === "installing") offer(); }, INSTALL_TIMEOUT).unref?.();
+  }
+
+  /**
+   * Lists what's new in `version` (desktop/changelog.cjs). One GitHub request per update:
+   * a check that finds it again while that's under way, or after it worked, asks nothing;
+   * after a failure it's asked again only once CHANGELOG_RETRY has passed.
+   */
+  function fetchChangelog(version) {
+    if (testFeed) return;
+    const last = changelogAsks.get(version);
+    if (last && (last.pending || last.done || Date.now() - last.at < CHANGELOG_RETRY)) return;
+    const ask = { at: Date.now(), pending: true, done: false, result: null };
+    changelogAsks.set(version, ask);
+    loadChangelog({ owner: feed.owner, repo: feed.repo, current: app.getVersion(), target: version, fetch: (url, init) => net.fetch(url, init) })
+      .then((changelog) => {
+        ask.done = true;
+        ask.result = changelog;
+        // Only the latest request speaks, and only while its update is still the one offered.
+        if (changelogAsks.get(version) === ask && state.available === version) send({ changelog });
+      })
+      .catch((error) => log(`[updates] couldn't list the changes in ${version}: ${error?.message || error}\n`))
+      .finally(() => { ask.pending = false; });
   }
 
   function check(reason) {

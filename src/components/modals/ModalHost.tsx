@@ -4,6 +4,7 @@ import { ClipEditorModal } from "./ClipEditor";
 import { SettingsModal } from "./SettingsModal";
 import { ClosingContext } from "./Shell";
 import { ShareModal } from "./ShareModal";
+import { WhatsNewModal } from "./WhatsNew";
 import { AddSongsModal, ListenAlongModal, PlaylistFormModal } from "./SimpleModals";
 
 function render(modal: Modal) {
@@ -22,6 +23,8 @@ function render(modal: Modal) {
       return <ClipEditorModal trackId={modal.trackId} />;
     case "sharePlaylist":
       return <ShareModal id={modal.id} />;
+    case "whatsNew":
+      return <WhatsNewModal />;
   }
 }
 
