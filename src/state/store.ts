@@ -35,7 +35,9 @@ export type Modal =
   | { type: "settings"; tab?: SettingsTab }
   | { type: "listenAlong" }
   | { type: "clipEditor"; trackId?: string }
-  | { type: "sharePlaylist"; id: string };
+  | { type: "sharePlaylist"; id: string }
+  /** The desktop app's waiting update: what's changed in it (UpdateBanner.tsx). */
+  | { type: "whatsNew" };
 
 export interface RoomMember { userId: string; name: string; avatarUrl: string | null; host: boolean }
 

@@ -20,9 +20,35 @@ export interface DesktopUpdates {
   portable: boolean;
   /** The newer version found, if any. */
   available: string | null;
+  /** When that version was built (ISO), and its release page on GitHub. */
+  releaseDate: string | null;
+  releaseUrl: string | null;
+  /** What's new since the installed version (desktop/changelog.cjs); null while unknown or if it couldn't be listed. */
+  changelog: Changelog | null;
   progress: number;
   error: string | null;
   checkedAt: number | null;
+}
+
+export interface ChangelogBuild {
+  version: string;
+  /** When it was published (ISO). */
+  date: string;
+  nightly: boolean;
+  changes: { text: string; pr: number | null }[];
+  /** Changes its notes only counted. */
+  more: number;
+}
+
+/** The changes between the installed version and an update, newest build first. */
+export interface Changelog {
+  builds: ChangelogBuild[];
+  total: number;
+  /** False when some builds in between couldn't be listed. */
+  complete: boolean;
+  repoUrl: string;
+  /** The full comparison on GitHub, or the update's release page. */
+  url: string;
 }
 
 /** Desktop-only behaviour (desktop/background.cjs). */

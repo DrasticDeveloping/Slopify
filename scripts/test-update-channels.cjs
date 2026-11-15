@@ -77,6 +77,7 @@ test("Stored beta migrates to Nightly; switching to Stable allows downgrade", as
     if (name === "node:fs") return { readFileSync: file => file.endsWith("updates.json") ? '{"channel":"beta"}' : 'provider: github\nowner: test\nrepo: releases', writeFileSync: (_file, text) => { saved = JSON.parse(text); } };
     if (name === "electron-updater") return { autoUpdater: updater };
     if (name === "./nightly-provider.cjs") return { NightlyGitHubProvider };
+    if (name === "./changelog.cjs") return require("../desktop/changelog.cjs");
     return require(name);
   } };
   vm.runInNewContext(fs.readFileSync(require.resolve("../desktop/updates.cjs"), "utf8"), sandbox);

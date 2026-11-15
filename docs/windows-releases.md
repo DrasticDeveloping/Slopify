@@ -94,6 +94,8 @@ Build an older and a newer version with any `updateRepo` set (for example `SLOPI
 
 Each release's notes list the commits since the previous release on the same channel (the last Nightly for a Nightly, the last Stable for a Stable), newest first, with their pull request numbers and a full-changelog link. Merge commits are left out. If GitHub can't supply the list, the release is published without it.
 
+The app's update notification reads these lists. **What's new** (desktop/changelog.cjs) shows every change between the installed version and the update, newest build first, with the builds grouped. It uses one request to GitHub's releases API when an update is found. A nightly update lists nightlies only and a stable update lists stable releases only, because each kind's notes only cover changes since the last release of that kind. When the notes have no list, or GitHub can't be reached, the notification links to the release page instead.
+
 The workflow needs the work committed and pushed. Manual runs default to publishing disabled and retain a downloadable `slopify-windows-nightly` or `slopify-windows-stable` artifact for 14 days. GitHub-hosted Actions runners are free for this public repository.
 
 Nightlies are off until you switch them on, so nothing is published on a schedule before you're ready. To switch them on, set the repository variable (**Settings → Secrets and variables → Actions → Variables**, or the command below); to pause them, set it to anything else or delete it:
