@@ -640,8 +640,10 @@ export function streamSong(id: string): StreamSong | null {
     key: source.key,
     candidate: source.candidate,
     kind: source.kind,
-    title: t.title,
-    artist: s.artists[t.artistId]?.name ?? source.candidate.artist ?? "Unknown artist",
+    // As it was registered, not as shown: registering credits an upload's title ("Artist - Song" -> "Song"), and
+    // crediting a shown title again would take more off it in another session or on another device.
+    title: source.title || t.title,
+    artist: source.artist || (s.artists[t.artistId]?.name ?? source.candidate.artist ?? "Unknown artist"),
     artwork: s.albums[t.albumId]?.artworkUrl,
     video: source.saveVideo ? true : source.video ? undefined : false,
   };
