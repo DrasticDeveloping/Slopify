@@ -35,7 +35,7 @@ const VERSION_WORDS =
  * Uploads that are never the song itself, only made from it (mashups, fan mixes, rhythm-game charts and the games'
  * own versions): rejected unless the song's own title says the same.
  */
-const NOT_THE_SONG = /\b(mash(?:up|ed)|medley|mario paint|8.?bit|chiptune|music box|parody|beat ?saber|osu|fnf|fan.?made|fan ?mix|heaven studio|rhythm heaven|project ?sekai|taiko no tatsujin|maimai|chunithm|cover(?:ed)?|karaoke|off ?(?:main ?)?vocal|instrumental|\d{3} ?hz|live|remix(?:ed)?|bootleg|nightcore|slowed|sped up|reverb|piano|open ?taiko|taiko|beatblock|person collab|nightcord|n25|sekai size|sekai ver|tv size|anime size|(?<!(?:full|original|album|フル) ?)ver(?:sion)?|more more jump|vivid bad squad|leo ?\/ ?need|wonderlands|(?<!original )mix)\b|プロセカ|太鼓の達人|カラオケ|オフボーカル|歌ってみた|弾いてみた|叩いてみた|耳コピ|ピアノ|譜面|ビートセイバー|合唱|25時、ナイトコードで|ニーゴ|カバー|マッシュアップ|メドレー|アレンジ/i;
+const NOT_THE_SONG = /\b(mash(?:up|ed)|medley|mario paint|8.?bit|chiptune|music box|parody|beat ?saber|osu|fnf|fan.?made|fan ?mix|heaven studio|rhythm heaven|project ?sekai|taiko no tatsujin|maimai|chunithm|cover(?:ed)?|karaoke|no ?guide ?melody|(?:left|right) ear|bit ?rape|ear ?rape|low ?bit|8d(?: ?audio)?|backing ?track|drumless|bass ?boost(?:ed)?|off ?(?:main ?)?vocal|instrumental|\d{3} ?hz|live|remix(?:ed)?|bootleg|nightcore|slowed|sped up|reverb|piano|open ?taiko|taiko|beatblock|person collab|nightcord|n25|sekai size|sekai ver|tv size|anime size|(?<!(?:full|original|album|フル) ?)ver(?:sion)?|more more jump|vivid bad squad|leo ?\/ ?need|wonderlands|(?<!original )mix)\b|プロセカ|太鼓の達人|カラオケ|オフボーカル|歌ってみた|弾いてみた|叩いてみた|耳コピ|ピアノ|譜面|ビートセイバー|合唱|25時、ナイトコードで|ニーゴ|カバー|マッシュアップ|メドレー|アレンジ|ガイドメロディ|原曲歌手|[+＋-]\d ?key(?![a-z])/i;
 
 /*
  * Singing voices (Vocaloid, UTAU, Synthesizer V). A producer often releases one song sung by several of them; an
@@ -1849,18 +1849,155 @@ async function searchYouTubeAudioSources(track, signal, fetchImpl = fetch, optio
   if (!data) throw youtubeSearchRefused();
   const found = parseYouTubeSearchData(data).candidates;
   if (!found.length && !webHTML.includes('"iconType":"EMPTY_SEARCH"')) throw youtubeSearchRefused();
-  const unique = new Map();
-  for (const candidate of found) if (!unique.has(candidate.videoID)) unique.set(candidate.videoID, candidate);
-  const preliminary = [...unique.values()].map((candidate) => scoreUnderNames(track, candidate))
-    .filter(Boolean).sort((left, right) => right.score - left.score).slice(0, maximumResults);
-  if (!preliminary.length) {
-    const own = ownUploadByLength(track, [...unique.values()]);
-    return withNearLength(own ? [own] : [], track, [...unique.values()]);
-  }
+  const { ranked: preliminary, fallback } = rankedUploads(track, found, maximumResults);
+  if (!preliminary.length) return fallback;
   if (!shouldEnrich) return preliminary;
   const enriched = await Promise.all(preliminary.map((candidate) => enrichCandidate(track, candidate, signal, fetchImpl)));
   return enriched.map((candidate) => scoreUnderNames(track, candidate)).filter(Boolean)
     .sort((left, right) => right.score - left.score).slice(0, maximumResults);
+}
+
+/**
+ * A search's uploads for a song, best first (`ranked`: those the names agree on), or failing any, `fallback`: the
+ * artist's own upload of the same length (ownUploadByLength), if any, with the uploads of about the song's length.
+ */
+function rankedUploads(track, found, maximumResults) {
+  const unique = new Map();
+  for (const candidate of found) if (!unique.has(candidate.videoID)) unique.set(candidate.videoID, candidate);
+  const ranked = [...unique.values()].map((candidate) => scoreUnderNames(track, candidate))
+    .filter(Boolean).sort((left, right) => right.score - left.score).slice(0, maximumResults);
+  if (ranked.length) return { ranked, fallback: null };
+  const own = ownUploadByLength(track, [...unique.values()]);
+  return { ranked, fallback: withNearLength(own ? [own] : [], track, [...unique.values()]) };
+}
+
+/*
+ * YouTube Music's song search, through the API its own pages use (its search page carries no results). Its songs
+ * are the releases themselves (the labels' and distributors' "Topic" uploads, with the exact length), so most songs
+ * of a Spotify playlist are settled by it at once. It also answers far quicker than YouTube's results page lets this
+ * computer search (60 searches back to back went through, measured Nov 2026), so it's asked first and the results
+ * page only for what it hasn't got. The client version and visitor id its API wants are read from its home page
+ * once in a while.
+ */
+const YOUTUBE_MUSIC_ORIGIN = "https://music.youtube.com";
+/** Its search's "Songs" and "Videos" filters. */
+const YOUTUBE_MUSIC_SONGS = "EgWKAQIIAWoMEA4QChADEAQQCRAF";
+const YOUTUBE_MUSIC_VIDEOS = "EgWKAQIQAWoMEA4QChADEAQQCRAF";
+/** Used when its home page can't be read. */
+const YOUTUBE_MUSIC_CLIENT_VERSION = "1.20261110.04.00";
+const YOUTUBE_MUSIC_CLIENT_FOR_MS = 6 * 3_600_000;
+let youtubeMusicClient = null;
+
+async function youtubeMusicConfiguration(signal, fetchImpl) {
+  if (youtubeMusicClient && Date.now() - youtubeMusicClient.at < YOUTUBE_MUSIC_CLIENT_FOR_MS) return youtubeMusicClient;
+  let html = null;
+  try {
+    html = await searchDocument(new URL("/", YOUTUBE_MUSIC_ORIGIN), signal, fetchImpl);
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+  }
+  const clientVersion = html ? youtubeConfigurationValue(html, "INNERTUBE_CLIENT_VERSION", 128) : null;
+  const visitorData = html ? youtubeConfigurationValue(html, "VISITOR_DATA", 2_048) : null;
+  // Kept for a while only when read: otherwise its home page is tried again at the next search.
+  const configuration = { clientVersion: clientVersion || YOUTUBE_MUSIC_CLIENT_VERSION, visitorData, at: Date.now() };
+  if (clientVersion) youtubeMusicClient = configuration;
+  return configuration;
+}
+
+/**
+ * The songs (or videos) in a YouTube Music search response (see musicCandidate), as YouTube uploads. A song's artist
+ * is the release's, whose own channel ("- Topic") it is on; a video's is the channel it's on.
+ */
+function parseYouTubeMusicSongs(data, { videos = false } = {}) {
+  const songs = [];
+  walk(data, (record) => {
+    const renderer = record.musicResponsiveListItemRenderer;
+    if (!isRecord(renderer)) return;
+    const candidate = musicCandidate(renderer);
+    // (A video's line has its view count where a song's has its album.)
+    if (candidate) songs.push({ ...candidate, ...(videos ? { album: null } : {}), channel: candidate.artist, sourceProvider: "youtube" });
+  });
+  return songs;
+}
+
+/**
+ * Whether a release's title is the song's own, as YouTube Music writes it: the whole of it, or one of its names
+ * ("神っぽいな - God-ish" is "God-ish"), credits and punctuation aside. A name that only contains the song's
+ * ("Thunderbolt Music" for "THUNDERBOLT") is another song.
+ */
+function sameTitle(track, candidate) {
+  const compact = (title) => normalizeMatchText(withoutCredit(title || ""));
+  const own = new Set(trackNames(track).map((n) => compact(n.title)).filter(Boolean));
+  const parts = [candidate.title, ...String(candidate.title || "").split(/\s+[-–—]\s+|／|\s\/\s/)];
+  return parts.some((part) => own.has(compact(part)));
+}
+
+/**
+ * A song's releases on YouTube Music, best first, scored as YouTube's uploads are (see searchYouTubeAudioSources).
+ * Throws a retryable error (`youtubeSearchRefused`) when YouTube Music doesn't answer, so the song is searched on
+ * YouTube instead rather than taken for missing.
+ */
+async function searchYouTubeMusicSongs(track, signal, fetchImpl = fetch, options = {}) {
+  // `videos`: its videos instead (music videos, and the uploads of producers who don't release on it).
+  const videos = Boolean(options.videos);
+  const maximumResults = Math.max(1, Math.min(MAX_RESULTS, Number(options.maxResults) || 3));
+  const configuration = await youtubeMusicConfiguration(signal, fetchImpl);
+  const query = `${track.artist || ""} ${track.title || ""}`.replace(/(^|\s)-+(?=\S)/g, "$1").replace(/\s+/g, " ").trim();
+  const endpoint = new URL("/youtubei/v1/search", YOUTUBE_MUSIC_ORIGIN);
+  endpoint.searchParams.set("prettyPrint", "false");
+  let response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": SEARCH_USER_AGENT,
+        Origin: YOUTUBE_MUSIC_ORIGIN,
+        "X-YouTube-Client-Name": "67",
+        "X-YouTube-Client-Version": configuration.clientVersion,
+        ...(configuration.visitorData ? { "X-Goog-Visitor-Id": configuration.visitorData } : {}),
+      },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: "WEB_REMIX",
+            clientVersion: configuration.clientVersion,
+            hl: "en",
+            gl: "US",
+            ...(configuration.visitorData ? { visitorData: configuration.visitorData } : {}),
+          },
+        },
+        query,
+        params: videos ? YOUTUBE_MUSIC_VIDEOS : YOUTUBE_MUSIC_SONGS,
+      }),
+      redirect: "manual",
+      signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    throw youtubeSearchRefused();
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    // A client version it no longer takes: its home page is read again next time.
+    if (response.status === 400) youtubeMusicClient = null;
+    throw youtubeSearchRefused();
+  }
+  let data;
+  try {
+    data = JSON.parse(await responseTextWithLimit(
+      response,
+      MAX_SEARCH_DOCUMENT_BYTES,
+      importError("searching_candidates", "SEARCH_RESPONSE_TOO_LARGE", "A provider search response was too large."),
+    ));
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    throw youtubeSearchRefused();
+  }
+  // An answer has search contents (without songs when none match); anything else is it not answering.
+  if (!isRecord(data?.contents)) throw youtubeSearchRefused();
+  const { ranked, fallback } = rankedUploads(track, parseYouTubeMusicSongs(data, { videos }), maximumResults);
+  return ranked.length ? ranked : fallback;
 }
 
 /** How far an upload's length may be from the song's for it to be listened to (a music video's intro, say). */
@@ -1922,6 +2059,9 @@ module.exports = {
   spotifyTrackIDsIn,
   scoreAudioSource,
   searchYouTubeAudioSources,
+  searchYouTubeMusicSongs,
+  parseYouTubeMusicSongs,
+  sameTitle,
   spotifyArtworkURL,
   spotifyPlaylistURL,
   youtubePlaylistID,

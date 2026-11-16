@@ -22,6 +22,10 @@ const {
   normalizeMatchText,
   scoreUnderNames,
   searchYouTubeAudioSources,
+  searchYouTubeMusicSongs,
+  sameTitle,
+  artistsOwnChannel,
+  trackNames,
   withoutCredit,
   youtubePlaylistID,
   youtubeVideoID,
@@ -445,6 +449,40 @@ function pause(ms, signal) {
   });
 }
 
+/*
+ * YouTube Music's song search (searchYouTubeMusicSongs) goes first, at its own pace: it answered 60 searches back to
+ * back without turning any away (Nov 2026), where YouTube's results page allows one every 2.5 seconds. A song it has
+ * (most of a Spotify playlist) needs no other search; the rest go on to SoundCloud's and YouTube's.
+ *
+ * Over a whole list (649 songs, Nov 2026) one search every 450 ms went through without a refusal; one every 380 ms
+ * had YouTube Music turning searches away after a few minutes, and YouTube's results page with it (its pauses more
+ * than doubled), so the list took twice as long. A refusal therefore also slows the pace for the rest of the list.
+ */
+const MUSIC_SEARCH_GAP_MS = 450;
+/** The slowest the pace gets after refusals (each one makes the gap half as long again). */
+const MUSIC_SEARCH_SLOWEST_GAP_MS = 1_500;
+/** Searches in flight at once (each still waits its turn): one answers in about 0.4 s, so one at a time can't keep the pace. */
+const MUSIC_SEARCHES_AT_ONCE = 2;
+/** How long YouTube Music rests after turning a search away (the first time, the second time in a row, and on). */
+const MUSIC_SEARCH_BACKOFF_MS = [10_000, 30_000, 60_000];
+/**
+ * Searches in a row YouTube Music turned away before it's left out for the rest of the list. Rests let the other
+ * searches take the songs meanwhile, and they're far slower, so it's kept asking through a few long ones.
+ */
+const MUSIC_SEARCH_GIVE_UP_AFTER = 6;
+/** A rest longer than this lets the other searches take songs YouTube Music hasn't reached. */
+const MUSIC_RESTING_MS = 2_000;
+/** How far a YouTube Music song's length may be from the Spotify song's for it to settle the song by itself. */
+const MUSIC_SETTLES_WITHIN_SECONDS = 6;
+let nextMusicSearchAt = 0;
+
+async function musicSearchTurn(signal, gap) {
+  const now = Date.now();
+  const at = Math.max(now, nextMusicSearchAt);
+  nextMusicSearchAt = at + gap;
+  await pause(at - now, signal);
+}
+
 /** SoundCloud searches' own pace: a separate service, so they don't wait on YouTube's. */
 const SOUNDCLOUD_SEARCH_GAP_MS = 1_200;
 const SOUNDCLOUD_SEARCH_BACKOFF_MS = [10_000, 30_000];
@@ -492,11 +530,14 @@ async function playlistSearchTurn(signal, gap) {
  * spelling of the artist can't rule a match out). Songs settled before it are looked at again: unsure ones listened
  * to again, not found ones (those ruled out by ear included) searched again, and ones confirmed by ear keep no
  * fallback that may have been heard and rejected; 5: matches by name are scored again under the whole-word title
- * rules, and those whose titles only half agree are listened to).
+ * rules, and those whose titles only half agree are listened to; 6: YouTube Music's songs are searched first, so
+ * songs not found or unconfirmed are searched again there).
  */
-const LISTEN_VERSION = 5;
-async function matchPlaylistRows(entries, { signal, onStage, search, searchSoundCloud, ownedSong, matchCache, preview, read, listen, pace = {} }) {
+const LISTEN_VERSION = 6;
+async function matchPlaylistRows(entries, { signal, onStage, search, searchMusic, searchSoundCloud, ownedSong, matchCache, preview, read, listen, pace = {} }) {
   const gap = pace.gapMs ?? PLAYLIST_SEARCH_GAP_MS;
+  const musicGap = pace.musicGapMs ?? MUSIC_SEARCH_GAP_MS;
+  const musicBackoff = pace.musicBackoffMs ?? MUSIC_SEARCH_BACKOFF_MS;
   const backoff = pace.backoffMs ?? PLAYLIST_SEARCH_BACKOFF_MS;
   const soundCloudGap = pace.soundCloudGapMs ?? SOUNDCLOUD_SEARCH_GAP_MS;
   const soundCloudBackoff = pace.soundCloudBackoffMs ?? SOUNDCLOUD_SEARCH_BACKOFF_MS;
@@ -699,6 +740,18 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
    * not searched on YouTube; YouTube looks first at songs SoundCloud has already been through without that. A
    * weaker SoundCloud match is used only if YouTube finds nothing.
    */
+  /*
+   * YouTube Music goes before both: a song it has a release of (named as the song, about as long) is settled there.
+   * The others go on to SoundCloud and YouTube, which wait for it to be through with a song before looking at it; a
+   * weaker release it found (another length, or only the artist's of the same length) is used if they find nothing.
+   */
+  const musicDone = new Set();
+  const musicFallback = new Map(); // at -> row
+  const musicNear = new Map(); // at -> uploads of about the song's length
+  let musicFinished = !searchMusic;
+  // (While YouTube Music rests after turning searches away, the others don't wait for it.)
+  const throughMusic = (at) => musicFinished || musicDone.has(at) || nextMusicSearchAt - Date.now() > MUSIC_RESTING_MS;
+  const musicPending = () => !musicFinished && todo.some((at) => !settled.has(at) && !musicDone.has(at));
   const soundCloudResult = new Map(); // at -> row or null, once SoundCloud has been asked
   const youTubeOutcome = new Map(); // at -> "none" | "failed", once YouTube found nothing
   /** at -> uploads of about the song's length the names couldn't settle (see withNearLength), to listen to. */
@@ -711,6 +764,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
     const fromSoundCloud = soundCloudResult.get(at);
     const nearby = nearLength.get(at) ?? [];
     if (fromSoundCloud) settle(at, fromSoundCloud);
+    else if (musicFallback.has(at)) settle(at, musicFallback.get(at));
     else if (youTubeOutcome.get(at) === "failed") settle(at, { ...base(track), unmatched: "search_failed" });
     // Its uploads of about its length go with it, to be listened to (see listenLane).
     else settle(at, { ...base(track), unmatched: "not_found", ...(nearby.length ? { nearby } : {}) });
@@ -771,7 +825,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
   };
 
   const youTubeLane = async () => {
-    const quickOpen = (at) => !settled.has(at) && !firstTried.has(at);
+    const quickOpen = (at) => !settled.has(at) && !firstTried.has(at) && throughMusic(at);
     const seen = (at) => quickOpen(at) && soundCloudResult.has(at);
     for (;;) {
       if (todo.some(quickOpen)) {
@@ -786,7 +840,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
         const found = refusedInARow < PLAYLIST_SEARCH_GIVE_UP_AFTER ? await searchYouTubeOnce(track, {}) : null;
         lastQuickAt = Date.now();
         if (settled.has(at)) continue;
-        const near = [];
+        const near = [...(musicNear.get(at) ?? [])];
         addNear(near, found);
         const row = found?.length ? matchedRow(track, found) : null;
         // A file of the user's own without an artist tag was searched under its title alone already.
@@ -820,8 +874,94 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
         youTubeSettles(at, row, near, !quick && !found);
         continue;
       }
+      // Songs YouTube Music hasn't been through yet may still come this way.
+      if (musicPending()) {
+        await pause(100, signal);
+        continue;
+      }
       if (await moreComing()) continue;
       return;
+    }
+  };
+
+  /*
+   * A few searches in flight at once, each at its turn (musicGap apart). A song YouTube Music turns away goes on to
+   * the other searches rather than being asked again; YouTube Music rests a while (meanwhile the others take the
+   * songs it hasn't reached: see throughMusic) and after a few refusals in a row is left out.
+   */
+  const musicLane = async () => {
+    if (!searchMusic) return;
+    let refused = 0;
+    let next = 0;
+    let gapNow = musicGap;
+    const worker = async () => {
+      for (;;) {
+        while (next >= todo.length) {
+          if (!(await moreComing())) return;
+        }
+        if (refused >= MUSIC_SEARCH_GIVE_UP_AFTER) return;
+        const at = todo[next++];
+        if (settled.has(at)) continue;
+        const track = rows[at].importMetadata;
+        try {
+          await musicFor(at, track);
+        } finally {
+          musicDone.add(at);
+        }
+      }
+    };
+    /** One YouTube Music search at its turn: what it found, or null if it didn't answer (or wasn't needed any more). */
+    const ask = async (at, track, options) => {
+      await musicSearchTurn(signal, gapNow);
+      if (refused >= MUSIC_SEARCH_GIVE_UP_AFTER || settled.has(at)) return null;
+      try {
+        const found = await searchMusic(track, signal, undefined, options);
+        refused = 0;
+        if (Array.isArray(found) && found.nearLength?.length) {
+          const near = musicNear.get(at) ?? [];
+          for (const upload of found.nearLength) if (!near.some((n) => n.sourceURL === upload.sourceURL)) near.push(upload);
+          musicNear.set(at, near);
+        }
+        return Array.isArray(found) && !settled.has(at) ? found : null;
+      } catch (error) {
+        if (error?.name === "AbortError" || signal?.aborted) throw error;
+        if (error?.retryable) {
+          refused += 1;
+          const rest = musicBackoff[Math.min(refused, musicBackoff.length) - 1] ?? 0;
+          nextMusicSearchAt = Math.max(nextMusicSearchAt, Date.now() + rest);
+          gapNow = Math.max(gapNow, Math.min(MUSIC_SEARCH_SLOWEST_GAP_MS, Math.round(gapNow * 1.5)));
+          // (In the app's log, so its pace can be judged: see MUSIC_SEARCH_GAP_MS.)
+          console.warn(`[slopify] YouTube Music turned a search away (${refused} in a row); resting ${Math.round(rest / 1000)} s, then one every ${gapNow} ms.`);
+        }
+        return null;
+      }
+    };
+    const near = (row) => {
+      const delta = row?.match?.durationDeltaSeconds;
+      return typeof delta !== "number" || delta <= MUSIC_SETTLES_WITHIN_SECONDS;
+    };
+    /**
+     * A song's releases first: one titled as the song (see sameTitle) and about as long settles it. Failing that, its
+     * videos: one on the artist's own channel, named as the song and about as long, settles it (others' uploads are
+     * left to SoundCloud's and YouTube's searches, which may have the artist's own). What else was found stands in
+     * if they find nothing.
+     */
+    const musicFor = async (at, track) => {
+      const songs = await ask(at, track, {});
+      if (!songs) return;
+      const release = matchedRow(track, songs.filter((c) => !c.match?.byArtistAndLength && sameTitle(track, c)));
+      if (release && near(release)) return settle(at, release);
+      const videos = await ask(at, track, { videos: true });
+      const own = videos && matchedRow(track, videos.filter((c) => !c.match?.byArtistAndLength
+        && trackNames(track).some((n) => artistsOwnChannel(n.artist, c.channel ?? c.artist))));
+      if (own && near(own)) return settle(at, own);
+      const standIn = (songs.length && matchedRow(track, songs)) || (videos?.length && matchedRow(track, videos)) || null;
+      if (standIn) musicFallback.set(at, standIn);
+    };
+    try {
+      await Promise.all(Array.from({ length: MUSIC_SEARCHES_AT_ONCE }, worker));
+    } finally {
+      musicFinished = true;
     }
   };
 
@@ -833,6 +973,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
           if (!(await moreComing())) return;
         }
         const at = todo[next];
+        while (!settled.has(at) && !throughMusic(at)) await pause(50, signal);
         if (settled.has(at)) continue;
         const track = rows[at].importMetadata;
         let result = null;
@@ -934,7 +1075,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
   const heartbeat = setInterval(() => onStage(status()), 30_000);
   try {
     await Promise.all([
-      Promise.all([readerTask(), youTubeLane(), soundCloudLane()]).finally(() => { searching = false; }),
+      Promise.all([readerTask(), musicLane(), youTubeLane(), soundCloudLane()]).finally(() => { searching = false; }),
       listenLane(),
     ]);
   } finally {
@@ -1114,6 +1255,10 @@ async function resolveLocalImportSource(source, signal, onStage = () => {}, adap
       signal,
       onStage,
       search: candidateSearch,
+      // Searched before YouTube's results page; an adapter of null leaves YouTube Music out (as does a stand-in for
+      // YouTube's search without one for it, so a test's searches stay its own).
+      searchMusic: adapters.searchYouTubeMusicSongs !== undefined ? adapters.searchYouTubeMusicSongs
+        : adapters.searchYouTubeAudioSources ? null : searchYouTubeMusicSongs,
       // Searched alongside YouTube; an adapter of null leaves SoundCloud out.
       searchSoundCloud: adapters.searchSoundCloudAudioSources === undefined ? searchSoundCloudAudioSources : adapters.searchSoundCloudAudioSources,
       ownedSong: options.ownedSong,
