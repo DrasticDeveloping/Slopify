@@ -88,6 +88,8 @@ export function WhatsNewModal() {
                     {change.pr ? <a href={`${log.repoUrl}/pull/${change.pr}`} target="_blank" rel="noreferrer" aria-label={`Pull request ${change.pr}`}>#{change.pr}</a> : null}
                   </li>
                 ))}
+                {/* Every change in it was reverted. */}
+                {!build.changes.length && !build.more ? <li className="wn-none"><span>Nothing new to list</span></li> : null}
                 {build.more ? (
                   <li className="wn-more">
                     <a href={log.url} target="_blank" rel="noreferrer">…and {plural(build.more, "more change")} on GitHub</a>
