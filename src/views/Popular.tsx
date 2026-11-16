@@ -134,9 +134,8 @@ function PopularPage({ artist }: { artist: Artist }) {
         play={{ ids, label, route }}
         meta={
           <>
-            <button type="button" className="link strong" onClick={() => navigate({ name: "artist", id: artist.id })}>Artist page</button>
-            {songs.length ? <span>{plural(songs.length, "song")}, most popular first</span> : null}
-            {fans ? <span>{formatCount(fans)} fans on Deezer</span> : null}
+            {songs.length ? <span>{plural(songs.length, "song")}</span> : null}
+            {fans ? <span>{formatCount(fans)} fans</span> : null}
           </>
         }
       />
