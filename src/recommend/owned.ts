@@ -12,8 +12,7 @@ import type { Candidate } from "../state/importer";
  *    "New Rules (feat. X) [Remastered 2020]" by "Dua Lipa & X"
  *    are all Dua Lipa's "New Rules".
  * Live versions, remixes, acoustic takes and other versions stay distinct songs.
- * Search results are not filtered; this is for recommendations, and for a playlist import (its songs already
- * saved are listed apart and not saved again).
+ * Search results are not filtered; this is only for recommendations.
  */
 
 /** Bracketed tags that describe an upload rather than the song. */

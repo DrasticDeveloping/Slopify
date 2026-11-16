@@ -1,10 +1,6 @@
 const { readResponseBytes } = require("./response-body.cjs");
 const { createHash } = require("node:crypto");
 const fs = require("node:fs/promises");
-const { constants: fsConstants } = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
-const { spawn } = require("node:child_process");
 const { LocalImportError } = require("./local-import-core.cjs");
 
 const SOUNDCLOUD_SOURCE_HOSTS = new Set([
@@ -231,33 +227,6 @@ function progressiveTranscoding(record) {
     safeAPIURL(value.url)) || null;
 }
 
-/**
- * The full song as HLS (AAC in MP4 segments), which is all SoundCloud offers for many tracks now. Joined into one
- * file by ffmpeg (see materializeHLS), so only usable where ffmpeg is. Never a preview cut ("snipped").
- */
-function hlsTranscoding(record) {
-  if (!hasFFmpeg()) return null;
-  const values = Array.isArray(record?.media?.transcodings) ? record.media.transcodings : [];
-  const usable = values.filter((value) =>
-    value && value.snipped !== true && value.format?.protocol === "hls" && typeof value.format?.mime_type === "string" &&
-    safeAPIURL(value.url));
-  // The best AAC first; the "abr" (adaptive) playlist and MP3 segments are left out, as ffmpeg can't copy those as one AAC stream.
-  const aac = usable.filter((value) => /^audio\/mp4/i.test(value.format.mime_type))
-    .sort((left, right) => (Number(/(\d+)k/.exec(right.preset || "")?.[1]) || 0) - (Number(/(\d+)k/.exec(left.preset || "")?.[1]) || 0));
-  return aac[0] || null;
-}
-
-function ffmpegExecutable() {
-  try {
-    const executable = require("ffmpeg-static");
-    return typeof executable === "string" && executable ? executable.replace(/app\.asar([\\/])/i, "app.asar.unpacked$1") : null;
-  } catch {
-    return null;
-  }
-}
-
-const hasFFmpeg = () => Boolean(ffmpegExecutable());
-
 function parseSoundCloudTrack(record, position = null) {
   if (!record || record.kind !== "track") return null;
   const id = safeInteger(record.id);
@@ -270,7 +239,7 @@ function parseSoundCloudTrack(record, position = null) {
     || cleanText(record.publisher_metadata?.release_title)
     || cleanText(record.label_name);
   const directlyImportable = record.streamable !== false && record.policy !== "BLOCK" &&
-    Boolean(cleanText(record.track_authorization, 2_048)) && Boolean(progressiveTranscoding(record) || hlsTranscoding(record));
+    Boolean(cleanText(record.track_authorization, 2_048)) && Boolean(progressiveTranscoding(record));
   return {
     provider: "soundcloud",
     type: "track",
@@ -285,8 +254,6 @@ function parseSoundCloudTrack(record, position = null) {
     embedURL: "",
     sourceURL,
     directlyImportable,
-    // Who posted it, which `artist` (the credited artist, when given) doesn't say: a fan's upload credits the artist too.
-    uploader: cleanText(record.user?.username),
   };
 }
 
@@ -428,8 +395,6 @@ async function resolveSoundCloudAudio(source, signal, fetchImpl = fetch) {
   const clientID = clientIDFromHydration(hydration);
   const transcoding = progressiveTranscoding(record);
   const trackAuthorization = cleanText(record?.track_authorization, 2_048);
-  const hls = !transcoding ? hlsTranscoding(record) : null;
-  if (track && clientID && hls && trackAuthorization) return resolveSoundCloudHLS(track, hls, clientID, trackAuthorization, signal, fetchImpl);
   if (!track || !clientID || !transcoding || !trackAuthorization) {
     throw soundCloudError(
       "SOUNDCLOUD_STREAM_UNAVAILABLE",
@@ -506,196 +471,6 @@ async function resolveSoundCloudAudio(source, signal, fetchImpl = fetch) {
   };
 }
 
-/*
- * HLS-only tracks are joined into one local M4A (AAC copied as it is, moov first so its start decodes on its own)
- * and kept a little while, so the preview, the duplicate check and the save of one song share one fetch. The rest
- * of the app then treats it like any resolved stream: `localFile` stands in for the streaming URL.
- */
-const HLS_CACHE_MS = 30 * 60_000;
-/** At most this many joined tracks are kept at once (a playlist's worth of previews), oldest dropped first. */
-const MAX_HLS_FILES = 30;
-const hlsFiles = new Map();
-/** One folder for these files, so ones left by an earlier run (stopped mid-join, or before they aged out) are found. */
-const HLS_DIRECTORY = path.join(os.tmpdir(), "slopify-soundcloud");
-let hlsSwept = false;
-let hlsSweepTimer = null;
-
-/**
- * Removes joined files no longer wanted: past their time, beyond the count, and (once a run) any in the folder this
- * run doesn't know that are past their time, which earlier runs left. Another running copy's recent files stay.
- */
-async function sweepHLS() {
-  const now = Date.now();
-  const done = [...hlsFiles].filter(([, entry]) => !entry.pending);
-  const extra = done.length - MAX_HLS_FILES;
-  for (const [index, [id, entry]] of done.entries()) {
-    if (now - entry.at > HLS_CACHE_MS || index < extra) {
-      hlsFiles.delete(id);
-      await fs.rm(entry.file, { force: true }).catch(() => undefined);
-    }
-  }
-  if (hlsSwept) return;
-  hlsSwept = true;
-  const known = new Set([...hlsFiles.values()].map((entry) => entry.file));
-  for (const name of await fs.readdir(HLS_DIRECTORY).catch(() => [])) {
-    const file = path.join(HLS_DIRECTORY, name);
-    if (known.has(file)) continue;
-    const stat = await fs.stat(file).catch(() => null);
-    if (stat && now - stat.mtimeMs > HLS_CACHE_MS) await fs.rm(file, { force: true }).catch(() => undefined);
-  }
-}
-
-async function materializeHLS(trackID, playlistURL, signal, fetchImpl = fetch) {
-  const known = hlsFiles.get(trackID);
-  if (known?.pending) return known.pending;
-  if (known && Date.now() - known.at < HLS_CACHE_MS) {
-    const stat = await fs.stat(known.file).catch(() => null);
-    if (stat?.size) return { file: known.file, size: stat.size };
-  }
-  // Files nobody asks for again still age out while the app runs.
-  hlsSweepTimer ??= setInterval(() => void sweepHLS().catch(() => undefined), HLS_CACHE_MS);
-  hlsSweepTimer.unref?.();
-  const work = (async () => {
-    await fs.mkdir(HLS_DIRECTORY, { recursive: true });
-    await sweepHLS();
-    const stamp = `${trackID}-${Date.now()}-${process.pid}`;
-    const file = path.join(HLS_DIRECTORY, `${stamp}.m4a`);
-    const listFile = path.join(HLS_DIRECTORY, `${stamp}.m3u8`);
-    try {
-      // The playlist is read here and every address in it checked (SoundCloud's media hosts, HTTPS), then handed to
-      // ffmpeg as a local copy with absolute addresses, so ffmpeg fetches nothing else.
-      await fs.writeFile(listFile, await fetchHLSPlaylist(playlistURL, signal, fetchImpl));
-      await runFFmpeg([
-        "-y", "-nostdin", "-loglevel", "error",
-        "-protocol_whitelist", "file,https,tls,tcp,crypto",
-        "-i", listFile, "-map", "0:a:0", "-vn", "-c:a", "copy", "-movflags", "+faststart", "-f", "mp4", file,
-      ], signal);
-      const stat = await fs.stat(file);
-      if (!stat.size || stat.size > MAX_AUDIO_BYTES) {
-        throw soundCloudError("SOUNDCLOUD_INVALID_STREAM", "SoundCloud returned an unusable audio stream.", { stage: "inspecting_source" });
-      }
-      return { file, size: stat.size };
-    } catch (error) {
-      // A failed or stopped join leaves nothing behind.
-      await fs.rm(file, { force: true }).catch(() => undefined);
-      throw error;
-    } finally {
-      await fs.rm(listFile, { force: true }).catch(() => undefined);
-    }
-  })();
-  hlsFiles.set(trackID, { pending: work, at: 0 });
-  try {
-    const result = await work;
-    if (hlsFiles.get(trackID)?.pending === work) {
-      hlsFiles.delete(trackID);
-      hlsFiles.set(trackID, { file: result.file, at: Date.now() });
-    }
-    if (known?.file && known.file !== result.file) await fs.rm(known.file, { force: true }).catch(() => undefined);
-    return result;
-  } catch (error) {
-    if (hlsFiles.get(trackID)?.pending === work) hlsFiles.delete(trackID);
-    throw error;
-  }
-}
-
-/** SoundCloud's HLS hosts: its CDN and its newer media-streaming service. */
-const SOUNDCLOUD_HLS_HOST = /(^|\.)(sndcdn\.com|media-streaming\.soundcloud\.cloud)$/i;
-function safeHLSURL(value) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && !url.username && !url.password && SOUNDCLOUD_HLS_HOST.test(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
-/** An HLS playlist with every address made absolute, after checking each is on SoundCloud's media hosts. */
-async function fetchHLSPlaylist(playlistURL, signal, fetchImpl = fetch) {
-  const response = await fetchWithValidatedRedirects(playlistURL, { headers: { "User-Agent": WEB_USER_AGENT }, signal }, safeHLSURL, fetchImpl, "inspecting_source");
-  if (!response.ok) throw providerFailure(response, "audio stream", "inspecting_source");
-  const base = response.url && safeHLSURL(response.url) ? response.url : playlistURL;
-  const text = (await responseBytesWithLimit(response, 1024 * 1024, "inspecting_source")).toString("utf8");
-  if (!text.startsWith("#EXTM3U")) throw soundCloudError("SOUNDCLOUD_INVALID_STREAM", "SoundCloud returned an invalid audio playlist.", { stage: "inspecting_source" });
-  const absolute = (value) => {
-    const url = new URL(value, base).toString();
-    if (!safeHLSURL(url)) throw soundCloudError("SOUNDCLOUD_UNSAFE_STREAM", "SoundCloud returned an unsafe audio stream.", { stage: "inspecting_source" });
-    return url;
-  };
-  let segments = 0;
-  const lines = text.split(/\r?\n/).map((line) => {
-    if (!line) return line;
-    // Tags carrying an address (the init segment, keys).
-    if (line.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_, uri) => `URI="${absolute(uri)}"`);
-    segments += 1;
-    return absolute(line.trim());
-  });
-  if (!segments) throw soundCloudError("SOUNDCLOUD_INVALID_STREAM", "SoundCloud returned an empty audio playlist.", { stage: "inspecting_source" });
-  return lines.join("\n");
-}
-
-function runFFmpeg(args, signal) {
-  const executable = ffmpegExecutable();
-  if (!executable) {
-    return Promise.reject(soundCloudError("SOUNDCLOUD_STREAM_UNAVAILABLE", "This SoundCloud track needs the local media processor, which this build lacks.", { stage: "inspecting_source" }));
-  }
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
-    const child = spawn(executable, args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
-    let stderr = "";
-    let settled = false;
-    const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener("abort", cancel);
-      callback(value);
-    };
-    const cancel = () => {
-      child.kill("SIGKILL");
-      finish(reject, new DOMException("Aborted", "AbortError"));
-    };
-    signal?.addEventListener("abort", cancel, { once: true });
-    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-4_096); });
-    child.on("error", () => finish(reject, soundCloudError("SOUNDCLOUD_STREAM_UNAVAILABLE", "The local media processor could not start.", { stage: "inspecting_source" })));
-    child.on("close", (code) => {
-      if (code === 0) finish(resolve, true);
-      else finish(reject, soundCloudError("SOUNDCLOUD_STREAM_UNAVAILABLE", `SoundCloud's audio couldn't be fetched${stderr ? ` (${cleanText(stderr, 300)})` : ""}.`, { stage: "inspecting_source" }));
-    });
-  });
-}
-
-/** A resolved HLS-only track: its full audio joined into a local M4A (see materializeHLS). */
-async function resolveSoundCloudHLS(track, transcoding, clientID, trackAuthorization, signal, fetchImpl) {
-  const endpoint = new URL(transcoding.url);
-  endpoint.searchParams.set("client_id", clientID);
-  endpoint.searchParams.set("track_authorization", trackAuthorization);
-  let response;
-  try {
-    response = await fetchImpl(endpoint, { headers: { Accept: "application/json", "User-Agent": WEB_USER_AGENT }, redirect: "error", signal });
-  } catch (error) {
-    if (error?.name === "AbortError") throw error;
-    throw soundCloudError("SOUNDCLOUD_STREAM_UNAVAILABLE", "SoundCloud could not prepare this audio stream.", { stage: "inspecting_source" });
-  }
-  if (!response.ok || !safeAPIURL(response.url || endpoint.toString())) throw providerFailure(response, "audio stream", "inspecting_source");
-  let payload;
-  try { payload = JSON.parse((await responseBytesWithLimit(response, 64 * 1_024, "inspecting_source")).toString("utf8")); }
-  catch { payload = null; }
-  if (!safeHLSURL(payload?.url)) {
-    throw soundCloudError("SOUNDCLOUD_UNSAFE_STREAM", "SoundCloud returned an unsafe audio stream.", { stage: "inspecting_source" });
-  }
-  const { file, size } = await materializeHLS(track.trackID, payload.url, signal, fetchImpl);
-  return {
-    track,
-    streamingURL: payload.url,
-    localFile: file,
-    contentLength: size,
-    etag: null,
-    contentType: "audio/mp4",
-    format: "m4a",
-    durationSeconds: track.durationSeconds,
-    sourceURL: track.sourceURL,
-  };
-}
-
 async function writeAll(file, bytes) {
   let offset = 0;
   while (offset < bytes.length) {
@@ -718,16 +493,6 @@ function verifiedSoundCloudRange(value, start, end, total) {
 async function fetchResolvedSoundCloudRange(resolved, start, end, signal, fetchImpl = fetch) {
   const last = Math.min(end, resolved.contentLength) - 1;
   if (!Number.isSafeInteger(start) || start < 0 || last < start) return Buffer.alloc(0);
-  if (resolved.localFile) {
-    const handle = await fs.open(resolved.localFile, "r");
-    try {
-      const bytes = Buffer.alloc(last - start + 1);
-      const { bytesRead } = await handle.read(bytes, 0, bytes.length, start);
-      return bytes.subarray(0, bytesRead);
-    } finally {
-      await handle.close().catch(() => undefined);
-    }
-  }
   const response = await fetchWithValidatedRedirects(resolved.streamingURL, {
     headers: { ...STREAM_HEADERS, Range: `bytes=${start}-${last}` },
     signal,
@@ -749,13 +514,6 @@ async function fetchResolvedSoundCloudRange(resolved, start, end, signal, fetchI
  * is downloaded. They are written and hashed as if they had just arrived.
  */
 async function downloadResolvedSoundCloudAudio(resolved, destination, signal, onProgress = () => {}, fetchImpl = fetch, { prefix = null } = {}) {
-  if (resolved.localFile) {
-    // Already fetched whole (an HLS track): copied, and hashed as it is.
-    await fs.copyFile(resolved.localFile, destination, fsConstants.COPYFILE_EXCL);
-    const bytes = await fs.readFile(destination);
-    onProgress(bytes.length, bytes.length);
-    return { sha256: createHash("sha256").update(bytes).digest("hex"), bytesWritten: bytes.length, format: resolved.format || "m4a" };
-  }
   if (prefix && (!Buffer.isBuffer(prefix) || prefix.length > resolved.contentLength)) prefix = null;
   const skip = prefix?.length || 0;
   const rest = resolved.contentLength - skip;
@@ -803,7 +561,7 @@ async function downloadResolvedSoundCloudAudio(resolved, destination, signal, on
     if (completed !== resolved.contentLength) {
       throw soundCloudError("SOUNDCLOUD_SIZE_MISMATCH", "SoundCloud ended the audio download before it was complete.", { stage: "downloading" });
     }
-    return { sha256: hash.digest("hex"), bytesWritten: completed, format: "mp3" };
+    return { sha256: hash.digest("hex"), bytesWritten: completed };
   } catch (error) {
     await fs.rm(destination, { force: true }).catch(() => undefined);
     if (error?.name === "AbortError") throw error;
@@ -830,85 +588,7 @@ async function downloadSoundCloudAudio(source, destination, signal, onProgress =
   };
 }
 
-/*
- * Finding a song (from a Spotify playlist) on SoundCloud, where many producers post their own uploads. Scored like
- * YouTube matches (local-import-core.cjs scoreUnderNames), and only full tracks the app can fetch are offered.
- * `strong`: the best is the artist's own upload and scores well, good enough not to look on YouTube too.
- */
-let searchSession = null;
-const SEARCH_SESSION_MS = 30 * 60_000;
-
-async function soundCloudSearchClientID(signal, fetchImpl, fresh = false) {
-  if (!fresh && searchSession && Date.now() - searchSession.at < SEARCH_SESSION_MS) return searchSession.clientID;
-  const { hydration } = await loadSoundCloudPage("https://soundcloud.com/search/sounds?q=music", signal, fetchImpl);
-  const clientID = clientIDFromHydration(hydration);
-  if (!clientID) throw Object.assign(soundCloudError("SOUNDCLOUD_SEARCH_UNAVAILABLE", "SoundCloud did not provide a search session.", { stage: "searching_candidates" }), { retryable: true });
-  searchSession = { clientID, at: Date.now() };
-  return clientID;
-}
-
-async function searchSoundCloudAudioSources(track, signal, fetchImpl = fetch, options = {}) {
-  const { artistsOwnChannel, ownUploadByLength, scoreUnderNames, withoutCredit } = require("./local-import-core.cjs");
-  const maximumResults = Math.max(1, Math.min(8, Number(options.maxResults) || 3));
-  const artist = (track.artist || "").split(/\s*,\s*/)[0];
-  const query = `${artist} ${withoutCredit(track.title || "")}`.trim();
-  let records = null;
-  for (let attempt = 0; attempt < 2 && !records; attempt++) {
-    const url = new URL("https://api-v2.soundcloud.com/search/tracks");
-    url.searchParams.set("q", query);
-    url.searchParams.set("client_id", await soundCloudSearchClientID(signal, fetchImpl, attempt > 0));
-    url.searchParams.set("limit", "20");
-    let response;
-    try {
-      response = await fetchImpl(url, { headers: { Accept: "application/json", "User-Agent": WEB_USER_AGENT }, redirect: "error", signal });
-    } catch (error) {
-      if (error?.name === "AbortError") throw error;
-      throw Object.assign(soundCloudError("SOUNDCLOUD_SEARCH_UNAVAILABLE", "SoundCloud search could not be reached.", { stage: "searching_candidates" }), { retryable: true });
-    }
-    // An expired search session: asked for a new one, once.
-    if ((response.status === 401 || response.status === 403) && attempt === 0) {
-      await response.body?.cancel().catch(() => undefined);
-      continue;
-    }
-    if (response.status === 429 || response.status >= 500) {
-      await response.body?.cancel().catch(() => undefined);
-      throw Object.assign(soundCloudError("SOUNDCLOUD_SEARCH_BUSY", "SoundCloud is turning searches away for a moment.", { stage: "searching_candidates" }), { retryable: true });
-    }
-    if (!response.ok) throw providerFailure(response, "search", "searching_candidates");
-    const payload = JSON.parse((await responseBytesWithLimit(response, MAX_API_BYTES, "searching_candidates")).toString("utf8"));
-    records = Array.isArray(payload?.collection) ? payload.collection : [];
-  }
-  const tracks = (records || []).map((record) => parseSoundCloudTrack(record)).filter((value) => value?.directlyImportable);
-  // Scored as YouTube uploads are; `videoID` here is only the result's place, to find it again.
-  // `artist` (the credited artist) is compared as text; `channel` (who posted it) decides whether it's the artist's own.
-  const scoring = tracks.map((value, at) => ({ title: value.title, artist: value.artist, channel: value.uploader || "", durationSeconds: value.durationSeconds, videoID: String(at) }));
-  let scored = scoring.map((candidate) => scoreUnderNames(track, candidate)).filter(Boolean).sort((left, right) => right.score - left.score);
-  if (!scored.length) {
-    // Only the uploader's own account can stand in for a title that can't be compared.
-    const own = ownUploadByLength(track, scoring);
-    scored = own ? [own] : [];
-  }
-  const candidates = scored.slice(0, maximumResults).map((result) => {
-    const found = tracks[Number(result.videoID)];
-    return {
-      ...directSoundCloudCandidate(found),
-      // The account that posted it, not the artist it credits (a fan's re-upload credits the artist too).
-      officialArtist: artistsOwnChannel(track.artist, found.uploader) || artistsOwnChannel(track.alternateArtist || "", found.uploader),
-      score: result.score,
-      confidence: "possible",
-      evidenceStrength: "metadata_only",
-      requiresReview: true,
-      autoSelectable: false,
-      actionable: false,
-      match: result.match,
-    };
-  });
-  const best = candidates[0];
-  return { candidates, strong: Boolean(best && best.officialArtist && best.score >= 0.8 && !best.match?.byArtistAndLength) };
-}
-
 module.exports = {
-  searchSoundCloudAudioSources,
   directSoundCloudCandidate,
   downloadResolvedSoundCloudAudio,
   downloadSoundCloudAudio,
