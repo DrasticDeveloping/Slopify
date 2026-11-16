@@ -8,7 +8,6 @@ import type { Artist } from "../data/types";
 import { plural } from "../lib/format";
 import { useArtistMetadata } from "../recommend/artist";
 import { artistName } from "../recommend/discover";
-import { navigate } from "../state/actions";
 import { useStore } from "../state/store";
 import { Missing } from "./Collection";
 
@@ -54,7 +53,6 @@ function DiscographyPage({ artist }: { artist: Artist }) {
         tint={artist.palette.b}
         meta={
           <>
-            <button type="button" className="link strong" onClick={() => navigate({ name: "artist", id: artist.id })}>Artist page</button>
             {releases.length ? <span>{plural(releases.length, "release")}</span> : null}
             {span ? <span>{span}</span> : null}
           </>
