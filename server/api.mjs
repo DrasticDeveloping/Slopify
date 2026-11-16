@@ -21,13 +21,10 @@ import { SongFiles } from "./song-files.mjs";
 import { SongStore } from "./songs.mjs";
 import { lockLibrary } from "./library-lock.mjs";
 import { createDuplicateFinder } from "./duplicates/index.mjs";
-import { ownedSongFinder } from "./duplicates/keys.mjs";
-import { createPlaylistMatches, createSpotifyTrackDetails } from "./playlist-matches.mjs";
-import { listenForMatch } from "./preview-check.mjs";
 
 const require = createRequire(import.meta.url);
 const { checkoutDataDir } = require("./data-dir.cjs");
-const { LocalImportError, setSpotifyTrackStore, youtubeVideoID } = require("./providers/local-import-core.cjs");
+const { LocalImportError, youtubeVideoID } = require("./providers/local-import-core.cjs");
 const { importConfirmedSource, resolveLocalImportSource } = require("./providers/local-import-platform.cjs");
 const { mp4Duration } = require("./providers/mp4-join.cjs");
 const { looksLikeLink, searchAllPlatforms, searchMorePlatforms } = require("./providers/local-search.cjs");
@@ -68,12 +65,12 @@ function crossSite(req) {
   }
 }
 
-async function readJSON(req, limit = MAX_BODY_BYTES) {
+async function readJSON(req) {
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limit) throw Object.assign(new Error("Request body too large."), { status: 413 });
+    if (size > MAX_BODY_BYTES) throw Object.assign(new Error("Request body too large."), { status: 413 });
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
@@ -229,9 +226,7 @@ class Previews {
       throw new LocalImportError("previewing", "PREVIEW_TOO_LARGE", "This source is too large to preview. You can still select and import it.");
     }
     // Each request downloads to its own file: two previews of the same source can run at once.
-    // SoundCloud's MP3, or (an HLS-only track) its AAC joined into an M4A, like YouTube's.
-    const soundCloudMP3 = soundCloud && resolved.format !== "m4a";
-    const filePath = path.join(await this.directory(), `${key}-${randomUUID()}${soundCloudMP3 ? ".mp3" : ".m4a"}`);
+    const filePath = path.join(await this.directory(), `${key}-${randomUUID()}${soundCloud ? ".mp3" : ".m4a"}`);
     try {
       if (soundCloud) await downloadResolvedSoundCloudAudio(resolved, filePath, signal);
       else await downloadResolvedAudio(resolved, filePath, signal);
@@ -242,7 +237,7 @@ class Previews {
     const durationSeconds = Math.min(PREVIEW_SECONDS, resolved.durationSeconds || PREVIEW_SECONDS);
     const replaced = this.items.get(key);
     this.items.delete(key);
-    this.items.set(key, { filePath, durationSeconds, contentType: soundCloudMP3 ? "audio/mpeg" : "audio/mp4" });
+    this.items.set(key, { filePath, durationSeconds, contentType: soundCloud ? "audio/mpeg" : "audio/mp4" });
     if (replaced) await fs.rm(replaced.filePath, { force: true }).catch(() => undefined);
     await this.evict();
     return { token: key, durationSeconds };
@@ -461,8 +456,6 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
   };
   const songs = new SongStore(dataDir, stillOwned);
   const duplicates = createDuplicateFinder({ dataDir, songs, downloadLink, beforeSave: stillOwned });
-  const playlistMatches = createPlaylistMatches(dataDir);
-  setSpotifyTrackStore(createSpotifyTrackDetails(dataDir));
   const songFiles = new SongFiles((song, dir, signal) => prepareSongFile(song, dir, signal, duplicates), dataDir);
   // Songs whose sound this server still stores (from before links) are fingerprinted from it, once.
   setTimeout(() => void duplicates.studyStoredFiles().catch(() => undefined), 15_000).unref();
@@ -525,8 +518,7 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
   setInterval(scheduleBackfill, 6 * 3_600_000).unref();
 
   async function resolve(req, res) {
-    // Room for a whole pasted playlist: up to 10,000 Spotify song links (Spotify's own playlist limit).
-    const body = await readJSON(req, 1024 * 1024);
+    const body = await readJSON(req);
     const source = String(body.source || "").trim();
     const mediaKind = body.mediaKind === "video" ? "video" : "audio";
     const stream = ndjson(res);
@@ -546,12 +538,8 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
     const link = looksLikeLink(source);
     stream.progress({ stage: link ? "resolving_metadata" : "searching_candidates" });
     try {
-      if (link) await songs.load();
-      // A playlist's songs already in the library aren't searched for (see ownedSongFinder); built only if asked.
-      let owned = null;
-      const ownedSong = (track) => (owned ??= ownedSongFinder(songs.songs, mediaKind))(track);
       const result = link
-        ? await resolveLocalImportSource(source, stream.signal, stream.progress, {}, { mediaKind, ownedSong, matchCache: playlistMatches, listen: listenForMatch })
+        ? await resolveLocalImportSource(source, stream.signal, stream.progress, {}, { mediaKind })
         : await searchAllPlatforms(source, stream.signal, fetch, { mediaKind, urgent: body.urgent === true });
       stream.finish({ ok: true, result });
     } catch (error) {
