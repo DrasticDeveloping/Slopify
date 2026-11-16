@@ -1766,16 +1766,21 @@ async function confirmPlaylist(resolution: Resolution) {
     if (existing) {
       // Songs it streams (made earlier without downloading) that are saved now, by this save or before: the saved
       // copy takes the stream's place rather than joining beside it.
-      // Matched by the playlist song each stands for, not by its upload: listening may have settled on another one since.
+      // Matched by the playlist song each stands for (listening may have settled on another upload since), or, for a
+      // playlist whose songs are uploads themselves (a YouTube playlist), by the upload.
       const savedFor = new Map<string, string>();
       for (const { at, id } of sorted) {
-        const song = sourceSongKey(source.candidates[at]?.importMetadata);
-        if (song && !getState().tracks[id]?.stream) savedFor.set(song, id);
+        const c = source.candidates[at];
+        if (!c || getState().tracks[id]?.stream) continue;
+        const song = sourceSongKey(c.importMetadata);
+        if (song) savedFor.set(song, id);
+        if (canStream(c)) savedFor.set(streamTrackId(resultStreamKey(c, kind)), id);
       }
       const swap = new Map<string, string>();
       for (const id of existing.trackIds) {
-        const song = getState().tracks[id]?.stream ? sourceSongKey(streamSources.get(id)?.candidate.importMetadata) : null;
-        const saved = song ? savedFor.get(song) : undefined;
+        if (!getState().tracks[id]?.stream) continue;
+        const song = sourceSongKey(streamSources.get(id)?.candidate.importMetadata);
+        const saved = (song ? savedFor.get(song) : undefined) ?? savedFor.get(id);
         if (saved) swap.set(id, saved);
       }
       if (swap.size) {

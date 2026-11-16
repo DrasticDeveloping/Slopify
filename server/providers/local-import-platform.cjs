@@ -487,9 +487,12 @@ async function playlistSearchTurn(signal, gap) {
 /**
  * Raised when listening improves (2: Deezer's own spelling of an artist's name is found and searched under; 3: songs
  * not found, or matched by length and not confirmed, have the search's other uploads of about their length listened
- * to). Songs settled before it are looked at again: unsure ones listened to again, not found ones searched again.
+ * to; 4: uploads heard not to be the song aren't kept as fallbacks, and a Deezer track found under a suggested
+ * spelling of the artist can't rule a match out). Songs settled before it are looked at again: unsure ones listened
+ * to again, not found ones (those ruled out by ear included) searched again, and ones confirmed by ear keep no
+ * fallback that may have been heard and rejected.
  */
-const LISTEN_VERSION = 3;
+const LISTEN_VERSION = 4;
 async function matchPlaylistRows(entries, { signal, onStage, search, searchSoundCloud, ownedSong, matchCache, preview, read, listen, pace = {} }) {
   const gap = pace.gapMs ?? PLAYLIST_SEARCH_GAP_MS;
   const backoff = pace.backoffMs ?? PLAYLIST_SEARCH_BACKOFF_MS;
@@ -529,7 +532,10 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
     try { known = matchCache?.get(track) || null; } catch { known = null; }
     // Not found, or matched by length and not confirmed, before listening could look further (LISTEN_VERSION): searched again.
     const unconfirmed = known?.unmatched === "not_found" || (known?.match?.byArtistAndLength && known.match.listened?.verdict !== "same");
-    if (known && listen && unconfirmed && (known.searchedV ?? 0) < LISTEN_VERSION) known = null;
+    const older = (known?.searchedV ?? 0) < LISTEN_VERSION;
+    if (known && listen && unconfirmed && older) known = null;
+    // Confirmed by ear by an older way of listening: its fallbacks may include uploads heard not to be the song.
+    if (known && older && known.match?.listened?.verdict === "same" && known.fallbackCandidates?.length) known = { ...known, fallbackCandidates: [] };
     return known && !(typeof known.sourceURL === "string" && namesAnotherSong(track, known)) ? { ...known, ...base(track) } : { ...base(track), pending: true };
   };
   const rows = entries.map(({ track, ready, unread }) => {
