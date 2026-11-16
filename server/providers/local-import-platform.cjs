@@ -456,24 +456,17 @@ function pause(ms, signal) {
  *
  * Over a whole list (649 songs, Nov 2026) one search every 450 ms went through without a refusal; one every 380 ms
  * had YouTube Music turning searches away after a few minutes, and YouTube's results page with it (its pauses more
- * than doubled), so the list took twice as long. A refusal therefore slows the pace for a while (it speeds up again
- * after a run of answers).
- *
- * Songs wait for it through its rests rather than going to YouTube's results page meanwhile: that page manages a song
- * every few seconds at best, gets turned away more itself while YouTube Music is, and matches worse (fan uploads,
- * other singers), so letting it take songs during rests made the list both slower and worse (Nov 2026).
+ * than doubled), so the list took twice as long. At 450 ms the whole list took 425 s, with 628 of 649 found.
  */
 const MUSIC_SEARCH_GAP_MS = 450;
-/** The slowest the pace gets after refusals (each one makes the gap half as long again). */
-const MUSIC_SEARCH_SLOWEST_GAP_MS = 1_500;
-/** Answers in a row after which a slowed pace speeds up a step again. */
-const MUSIC_SPEED_UP_AFTER = 25;
 /** Searches in flight at once (each still waits its turn): one answers in about 0.4 s, so one at a time can't keep the pace. */
 const MUSIC_SEARCHES_AT_ONCE = 2;
-/** How long YouTube Music rests after turning a search away (the first time in a row, the second, and so on). */
-const MUSIC_SEARCH_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000];
-/** Searches in a row YouTube Music turned away before it's left out for the rest of the list (it isn't letting up). */
-const MUSIC_SEARCH_GIVE_UP_AFTER = 6;
+/** How long YouTube Music rests after turning a search away (the first time, then the second time in a row on). */
+const MUSIC_SEARCH_BACKOFF_MS = [10_000, 30_000];
+/** Searches in a row YouTube Music turned away before it's left out for the rest of the list. */
+const MUSIC_SEARCH_GIVE_UP_AFTER = 3;
+/** A rest longer than this lets the other searches take songs YouTube Music hasn't reached. */
+const MUSIC_RESTING_MS = 2_000;
 /** How far a YouTube Music song's length may be from the Spotify song's for it to settle the song by itself. */
 const MUSIC_SETTLES_WITHIN_SECONDS = 6;
 let nextMusicSearchAt = 0;
@@ -751,7 +744,8 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchMusic
   const musicFallback = new Map(); // at -> row
   const musicNear = new Map(); // at -> uploads of about the song's length
   let musicFinished = !searchMusic;
-  const throughMusic = (at) => musicFinished || musicDone.has(at);
+  // (While YouTube Music rests after turning searches away, the others don't wait for it.)
+  const throughMusic = (at) => musicFinished || musicDone.has(at) || nextMusicSearchAt - Date.now() > MUSIC_RESTING_MS;
   const musicPending = () => !musicFinished && todo.some((at) => !settled.has(at) && !musicDone.has(at));
   const soundCloudResult = new Map(); // at -> row or null, once SoundCloud has been asked
   const youTubeOutcome = new Map(); // at -> "none" | "failed", once YouTube found nothing
@@ -886,14 +880,14 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchMusic
   };
 
   /*
-   * A few searches in flight at once, each at its turn (musicGap apart, slowed after refusals). A search YouTube
-   * Music turns away is asked again after a rest, once; after a few refusals in a row it's left out.
+   * A few searches in flight at once, each at its turn (musicGap apart). A song YouTube Music turns away goes on to
+   * the other searches rather than being asked again; YouTube Music rests a while (meanwhile the others take the
+   * songs it hasn't reached: see throughMusic) and after a few refusals in a row is left out.
    */
   const musicLane = async () => {
     if (!searchMusic) return;
     let refused = 0;
     let next = 0;
-    let gapNow = musicGap;
     const worker = async () => {
       for (;;) {
         while (next >= todo.length) {
@@ -910,39 +904,30 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchMusic
         }
       }
     };
-    let answered = 0;
-    /**
-     * One YouTube Music search at its turn, asked once more after a rest if turned away: what it found, or null if it
-     * didn't answer (or wasn't needed any more).
-     */
+    /** One YouTube Music search at its turn: what it found, or null if it didn't answer (or wasn't needed any more). */
     const ask = async (at, track, options) => {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        await musicSearchTurn(signal, gapNow);
-        if (refused >= MUSIC_SEARCH_GIVE_UP_AFTER || settled.has(at)) return null;
-        try {
-          const found = await searchMusic(track, signal, undefined, options);
-          refused = 0;
-          answered += 1;
-          if (answered % MUSIC_SPEED_UP_AFTER === 0 && gapNow > musicGap) gapNow = Math.max(musicGap, Math.round(gapNow / 1.5));
-          if (Array.isArray(found) && found.nearLength?.length) {
-            const near = musicNear.get(at) ?? [];
-            for (const upload of found.nearLength) if (!near.some((n) => n.sourceURL === upload.sourceURL)) near.push(upload);
-            musicNear.set(at, near);
-          }
-          return Array.isArray(found) && !settled.has(at) ? found : null;
-        } catch (error) {
-          if (error?.name === "AbortError" || signal?.aborted) throw error;
-          if (!error?.retryable) return null;
+      await musicSearchTurn(signal, musicGap);
+      if (refused >= MUSIC_SEARCH_GIVE_UP_AFTER || settled.has(at)) return null;
+      try {
+        const found = await searchMusic(track, signal, undefined, options);
+        refused = 0;
+        if (Array.isArray(found) && found.nearLength?.length) {
+          const near = musicNear.get(at) ?? [];
+          for (const upload of found.nearLength) if (!near.some((n) => n.sourceURL === upload.sourceURL)) near.push(upload);
+          musicNear.set(at, near);
+        }
+        return Array.isArray(found) && !settled.has(at) ? found : null;
+      } catch (error) {
+        if (error?.name === "AbortError" || signal?.aborted) throw error;
+        if (error?.retryable) {
           refused += 1;
-          answered = 0;
           const rest = musicBackoff[Math.min(refused, musicBackoff.length) - 1] ?? 0;
           nextMusicSearchAt = Math.max(nextMusicSearchAt, Date.now() + rest);
-          gapNow = Math.max(gapNow, Math.min(MUSIC_SEARCH_SLOWEST_GAP_MS, Math.round(gapNow * 1.5)));
           // (In the app's log, so its pace can be judged: see MUSIC_SEARCH_GAP_MS.)
-          console.warn(`[slopify] YouTube Music turned a search away (${error.reason || "no answer"}; ${refused} in a row): resting ${Math.round(rest / 1000)} s, then one every ${gapNow} ms.`);
+          console.warn(`[slopify] YouTube Music turned a search away (${error.reason || "no answer"}; ${refused} in a row): resting ${Math.round(rest / 1000)} s.`);
         }
+        return null;
       }
-      return null;
     };
     const near = (row) => {
       const delta = row?.match?.durationDeltaSeconds;
