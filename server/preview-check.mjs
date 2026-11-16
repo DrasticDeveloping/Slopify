@@ -26,8 +26,14 @@ const DEEZER_GAP_MS = 250;
 const SAME_LENGTH_SECONDS = 2;
 /** Searches tried for one song, at most. */
 const MAX_QUERIES = 5;
-/** Uploads compared with one preview, at most (the match and its fallbacks). */
-const MAX_UPLOADS = 3;
+/** Uploads compared with one preview, at most (the match and its fallbacks, then uploads of about its length). */
+const MAX_UPLOADS = 6;
+/**
+ * How alike an upload the names didn't match must sound to be taken (`strictFrom`): stricter than `same`, since
+ * another singer's version over the same backing track can come close (measured 0.25 for a Hatsune Miku and a
+ * Kasane Teto release of one song, 0.03-0.09 for the same recording).
+ */
+const STRICT_BER = 0.15;
 /** Above this bit error rate the upload is another recording altogether (different songs measure 0.48-0.50). */
 const DIFFERENT_BER = 0.4;
 /** An upload's first this-many seconds are compared first: a preview is usually from its first minute or so. */
@@ -213,13 +219,14 @@ async function compareUpload(ffmpeg, query, link, signal) {
 }
 
 /**
- * Whether `uploads` (links: the match first, then its fallbacks) sound like the song: `{ verdict: "same", at, ber,
+ * Whether `uploads` (links: the match first, then its fallbacks, then from `strictFrom` on uploads only about as long
+ * as the song, which must sound closer: STRICT_BER) sound like the song: `{ verdict: "same", at, ber,
  * deezer }` names the first that does; "different" says none does and Deezer's track is surely this song (title,
  * artist and length all agree), so the match was a coincidence of length; "unsure" is anything else Deezer answered
  * (no Deezer track, another mix). Throws (retryable) when Deezer, its preview or an upload didn't answer, so that
  * isn't taken for an answer.
  */
-export async function listenForMatch(track, uploads, { signal, fetchImpl = fetch } = {}) {
+export async function listenForMatch(track, uploads, { signal, fetchImpl = fetch, strictFrom = Infinity } = {}) {
   let ffmpeg = null;
   try { ffmpeg = ffmpegExecutable(); } catch { ffmpeg = null; }
   if (!ffmpeg) throw new NotHeard("No ffmpeg to listen with");
@@ -235,14 +242,15 @@ export async function listenForMatch(track, uploads, { signal, fetchImpl = fetch
   let unheard = null;
   for (const [at, link] of uploads.slice(0, MAX_UPLOADS).entries()) {
     let result = null;
+    // (Only the match and its fallbacks count as unheard: an upload merely about as long that won't play is just skipped.)
     try {
       result = await compareUpload(ffmpeg, query, link, signal);
-      if (!result) unheard = new NotHeard("An upload couldn't be fingerprinted");
+      if (!result && at < strictFrom) unheard = new NotHeard("An upload couldn't be fingerprinted");
     } catch (error) {
       if (error?.name === "AbortError" || signal?.aborted) throw error;
-      unheard = error;
+      if (at < strictFrom) unheard = error;
     }
-    if (result?.same) return { verdict: "same", at, ber: Number(result.ber.toFixed(3)), deezer: about };
+    if (result?.same && (at < strictFrom || result.ber <= STRICT_BER)) return { verdict: "same", at, ber: Number(result.ber.toFixed(3)), deezer: about };
     if (!result || result.ber <= DIFFERENT_BER) allDifferent = false;
   }
   // An upload not heard might have been the one: asked again next time rather than settled.

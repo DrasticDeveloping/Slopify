@@ -35,7 +35,7 @@ const VERSION_WORDS =
  * Uploads that are never the song itself, only made from it (mashups, fan mixes, rhythm-game charts and the games'
  * own versions): rejected unless the song's own title says the same.
  */
-const NOT_THE_SONG = /\b(mash(?:up|ed)|medley|mario paint|8.?bit|chiptune|music box|parody|beat ?saber|osu|fnf|fan.?made|fan ?mix|heaven studio|rhythm heaven|project ?sekai|taiko no tatsujin|maimai|chunithm|cover(?:ed)?|karaoke|off ?vocal|instrumental|live|remix(?:ed)?|bootleg|nightcore|slowed|sped up|reverb|piano|open ?taiko|taiko|beatblock|person collab|nightcord|n25|sekai size|sekai ver|tv size|anime size|(?<!(?:full|original|album|フル) ?)ver(?:sion)?|more more jump|vivid bad squad|leo ?\/ ?need|wonderlands|(?<!original )mix)\b|プロセカ|太鼓の達人|カラオケ|オフボーカル|歌ってみた|弾いてみた|叩いてみた|耳コピ|ピアノ|譜面|ビートセイバー|合唱|25時、ナイトコードで|ニーゴ|カバー|マッシュアップ|メドレー|アレンジ/i;
+const NOT_THE_SONG = /\b(mash(?:up|ed)|medley|mario paint|8.?bit|chiptune|music box|parody|beat ?saber|osu|fnf|fan.?made|fan ?mix|heaven studio|rhythm heaven|project ?sekai|taiko no tatsujin|maimai|chunithm|cover(?:ed)?|karaoke|off ?(?:main ?)?vocal|instrumental|\d{3} ?hz|live|remix(?:ed)?|bootleg|nightcore|slowed|sped up|reverb|piano|open ?taiko|taiko|beatblock|person collab|nightcord|n25|sekai size|sekai ver|tv size|anime size|(?<!(?:full|original|album|フル) ?)ver(?:sion)?|more more jump|vivid bad squad|leo ?\/ ?need|wonderlands|(?<!original )mix)\b|プロセカ|太鼓の達人|カラオケ|オフボーカル|歌ってみた|弾いてみた|叩いてみた|耳コピ|ピアノ|譜面|ビートセイバー|合唱|25時、ナイトコードで|ニーゴ|カバー|マッシュアップ|メドレー|アレンジ/i;
 
 /*
  * Singing voices (Vocaloid, UTAU, Synthesizer V). A producer often releases one song sung by several of them; an
@@ -1446,6 +1446,67 @@ function normalizeMatchText(value) {
     .replace(/[^\p{Letter}\p{Number}]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
+/** Romanised Japanese without spaces and with its long vowels written short ("shoujo rei" -> "shojorei"). */
+const longVowelsShort = (text) => text.replace(/ /g, "").replace(/ou|oo/g, "o").replace(/uu/g, "u");
+
+/*
+ * Kana spelled out in Latin letters (Hepburn), so a name written in kana on Spotify ("タカオカミズキ") is recognised
+ * on a channel that writes it out ("takaokamizuki"). Only names written wholly in kana are spelled out: kanji have
+ * readings no table can give.
+ */
+const KANA_SYLLABLES = (() => {
+  const rows = {
+    a: "あいうえお", ka: "かきくけこ", sa: "さしすせそ", ta: "たちつてと", na: "なにぬねの", ha: "はひふへほ",
+    ma: "まみむめも", ya: "や ゆ よ", ra: "らりるれろ", wa: "わ   を", ga: "がぎぐげご", za: "ざじずぜぞ",
+    da: "だぢづでど", ba: "ばびぶべぼ", pa: "ぱぴぷぺぽ",
+  };
+  const vowels = ["a", "i", "u", "e", "o"];
+  const special = { し: "shi", ち: "chi", つ: "tsu", ふ: "fu", じ: "ji", ぢ: "ji", づ: "zu", を: "o" };
+  const map = new Map([["ん", "n"], ["ゃ", "ya"], ["ゅ", "yu"], ["ょ", "yo"], ["ぁ", "a"], ["ぃ", "i"], ["ぅ", "u"], ["ぇ", "e"], ["ぉ", "o"], ["ゔ", "vu"]]);
+  for (const [row, kana] of Object.entries(rows)) {
+    const consonant = row.slice(0, -1);
+    [...kana].forEach((k, i) => {
+      if (k !== " ") map.set(k, special[k] ?? consonant + vowels[i]);
+    });
+  }
+  return map;
+})();
+function kanaToRomaji(text) {
+  // Katakana as hiragana (same sounds, one table).
+  const kana = [...(text || "").replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60))];
+  let out = "";
+  for (let i = 0; i < kana.length; i++) {
+    const c = kana[i];
+    const next = kana[i + 1];
+    if (c === "っ") {
+      // A small tsu doubles the next consonant ("ッチ" -> "tchi" is written "cchi" here; close enough to compare).
+      const following = KANA_SYLLABLES.get(next ?? "");
+      if (following) out += following[0];
+      continue;
+    }
+    if (c === "ー") continue; // A long-vowel mark: written short, as most romanisations do.
+    const syllable = KANA_SYLLABLES.get(c);
+    if (!syllable) {
+      out += c;
+      continue;
+    }
+    // A small ya/yu/yo joins the syllable before it: きゃ -> kya, しゃ -> sha, ちゃ -> cha, じゃ -> ja.
+    if (next && "ゃゅょ".includes(next) && syllable.endsWith("i")) {
+      const glide = KANA_SYLLABLES.get(next);
+      out += /^(sh|ch|j)i$/.test(syllable) ? syllable.slice(0, -1) + glide.slice(1) : syllable.slice(0, -1) + glide;
+      i++;
+      continue;
+    }
+    out += syllable;
+  }
+  return out;
+}
+/** A name written wholly in kana, spelled out ("タカオカミズキ" -> "takaokamizuki"); null for any other name. */
+function romajiName(name) {
+  const compact = (name || "").replace(/[\s・･]/g, "");
+  return compact && /^[\p{Script=Hiragana}\p{Script=Katakana}ー]+$/u.test(compact) ? kanaToRomaji(compact) : null;
+}
+
 function tokenScore(expected, actual) {
   const left = normalizeMatchText(expected);
   const right = normalizeMatchText(actual);
@@ -1460,10 +1521,11 @@ function tokenScore(expected, actual) {
     if (compactLeft === compactRight) return 1;
     if (compactRight.includes(compactLeft) || compactLeft.includes(compactRight)) return 0.92;
   } else {
-    // Romanised Japanese is spaced however its typist liked too: "hontono" on Spotify, "Honto no" on YouTube.
-    // Only for titles long enough not to turn up inside unrelated words.
+    // Romanised Japanese is spaced however its typist liked too: "hontono" on Spotify, "Honto no" on YouTube; and
+    // its long vowels spelled either way: "Shojo Rei" on Spotify, "Shoujo Rei" on YouTube. Only for titles long
+    // enough not to turn up inside unrelated words.
     const compactLeft = left.replace(/ /g, "");
-    if (compactLeft.length >= 5 && right.replace(/ /g, "").includes(compactLeft)) return 0.92;
+    if (compactLeft.length >= 5 && (right.replace(/ /g, "").includes(compactLeft) || longVowelsShort(right).includes(longVowelsShort(left)))) return 0.92;
   }
   const leftTokens = new Set(left.split(" "));
   const rightTokens = new Set(right.split(" "));
@@ -1513,10 +1575,15 @@ function mainArtist(artist) {
 function artistsOwnChannel(artist, channel) {
   const own = normalizeMatchText(mainArtist(artist)).replace(/ /g, "");
   if (!own) return false;
+  // A name in kana counts spelled out too: "タカオカミズキ" is the channel "takaokamizuki".
+  const spelled = romajiName(mainArtist(artist));
   // A channel giving its name two ways counts under either: "Yomitan Akane (読谷あかね)", "Jamie Paige / JamieP".
   const whole = (channel || "").replace(/vevo$/i, "");
   const names = [whole, ...whole.split(/\s+\/\s+|\s*[(（]|[)）]/)];
-  return names.some((name) => normalizeMatchText(name).replace(/ /g, "") === own);
+  return names.some((name) => {
+    const compact = normalizeMatchText(name).replace(/ /g, "");
+    return compact === own || (spelled !== null && compact === spelled);
+  });
 }
 
 /**
@@ -1554,7 +1621,8 @@ function ownUploadByLength(track, candidates) {
   const fits = candidates.filter((c) => {
     if (!c.durationSeconds || Math.abs(c.durationSeconds - track.durationSeconds) > 3) return false;
     if (!names.some((n) => artistsOwnChannel(n.artist, c.channel ?? c.artist))) return false;
-    if (notTheSong(track, c) || VERSION_WORDS.test(c.title) || anotherVoice(track, c)) return false;
+    // (A version the song itself is, like a cover of a cover, is fine: notTheSong compares against the song's title.)
+    if (notTheSong(track, c) || (VERSION_WORDS.test(c.title) && !VERSION_WORDS.test(track.title)) || anotherVoice(track, c)) return false;
     // Latin words the song's names don't have are another song's title ("Debug Drug" isn't "Medicine").
     return !normalizeMatchText(withoutCredit(c.title)).split(" ").some((word) => /^[a-z]{4,}$/.test(word) && !pool.has(word));
   });
@@ -1584,7 +1652,13 @@ function scoreAudioSource(track, candidate) {
   // Credits are left out of the title comparison: two of one producer's songs, both "feat. Hatsune Miku", otherwise
   // share most of their title words.
   const title = tokenScore(withoutCredit(track.title), withoutCredit(candidate.title));
-  let artist = track.localFile && !track.artist ? null : Math.max(tokenScore(track.artist, candidate.artist), tokenScore(track.artist, candidate.title) * 0.75);
+  // (An artist written in kana also counts spelled out: "takaokamizuki" for "タカオカミズキ".)
+  const spelledArtist = romajiName(mainArtist(track.artist));
+  let artist = track.localFile && !track.artist ? null : Math.max(
+    tokenScore(track.artist, candidate.artist),
+    tokenScore(track.artist, candidate.title) * 0.75,
+    spelledArtist ? tokenScore(spelledArtist, candidate.artist) : 0,
+  );
   // A file of the user's own (see pastedLocalTrack) is often tagged with whoever uploaded it, or a folder's name
   // ("Switch", "Game SoundTracks"), not the artist: where that names no one in the upload, its title and its exact
   // length decide instead.
@@ -1745,7 +1819,9 @@ async function searchYouTubeAudioSources(track, signal, fetchImpl = fetch, optio
   const query = track.localFile
     ? (options.broad ? track.title : `${track.artist} ${track.title}`)
     : options.broad ? `${names.artist} ${names.title}` : `${track.artist} ${track.title} official audio`;
-  webURL.searchParams.set("search_query", query.trim());
+  // A word starting with "-" tells YouTube to leave out results with that word: "ヒバナ -Reloaded-" would find every
+  // ヒバナ but the Reloaded one. Those dashes are the title's punctuation, not that.
+  webURL.searchParams.set("search_query", query.replace(/(^|\s)-+(?=\S)/g, "$1").trim());
   webURL.searchParams.set("sp", "EgIQAQ%3D%3D");
   const webHTML = await searchDocument(webURL, signal, fetchImpl, { search: true });
   const data = webHTML ? extractYouTubeInitialData(webHTML) : null;
@@ -1760,12 +1836,37 @@ async function searchYouTubeAudioSources(track, signal, fetchImpl = fetch, optio
     .filter(Boolean).sort((left, right) => right.score - left.score).slice(0, maximumResults);
   if (!preliminary.length) {
     const own = ownUploadByLength(track, [...unique.values()]);
-    return own ? [own] : [];
+    return withNearLength(own ? [own] : [], track, [...unique.values()]);
   }
   if (!shouldEnrich) return preliminary;
   const enriched = await Promise.all(preliminary.map((candidate) => enrichCandidate(track, candidate, signal, fetchImpl)));
   return enriched.map((candidate) => scoreUnderNames(track, candidate)).filter(Boolean)
     .sort((left, right) => right.score - left.score).slice(0, maximumResults);
+}
+
+/** How far an upload's length may be from the song's for it to be listened to (a music video's intro, say). */
+const NEAR_LENGTH_SECONDS = 8;
+/** Uploads kept to listen to, at most. */
+const MAX_NEAR_LENGTH = 3;
+
+/**
+ * `matched` (no upload the names agree on, or only the artist's own one of the same length), carrying `nearLength`:
+ * the search's other uploads about as long as the song, which aren't plainly something else (a cover, a karaoke
+ * track, another voice), most alike in name first. The names couldn't settle them (another script, another
+ * spelling, a soundtrack's channel), but how they sound can: see preview-check.mjs.
+ */
+function withNearLength(matched, track, uploads) {
+  if (!track.durationSeconds || track.localFile) return matched;
+  const taken = new Set(matched.map((c) => c.videoID));
+  const near = uploads
+    .filter((c) => c.videoID && !taken.has(c.videoID) && c.durationSeconds && Math.abs(c.durationSeconds - track.durationSeconds) <= NEAR_LENGTH_SECONDS)
+    .filter((c) => !notTheSong(track, c) && !anotherVoice(track, c) && !(VERSION_WORDS.test(c.title) && !VERSION_WORDS.test(track.title)))
+    .filter((c) => !/\b(?:siivagunner|giivasunner|tiivasunner|vinesauce ?is ?hope)\b/i.test(`${c.channel ?? ""} ${c.artist ?? ""}`))
+    .map((c) => ({ c, alike: Math.max(...trackNames(track).map((n) => tokenScore(withoutCredit(n.title), withoutCredit(c.title)))) }))
+    .sort((a, b) => b.alike - a.alike || Math.abs(a.c.durationSeconds - track.durationSeconds) - Math.abs(b.c.durationSeconds - track.durationSeconds))
+    .slice(0, MAX_NEAR_LENGTH)
+    .map(({ c }) => ({ ...c, sourceURL: `https://www.youtube.com/watch?v=${c.videoID}`, sourceProvider: "youtube" }));
+  return near.length ? Object.assign(matched, { nearLength: near }) : matched;
 }
 
 module.exports = {
