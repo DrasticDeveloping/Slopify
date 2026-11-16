@@ -5,7 +5,7 @@ import { navigate, playList, togglePlay } from "../state/actions";
 import { getState, useStore } from "../state/store";
 import {
   askToSavePlaylist, canStream, cancelImport, failureText, getImport, inputIsLink, isAudioOnlySource, spotifySongLinks, type PlaylistFollow, isDownloadable, isPlaylist, PROVIDERS, providerLabel, registerStreams,
-  playlistOwnedTrack, saveSearchResults, searchDiscovery, showTransferInline, stageLabel, streamTrackId, useImport, type Candidate, type ImportState, type MediaKind,
+  playlistOwnedTrack, resultPlatform, resultStreamKey, saveSearchResults, searchDiscovery, showTransferInline, stageLabel, streamTrackId, useImport, type Candidate, type ImportState, type MediaKind,
   type PlaylistSaveOptions, type PlaylistSaved, type Provider, type Resolution,
 } from "../state/importer";
 import { candidateSources, ownedIndex } from "../recommend/owned";
@@ -17,14 +17,9 @@ import { Icon } from "./Icon";
 const DEBOUNCE = 650;
 
 /** The platform a result is listed under. */
-function platformFor(c: Candidate): Provider {
-  if (c.searchProvider) return c.searchProvider;
-  if (c.importMetadata?.provider === "spotify") return "spotify";
-  if (c.importMetadata?.provider === "soundcloud" || c.sourceProvider === "soundcloud") return "soundcloud";
-  return "youtube";
-}
-/** A stable song key for a result, so playing it again resumes the same streamed track. A video is its own track. */
-const keyFor = (c: Candidate, kind: MediaKind = "audio") => `search:${platformFor(c)}:${c.sourceProvider}:${c.videoID || c.providerID || c.sourceURL}${kind === "video" ? ":video" : ""}`;
+const platformFor = resultPlatform;
+/** A stable song key for a result (shared with playlists made of streamed songs), so playing it again resumes the same streamed track. */
+const keyFor = resultStreamKey;
 /** The same result however it was found: a video from YouTube Music and from YouTube is one result. */
 const sameResult = (c: Candidate) => `${platformFor(c)}:${c.videoID || c.providerID || c.sourceURL}`;
 const downloadable = (r: Resolution) => r.candidates.flatMap((c, i) => (isDownloadable(c) ? [i] : []));
@@ -564,7 +559,7 @@ export function ExternalSearch({ query }: { query: string }) {
                     {savingHere ? (
                       <>
                         <button type="button" className="btn" disabled>
-                          {transfer.batch?.following ? "Saving as found…" : "Saving…"}
+                          {savingLabel(transfer.batch)}
                         </button>
                         <button type="button" className="text-btn" onClick={cancelImport}>Cancel</button>
                       </>
@@ -707,6 +702,12 @@ function sameName(a: string, b: string) {
  * The import bar's status line: the save under way (this playlist's, while its page is open), where matching has
  * got, or how the last save ended.
  */
+/** The Save button while its save runs: how many songs, so far. */
+function savingLabel(b: ImportState["batch"]) {
+  if (!b?.total) return b?.streaming ? "Adding…" : "Saving…";
+  return `${b.streaming ? "Adding" : "Saving"} ${countSongs(b.total)}…`;
+}
+
 function ImportStatus({ matching, toGo, saving, outcome, offerOpen }: {
   matching: Resolution["matching"];
   toGo: number;
@@ -720,11 +721,12 @@ function ImportStatus({ matching, toGo, saving, outcome, offerOpen }: {
     const b = saving.batch;
     const at = saving.transferName.indexOf(" • ");
     const name = at >= 0 ? saving.transferName.slice(at + 3) : "";
+    const [doing, done] = b?.streaming ? ["Adding", "Added"] : ["Saving", "Saved"];
     lines.push({
       key: "saving",
       text: !b ? "Saving…"
-        : b.index >= b.total ? `Saved ${countSongs(b.total)} so far · waiting for more to be found`
-        : `Saving ${b.index + 1} of ${b.total}${b.following ? " so far" : ""}${name ? ` · ${name}` : ""}`,
+        : b.index >= b.total ? `${done} ${countSongs(b.total)} so far · waiting for more to be found`
+        : `${doing} ${b.index + 1} of ${b.total}${b.following ? " so far" : ""}${name ? ` · ${name}` : ""}`,
     });
   }
   if (matching) {
@@ -748,8 +750,12 @@ function ImportStatus({ matching, toGo, saving, outcome, offerOpen }: {
     );
   }
   if (!outcome) return null;
-  const { kept, total, failed, cancelled, playlistTitle, playlistId } = outcome;
-  const text = cancelled ? `Stopped. Kept ${kept} of ${countSongs(total)}.`
+  const { kept, total, failed, cancelled, playlistTitle, playlistId, streamed } = outcome;
+  const text = streamed ? (
+    cancelled ? `Stopped. Added ${kept} of ${countSongs(total)} to “${playlistTitle}”.`
+      : `Added ${countSongs(kept)} to “${playlistTitle}”, streaming${failed ? `. ${countSongs(failed)} couldn't be streamed` : ""}.`
+  )
+    : cancelled ? `Stopped. Kept ${kept} of ${countSongs(total)}.`
     : failed ? `Saved ${kept} of ${countSongs(total)} ${playlistTitle ? `to “${playlistTitle}”` : "to your library"}. ${countSongs(failed)} couldn't be downloaded.`
     : total ? `Saved ${countSongs(kept)} ${playlistTitle ? `to “${playlistTitle}”` : "to your library"}.`
     : `Added to “${playlistTitle}”.`;

@@ -1126,14 +1126,18 @@ export function likeMany(ids: string[]) {
   toast(`${fresh.length} songs added to Liked Songs`, { tone: "success" });
 }
 
-export function createPlaylist(name: string, ids: string[] = [], description = "") {
+/**
+ * `keepStreams`: streamed songs join as they are, streaming (a playlist made without downloading its songs);
+ * otherwise each is saved to the library first.
+ */
+export function createPlaylist(name: string, ids: string[] = [], description = "", { keepStreams = false } = {}) {
   const id = `p${Date.now().toString(36)}`;
-  const streamed = ids.filter(isStream);
+  const streamed = keepStreams ? [] : ids.filter(isStream);
   const playlist: Playlist = {
     id,
     name: name.trim() || "My Playlist",
     description,
-    trackIds: [...new Set(ids.filter((t) => !isStream(t)))],
+    trackIds: [...new Set(ids.filter((t) => keepStreams || !isStream(t)))],
     createdAt: Date.now(),
     palette: paletteFromSeed(hashString(id + name)),
   };
@@ -1166,11 +1170,12 @@ export function deletePlaylist(id: string) {
   });
 }
 
-export function addToPlaylist(playlistId: string, ids: string[], { silent = false } = {}) {
+/** `keepStreams`: see createPlaylist. */
+export function addToPlaylist(playlistId: string, ids: string[], { silent = false, keepStreams = false } = {}) {
   const s = getState();
   const p = s.playlists.find((pl) => pl.id === playlistId);
   if (!p) return;
-  const streamed = ids.filter(isStream);
+  const streamed = keepStreams ? [] : ids.filter(isStream);
   if (streamed.length) {
     addStreamsLater(playlistId, streamed);
     ids = ids.filter((id) => !isStream(id));

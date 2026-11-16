@@ -27,7 +27,7 @@ function render(modal: Modal) {
     case "savePlaylist":
       return <SavePlaylistModal count={modal.count} owned={modal.owned} name={modal.name} matching={modal.matching} />;
     case "importSummary":
-      return <ImportSummaryModal saved={modal.saved} playlistId={modal.playlistId} playlistName={modal.playlistName} missing={modal.missing} />;
+      return <ImportSummaryModal saved={modal.saved} playlistId={modal.playlistId} playlistName={modal.playlistName} missing={modal.missing} streamed={modal.streamed} />;
     case "whatsNew":
       return <WhatsNewModal />;
   }
