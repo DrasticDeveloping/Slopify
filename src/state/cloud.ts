@@ -10,12 +10,14 @@ import { flushPersist, getState, setState } from "./store";
  * src/components/CloudAccount.tsx connect it here. Where the service lives and
  * which Clerk app signs in come from release.config.json (cloudUrl,
  * clerkPublishableKey) when the app is built; without them, none of this shows.
+ * Shared playlists' links open on shareUrl (cloud/share-site/) when it has one.
  */
 
-declare const __SLOPIFY_CLOUD__: { url: string; clerkPublishableKey: string };
+declare const __SLOPIFY_CLOUD__: { url: string; shareUrl?: string; clerkPublishableKey: string };
 
 export const cloudConfig = {
   url: __SLOPIFY_CLOUD__.url.replace(/\/+$/, ""),
+  shareUrl: (__SLOPIFY_CLOUD__.shareUrl ?? "").replace(/\/+$/, ""),
   clerkPublishableKey: __SLOPIFY_CLOUD__.clerkPublishableKey,
 };
 /**

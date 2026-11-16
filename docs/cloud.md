@@ -51,6 +51,14 @@ npm.cmd run deploy          # prints the service's address, e.g. https://slopify
 
 When updating the service later, run `npm.cmd run db:migrate` again before `npm.cmd run deploy`: a new version may need tables the old one didn't have. Migration `v3` (`wrangler.jsonc`) ended every Listen Along room open at the time: rooms from before it are removed, and people start a new one.
 
+### Shared playlists' links
+
+Links to shared playlists open on `https://slopify-app.pages.dev/p/<id>` (`shareUrl` in `release.config.json`), a static Cloudflare Pages site in `cloud/share-site/` that hands the link to the desktop app, like the service's own `/p/<id>` page. It reaches no Worker, so it has no request limit. Links on the service's address keep working, and the app accepts both when one is pasted. Deploy it from outside `cloud/`, so wrangler doesn't take `cloud/wrangler.jsonc` for it:
+
+```sh
+npx wrangler pages deploy <repo>/cloud/share-site --project-name slopify-app --branch master
+```
+
 ### 3. The app
 
 In `release.config.json`, set `cloudUrl` to the service's address and `clerkPublishableKey` to the same Publishable Key. The next `npm run desktop`, `node server/main.mjs --open` or EXE build includes them (`SLOPIFY_CLOUD_URL` and `SLOPIFY_CLERK_PUBLISHABLE_KEY` override them for one build).
