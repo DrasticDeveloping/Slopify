@@ -31,6 +31,44 @@ const SEARCH_USER_AGENT =
   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
 const VERSION_WORDS =
   /\b(cover|instrumental|karaoke|live|nightcore|remaster(?:ed)?|remix|reverb|slowed|sped up|tribute)\b/i;
+/**
+ * Uploads that are never the song itself, only made from it (mashups, fan mixes, rhythm-game charts and the games'
+ * own versions): rejected unless the song's own title says the same.
+ */
+const NOT_THE_SONG = /\b(mash(?:up|ed)|medley|mario paint|8.?bit|chiptune|music box|parody|beat ?saber|osu|fnf|fan.?made|fan ?mix|heaven studio|rhythm heaven|project ?sekai|taiko no tatsujin|maimai|chunithm|cover(?:ed)?|karaoke|no ?guide ?melody|(?:left|right) ear|bit ?rape|ear ?rape|low ?bit|8d(?: ?audio)?|backing ?track|drumless|bass ?boost(?:ed)?|off ?(?:main ?)?vocal|instrumental|\d{3} ?hz|live|remix(?:ed)?|bootleg|nightcore|slowed|sped up|reverb|piano|open ?taiko|taiko|beatblock|person collab|nightcord|n25|sekai size|sekai ver|tv size|anime size|(?<!(?:full|original|album|フル) ?)ver(?:sion)?|more more jump|vivid bad squad|leo ?\/ ?need|wonderlands|(?<!original )mix)\b|プロセカ|太鼓の達人|カラオケ|オフボーカル|歌ってみた|弾いてみた|叩いてみた|耳コピ|ピアノ|譜面|ビートセイバー|合唱|25時、ナイトコードで|ニーゴ|カバー|マッシュアップ|メドレー|アレンジ|ガイドメロディ|原曲歌手|[+＋-]\d ?key(?![a-z])/i;
+
+/*
+ * Singing voices (Vocaloid, UTAU, Synthesizer V). A producer often releases one song sung by several of them; an
+ * upload naming a different voice from the one the song credits is that other release ("DEBUG DRUG feat. Kasane
+ * Teto" isn't the Hatsune Miku one).
+ */
+const VOICES = [
+  ["miku", /hatsune ?miku|初音ミク/i], ["teto", /kasane ?teto|重音テト/i], ["rin", /kagamine ?rin|鏡音リン/i],
+  ["len", /kagamine ?len|鏡音レン/i], ["luka", /megurine ?luka|巡音ルカ/i], ["gumi", /\bgumi\b/i],
+  ["kaito", /\bkaito\b/i], ["meiko", /\bmeiko\b/i], ["kafu", /\bkafu\b|可不/i], ["sekai", /星界/i],
+  ["una", /otomachi ?una|音街ウナ/i], ["kiritan", /tohoku ?kiritan|東北きりたん/i], ["zundamon", /zundamon|ずんだもん/i],
+  ["rei", /adachi ?rei|足立レイ/i], ["yukari", /yuzuki ?yukari|結月ゆかり/i], ["flower", /\bv ?flower\b/i],
+];
+/** Whether the upload's title has a word of NOT_THE_SONG the song's own title doesn't ("Song (Live)" for "Song"). */
+function notTheSong(track, candidate) {
+  const words = (text) => new Set([...(text || "").matchAll(new RegExp(NOT_THE_SONG.source, "gi"))].map((m) => m[0].toLowerCase().replace(/\s+/g, " ")));
+  const own = words([track.title, track.alternateTitle].join(" "));
+  return [...words(candidate.title)].some((word) => !own.has(word));
+}
+
+const voicesIn = (text) => new Set(VOICES.filter(([, pattern]) => pattern.test(text || "")).map(([voice]) => voice));
+
+/** Whether the upload names a singing voice the song doesn't credit, when the song credits one. */
+function anotherVoice(track, candidate) {
+  const credited = voicesIn([track.title, track.artist, track.alternateTitle, track.alternateArtist].join(" "));
+  if (!credited.size) {
+    // A song crediting no voice: an upload opening with one in brackets is someone's version sung by it
+    // ("【Kagamine Len】Ghost Rule by DECO*27"), unless it's the artist's own.
+    const lead = /^\s*[【[(]([^】\])]{1,40})[】\])]/.exec(candidate.title || "");
+    return Boolean(lead && voicesIn(lead[1]).size && !artistsOwnChannel(track.artist, candidate.channel ?? candidate.artist));
+  }
+  return [...voicesIn(candidate.title)].some((voice) => !credited.has(voice));
+}
 
 class LocalImportError extends Error {
   constructor(stage, code, message, options = {}) {
@@ -406,6 +444,8 @@ function parseSpotifyPlaylistEmbed(html, expectedPlaylistID) {
     items,
     unavailableCount,
     truncated,
+    // Spotify's embed lists at most 100 songs, so a playlist showing that many may have more.
+    spotifyLimit: entity.trackList.length >= 100,
   };
 }
 
@@ -537,6 +577,326 @@ async function resolveSpotifyPlaylistItemArtwork(item, signal, fetchImpl) {
   return parseSpotifyOEmbed(payload, canonical.trackID).artworkURL;
 }
 
+/**
+ * A playlist's songs as Spotify names them in Japanese, by track id. Spotify lists Japanese artists under English
+ * names by default ("Sasuke Haraguchi") but their own channels use Japanese ones ("原口沙輔"), so matching tries both.
+ * Optional: anything going wrong just leaves the default names.
+ */
+async function spotifyJapaneseNames(embedURL, playlistID, signal, fetchImpl) {
+  const names = new Map();
+  try {
+    const response = await fetchImpl(embedURL, {
+      headers: { Accept: "text/html", "Accept-Language": "ja", "User-Agent": "Slopify/1.0" },
+      redirect: "error",
+      signal,
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return names;
+    }
+    const html = await responseTextWithLimit(
+      response,
+      MAX_SPOTIFY_RESPONSE_BYTES,
+      importError("resolving_metadata", "SPOTIFY_INVALID_METADATA", "Spotify returned invalid playlist metadata."),
+    );
+    for (const item of parseSpotifyPlaylistEmbed(html, playlistID).items) names.set(item.trackID, { artist: item.artist, title: item.title });
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+  }
+  return names;
+}
+
+/*
+ * Songs pasted from Spotify. Spotify shows other apps only a playlist's first 100 songs (its embed page), but its
+ * app copies a link per song for any selection (select all, copy), so a whole playlist can be pasted as song links,
+ * one per line, or run together where a one-line box drops the line breaks. Each song's details come from its own
+ * public embed page, read one after another at a pace Spotify tolerates (see readSpotifyTracks).
+ */
+/*
+ * A pasted song: a Spotify song link, or a link to one of the user's own files added to Spotify from their computer
+ * ("open.spotify.com/local/Artist/Album/Title/Seconds", each part URL-encoded; "spotify:local:…" with "+" for
+ * spaces), which Spotify copies alongside its own songs. A file has no Spotify page: its tags are all there is.
+ */
+const PASTED_SONG_IN_TEXT = new RegExp([
+  /(?:open\.spotify\.com\/(?:intl-[a-z]{2}(?:-[a-z]{2})?\/)?track\/|spotify:track:)([A-Za-z0-9]{22})/.source,
+  /open\.spotify\.com\/local\/([^/\s]*)\/([^/\s]*)\/([^/\s]*)\/(\d{1,6})/.source,
+  /spotify:local:([^:\s]*):([^:\s]*):([^:\s]*):(\d{1,6})/.source,
+].join("|"), "gi");
+/**
+ * Song pages are asked for this often to begin with, a few at a time (a page takes Spotify a quarter to half a
+ * second to send). Measured Nov 2026: 12 pages a second were turned away after 186; 4 to 6.6 a second went 315
+ * pages without a refusal. The pace halves whenever Spotify asks to slow down and creeps back up while it doesn't.
+ */
+const SPOTIFY_READ_GAP_MS = 170;
+const SPOTIFY_FASTEST_GAP_MS = 150;
+const SPOTIFY_SLOWEST_GAP_MS = 2_000;
+const SPOTIFY_READS_AT_ONCE = 4;
+/** The longest wait Spotify may ask for (Retry-After) that's waited out; past that, songs are left unread. */
+const SPOTIFY_MAX_WAIT_MS = 10 * 60_000;
+/** Spotify's own limit on a playlist's length, so any playlist pastes whole. */
+const MAX_PASTED_SONGS = 10_000;
+/** How often one song's details are asked for while Spotify doesn't answer. */
+const SPOTIFY_TRACK_ATTEMPTS = 5;
+const spotifyTrackDetails = new Map();
+const MAX_REMEMBERED_TRACKS = 12_000;
+/** Song details kept on disk too (see setSpotifyTrackStore), so a list pasted again needn't be read from Spotify. */
+let spotifyTrackStore = null;
+/** When the next song page may be asked for, and the gap after it: pushed back when Spotify asks (429) or stumbles. */
+let nextSpotifyReadAt = 0;
+let spotifyReadGap = SPOTIFY_READ_GAP_MS;
+let spotifyReadsSinceRefusal = 0;
+let spotifyRefusedAt = 0;
+
+/** `store`: `{ get(trackID), set(trackID, details) }` remembering songs' details between runs, or null. */
+function setSpotifyTrackStore(store) {
+  spotifyTrackStore = store || null;
+}
+
+function decodedLinkPart(value, plusIsSpace) {
+  let text = value || "";
+  if (plusIsSpace) text = text.replace(/\+/g, " ");
+  try { text = decodeURIComponent(text); } catch { /* left as it is */ }
+  return text.replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+/**
+ * The songs in pasted text, in order, each once: `{ trackID }` for a Spotify song, `{ local }` for a file of the
+ * user's own (`{ artist, album, title, durationSeconds }`, from its tags; an artist without a letter or digit, "." or
+ * nothing, is none).
+ */
+function pastedSongsIn(text) {
+  if (typeof text !== "string" || text.length > 1_500_000) return [];
+  const songs = [];
+  const seen = new Set();
+  for (const match of text.matchAll(PASTED_SONG_IN_TEXT)) {
+    if (match[1]) {
+      if (seen.has(match[1])) continue;
+      seen.add(match[1]);
+      songs.push({ trackID: match[1] });
+      continue;
+    }
+    const uri = match[6] !== undefined;
+    const [artist, album, title, seconds] = (uri ? match.slice(6, 10) : match.slice(2, 6)).map((part, at) => (at < 3 ? decodedLinkPart(part, uri) : part));
+    if (!title) continue;
+    const local = {
+      artist: /[\p{L}\p{N}]/u.test(artist) ? artist : "",
+      album: album || null,
+      title,
+      durationSeconds: Number(seconds) || null,
+    };
+    const key = `local:${local.artist}|${local.album}|${local.title}|${local.durationSeconds}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    songs.push({ local });
+  }
+  return songs;
+}
+
+/** The Spotify song ids in pasted text, in order, each once. */
+function spotifyTrackIDsIn(text) {
+  return pastedSongsIn(text).flatMap((song) => (song.trackID ? [song.trackID] : []));
+}
+
+function waitFor(ms, signal) {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const stop = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    if (signal?.aborted) stop();
+    else signal?.addEventListener("abort", stop, { once: true });
+  });
+}
+
+/** Waits for this page's turn (shared by every list being read), telling `onWait(seconds)` of a long wait Spotify asked for. */
+async function spotifyReadTurn(signal, onWait) {
+  const now = Date.now();
+  const at = Math.max(now, nextSpotifyReadAt);
+  nextSpotifyReadAt = at + spotifyReadGap;
+  if (at - now > 2_000) onWait?.(Math.round((at - now) / 1000));
+  await waitFor(at - now, signal);
+}
+
+/** Spotify asked to slow down: half the pace from now on (it creeps back up; see spotifyPageRead). */
+function spotifyRefusedPage() {
+  // The pages already on their way when Spotify refused one are refused too: one slowdown for them all.
+  if (Date.now() - spotifyRefusedAt > 2_000) spotifyReadGap = Math.min(SPOTIFY_SLOWEST_GAP_MS, spotifyReadGap * 2);
+  spotifyRefusedAt = Date.now();
+  spotifyReadsSinceRefusal = 0;
+}
+
+/** A page Spotify sent: after a run of them, a little quicker again. */
+function spotifyPageRead() {
+  spotifyReadsSinceRefusal += 1;
+  if (spotifyReadsSinceRefusal % 40 === 0) spotifyReadGap = Math.max(SPOTIFY_FASTEST_GAP_MS, Math.round(spotifyReadGap * 0.85));
+}
+
+function rememberedSpotifyTrack(trackID) {
+  const known = spotifyTrackDetails.get(trackID);
+  if (known) return known;
+  let stored = null;
+  try { stored = spotifyTrackStore?.get(trackID) || null; } catch { stored = null; }
+  if (stored && typeof stored.title === "string" && stored.title && typeof stored.artist === "string" && stored.artist) {
+    spotifyTrackDetails.set(trackID, stored);
+    return stored;
+  }
+  return null;
+}
+
+function rememberSpotifyTrack(trackID, details) {
+  spotifyTrackDetails.set(trackID, details);
+  while (spotifyTrackDetails.size > MAX_REMEMBERED_TRACKS) spotifyTrackDetails.delete(spotifyTrackDetails.keys().next().value);
+  try { spotifyTrackStore?.set(trackID, details); } catch { /* Remembering is only a shortcut for next time. */ }
+}
+
+/**
+ * One song's details from its embed page: `{ details }`, `{ missing: true }` (no such public song), or
+ * `{ failed: true }` (Spotify kept refusing or failing, so whether it's there is unknown).
+ */
+async function spotifyTrackFromEmbed(trackID, signal, fetchImpl, onWait) {
+  const known = rememberedSpotifyTrack(trackID);
+  if (known) return { details: known };
+  for (let attempt = 0; attempt < SPOTIFY_TRACK_ATTEMPTS; attempt++) {
+    await spotifyReadTurn(signal, onWait);
+    let response;
+    try {
+      response = await fetchImpl(`https://open.spotify.com/embed/track/${trackID}`, {
+        headers: { Accept: "text/html", "User-Agent": "Slopify/1.0" },
+        redirect: "error",
+        signal,
+      });
+    } catch (error) {
+      if (error?.name === "AbortError" || signal?.aborted) throw error;
+      nextSpotifyReadAt = Math.max(nextSpotifyReadAt, Date.now() + 1_000 * 2 ** attempt);
+      continue;
+    }
+    if (response.status === 429 || response.status >= 500) {
+      await response.body?.cancel().catch(() => undefined);
+      // Waited out as long as Spotify asks (it says how long), by every reader.
+      // (Spotify says "Retry-After: 0" when it means soon: a few seconds then, ten if it doesn't say.)
+      const header = response.headers.get("retry-after");
+      const asked = header === null ? NaN : Number(header);
+      const wait = response.status === 429 ? (Number.isFinite(asked) ? Math.max(asked * 1_000, 3_000) : 10_000) : 3_000 * (attempt + 1);
+      if (response.status === 429) spotifyRefusedPage();
+      if (wait > SPOTIFY_MAX_WAIT_MS) return { failed: true };
+      nextSpotifyReadAt = Math.max(nextSpotifyReadAt, Date.now() + wait);
+      continue;
+    }
+    if (response.status === 404 || response.status === 400) {
+      await response.body?.cancel().catch(() => undefined);
+      return { missing: true };
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return { failed: true };
+    }
+    try {
+      const html = await responseTextWithLimit(response, MAX_SPOTIFY_RESPONSE_BYTES, importError("resolving_metadata", "SPOTIFY_INVALID_METADATA", "Spotify returned invalid track metadata."));
+      spotifyPageRead();
+      const details = parseSpotifyEmbedEntity(html, trackID);
+      rememberSpotifyTrack(trackID, details);
+      return { details };
+    } catch (error) {
+      if (error?.name === "AbortError" || signal?.aborted) throw error;
+      // A page without the song's details: not a public song (removed, or not a song).
+      return { missing: true };
+    }
+  }
+  return { failed: true };
+}
+
+/** A pasted song's playlist entry from its id and place, details filled in once read. */
+function pastedSpotifyTrack(trackID, at, details = null) {
+  return {
+    provider: "spotify",
+    type: "track",
+    trackID,
+    title: details?.title || "",
+    artist: details?.artist || "",
+    album: null,
+    trackNumber: at + 1,
+    durationSeconds: details?.durationSeconds ?? null,
+    artworkURL: details?.artworkURL || null,
+    embedURL: `https://open.spotify.com/embed/track/${trackID}`,
+    sourceURL: `https://open.spotify.com/track/${trackID}`,
+  };
+}
+
+/** A pasted file of the user's own (see pastedSongsIn) as a playlist entry: searched for under its tags. */
+function pastedLocalTrack(local, at) {
+  return {
+    provider: "spotify",
+    type: "track",
+    trackID: null,
+    localFile: true,
+    title: local.title,
+    artist: local.artist || "",
+    album: local.album || null,
+    trackNumber: at + 1,
+    durationSeconds: local.durationSeconds ?? null,
+    artworkURL: null,
+    embedURL: null,
+    sourceURL: null,
+  };
+}
+
+/**
+ * Reads pasted songs (see spotifyTrackIDsIn) at Spotify's pace, a few pages on their way at once, roughly in order:
+ * `onTrack(at, outcome)` as each is read, outcome `{ track }`, `{ missing: true }` or `{ failed: true }`;
+ * `onWait(seconds)` while Spotify has asked for a pause. Songs read before (this run or an earlier one) come at once.
+ */
+async function readSpotifyTracks(trackIDs, signal, fetchImpl = fetch, onTrack = () => {}, onWait = () => {}) {
+  let next = 0;
+  const reader = async () => {
+    while (next < trackIDs.length) {
+      const at = next++;
+      const trackID = trackIDs[at];
+      const result = await spotifyTrackFromEmbed(trackID, signal, fetchImpl, onWait);
+      onTrack(at, result.details ? { track: pastedSpotifyTrack(trackID, at, result.details) } : result);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(SPOTIFY_READS_AT_ONCE, trackIDs.length) }, reader));
+}
+
+/**
+ * Pasted Spotify songs read whole, as a playlist (a playlist import reads them while matching instead; see
+ * readSpotifyTracks). Songs Spotify has no page for count as unavailable (`unavailableCount`); ones it kept refusing to
+ * answer for, as unread (`unreadCount`).
+ */
+async function resolveSpotifyTrackList(trackIDs, signal, fetchImpl = fetch, onProgress = () => {}) {
+  const ids = trackIDs.slice(0, MAX_PASTED_SONGS);
+  const results = new Array(ids.length).fill(null);
+  let completed = 0;
+  await readSpotifyTracks(ids, signal, fetchImpl, (at, outcome) => {
+    results[at] = outcome;
+    completed += 1;
+    onProgress(completed, ids.length);
+  });
+  const items = results.flatMap((outcome) => (outcome?.track ? [outcome.track] : []));
+  const unreadCount = results.filter((outcome) => outcome?.failed).length;
+  if (!items.length) {
+    throw unreadCount
+      ? importError("resolving_metadata", "SPOTIFY_RATE_LIMITED", "Spotify isn't answering right now. Paste the songs again in a minute.")
+      : importError("resolving_metadata", "SPOTIFY_PLAYLIST_EMPTY", "Spotify had no details for any of the pasted songs.");
+  }
+  return {
+    playlistID: null,
+    title: "Songs pasted from Spotify",
+    author: "Spotify",
+    artworkURL: items[0].artworkURL,
+    sourceURL: null,
+    items,
+    unavailableCount: results.filter((outcome) => outcome?.missing).length,
+    unreadCount,
+    truncated: trackIDs.length > ids.length,
+  };
+}
+
 async function resolveSpotifyPlaylist(value, signal, fetchImpl = fetch) {
   const canonical = await canonicalSpotifySource(value, "playlist", signal, fetchImpl);
   const oEmbedURL = new URL("/oembed", canonical.url.origin);
@@ -581,6 +941,12 @@ async function resolveSpotifyPlaylist(value, signal, fetchImpl = fetch) {
     ),
     canonical.playlistID,
   );
+  const japanese = await spotifyJapaneseNames(oEmbed.embedURL, canonical.playlistID, signal, fetchImpl);
+  for (const item of embedded.items) {
+    const names = japanese.get(item.trackID);
+    if (names?.artist && names.artist !== item.artist) item.alternateArtist = names.artist;
+    if (names?.title && names.title !== item.title) item.alternateTitle = names.title;
+  }
   const items = [];
   for (let offset = 0; offset < embedded.items.length; offset += 4) {
     const chunk = embedded.items.slice(offset, offset + 4);
@@ -606,6 +972,7 @@ async function resolveSpotifyPlaylist(value, signal, fetchImpl = fetch) {
     items,
     unavailableCount: embedded.unavailableCount,
     truncated: Boolean(embedded.truncated),
+    spotifyLimit: Boolean(embedded.spotifyLimit),
   };
 }
 
@@ -1079,12 +1446,106 @@ function normalizeMatchText(value) {
     .replace(/[^\p{Letter}\p{Number}]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
+/** Text in a script written without spaces between words. */
+const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/** Whether some run of consecutive `words`, written together, is exactly `compact` ("honto no" spells "hontono"). */
+function wordsSpell(words, compact) {
+  for (let start = 0; start < words.length; start++) {
+    let joined = "";
+    for (let end = start; end < words.length && joined.length < compact.length; end++) {
+      joined += words[end];
+      if (joined === compact) return true;
+    }
+  }
+  return false;
+}
+
+/** Romanised Japanese with its long vowels written short, word by word ("shoujo rei" -> " shojo rei "). */
+const longVowelsShort = (text) => ` ${text.replace(/ou|oo/g, "o").replace(/uu/g, "u")} `;
+
+/*
+ * Kana spelled out in Latin letters (Hepburn), so a name written in kana on Spotify ("タカオカミズキ") is recognised
+ * on a channel that writes it out ("takaokamizuki"). Only names written wholly in kana are spelled out: kanji have
+ * readings no table can give.
+ */
+const KANA_SYLLABLES = (() => {
+  const rows = {
+    a: "あいうえお", ka: "かきくけこ", sa: "さしすせそ", ta: "たちつてと", na: "なにぬねの", ha: "はひふへほ",
+    ma: "まみむめも", ya: "や ゆ よ", ra: "らりるれろ", wa: "わ   を", ga: "がぎぐげご", za: "ざじずぜぞ",
+    da: "だぢづでど", ba: "ばびぶべぼ", pa: "ぱぴぷぺぽ",
+  };
+  const vowels = ["a", "i", "u", "e", "o"];
+  const special = { し: "shi", ち: "chi", つ: "tsu", ふ: "fu", じ: "ji", ぢ: "ji", づ: "zu", を: "o" };
+  const map = new Map([["ん", "n"], ["ゃ", "ya"], ["ゅ", "yu"], ["ょ", "yo"], ["ぁ", "a"], ["ぃ", "i"], ["ぅ", "u"], ["ぇ", "e"], ["ぉ", "o"], ["ゔ", "vu"]]);
+  for (const [row, kana] of Object.entries(rows)) {
+    const consonant = row.slice(0, -1);
+    [...kana].forEach((k, i) => {
+      if (k !== " ") map.set(k, special[k] ?? consonant + vowels[i]);
+    });
+  }
+  return map;
+})();
+function kanaToRomaji(text) {
+  // Katakana as hiragana (same sounds, one table).
+  const kana = [...(text || "").replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60))];
+  let out = "";
+  for (let i = 0; i < kana.length; i++) {
+    const c = kana[i];
+    const next = kana[i + 1];
+    if (c === "っ") {
+      // A small tsu doubles the next consonant ("ッチ" -> "tchi" is written "cchi" here; close enough to compare).
+      const following = KANA_SYLLABLES.get(next ?? "");
+      if (following) out += following[0];
+      continue;
+    }
+    if (c === "ー") continue; // A long-vowel mark: written short, as most romanisations do.
+    const syllable = KANA_SYLLABLES.get(c);
+    if (!syllable) {
+      out += c;
+      continue;
+    }
+    // A small ya/yu/yo joins the syllable before it: きゃ -> kya, しゃ -> sha, ちゃ -> cha, じゃ -> ja.
+    if (next && "ゃゅょ".includes(next) && syllable.endsWith("i")) {
+      const glide = KANA_SYLLABLES.get(next);
+      out += /^(sh|ch|j)i$/.test(syllable) ? syllable.slice(0, -1) + glide.slice(1) : syllable.slice(0, -1) + glide;
+      i++;
+      continue;
+    }
+    out += syllable;
+  }
+  return out;
+}
+/** A name written wholly in kana, spelled out ("タカオカミズキ" -> "takaokamizuki"); null for any other name. */
+function romajiName(name) {
+  const compact = (name || "").replace(/[\s・･]/g, "");
+  return compact && /^[\p{Script=Hiragana}\p{Script=Katakana}ー]+$/u.test(compact) ? kanaToRomaji(compact) : null;
+}
+
 function tokenScore(expected, actual) {
   const left = normalizeMatchText(expected);
   const right = normalizeMatchText(actual);
   if (!left || !right) return 0;
   if (left === right) return 1;
-  if (right.includes(left) || left.includes(right)) return 0.92;
+  // One inside the other, as whole words in Latin text ("be mine" isn't inside "maybe mine"); Japanese and Chinese
+  // have no spaces to go by (see below).
+  const inside = (part, whole) => (CJK.test(part) ? whole.includes(part) : ` ${whole} `.includes(` ${part} `));
+  if (inside(left, right) || inside(right, left)) return 0.92;
+  // Japanese and Chinese aren't written with spaces between words, so where the spaces fall is up to whoever
+  // typed the title ("愛して 愛して 愛して" on Spotify, "愛して愛して愛して" on YouTube). Compared without them.
+  if (CJK.test(left)) {
+    const compactLeft = left.replace(/ /g, "");
+    const compactRight = right.replace(/ /g, "");
+    if (compactLeft === compactRight) return 1;
+    if (compactRight.includes(compactLeft) || compactLeft.includes(compactRight)) return 0.92;
+  } else {
+    // Romanised Japanese is spaced however its typist liked too: "hontono" on Spotify, "Honto no" on YouTube; and
+    // its long vowels spelled either way: "Shojo Rei" on Spotify, "Shoujo Rei" on YouTube. Only for titles long
+    // enough not to turn up inside unrelated words.
+    const compactLeft = left.replace(/ /g, "");
+    // Both only as whole words: "be mine" isn't inside "maybe mine", nor "for you" inside "four young".
+    if (compactLeft.length >= 5 && (wordsSpell(right.split(" "), compactLeft) || longVowelsShort(right).includes(longVowelsShort(left)))) return 0.92;
+  }
   const leftTokens = new Set(left.split(" "));
   const rightTokens = new Set(right.split(" "));
   let shared = 0;
@@ -1105,15 +1566,123 @@ function durationScore(expected, actual) {
 function hasUnmatchedQualifier(expected, candidate) {
   const expectedText = normalizeMatchText(expected);
   for (const match of candidate.matchAll(/(?:\(([^)]{1,120})\)|\[([^\]]{1,120})\])/g)) {
-    const qualifier = normalizeMatchText(match[1] || match[2]);
+    // Tags about the upload rather than the recording ("[ENG SUB]", "(Sub Español)", "[MV]") aren't another version.
+    const qualifier = normalizeMatchText(match[1] || match[2])
+      .replace(/\b(eng|english|esp|espanol|sub|subs|subbed|subtitle|subtitles|subtitulado|romaji|kanji|translation|mv|pv|full)\b/g, " ")
+      .replace(/\s+/g, " ").trim();
     if (qualifier && !expectedText.includes(qualifier)) return true;
   }
   return false;
 }
 
+/** A title without its featured-artist credit ("Song (feat. X)", "Song feat. X"): a credit is about the artists, not the song. */
+function withoutCredit(title) {
+  return (title || "").replace(/\s*[([]\s*(?:feat|ft|featuring)\b\.?[^)\]]*[)\]]/giu, " ")
+    // Up to the next bracket or separator: "【Artist ft. X】 Song" keeps its song.
+    .replace(/\s+(?:feat|ft|featuring)\b\.?[^()[\]【】「」|/\-–—]*/giu, " ").trim() || title;
+}
+
+/** A credit's first artist, the one whose song it is: "ryo (supercell), Hatsune Miku" is "ryo (supercell)". */
+function mainArtist(artist) {
+  return (artist || "").split(/\s*(?:,|、|&|\bfeat\b\.?|\bft\b\.?)\s*/i)[0] || artist || "";
+}
+
+/**
+ * Whether `channel` is the song's main artist's own: named exactly for them, give or take "- Topic", "Official" and
+ * "VEVO" ("原口沙輔", "マサラダ - Topic"). Only a name containing theirs ("原口沙輔 ファン") is someone else's.
+ */
+function artistsOwnChannel(artist, channel) {
+  const own = normalizeMatchText(mainArtist(artist)).replace(/ /g, "");
+  if (!own) return false;
+  // A name in kana counts spelled out too: "タカオカミズキ" is the channel "takaokamizuki".
+  const spelled = romajiName(mainArtist(artist));
+  // A channel giving its name two ways counts under either: "Yomitan Akane (読谷あかね)", "Jamie Paige / JamieP".
+  const whole = (channel || "").replace(/vevo$/i, "");
+  const names = [whole, ...whole.split(/\s+\/\s+|\s*[(（]|[)）]/)];
+  return names.some((name) => {
+    const compact = normalizeMatchText(name).replace(/ /g, "");
+    return compact === own || (spelled !== null && compact === spelled);
+  });
+}
+
+/**
+ * The names a song goes by: its own, then the ones Spotify gives it in Japanese (`alternateArtist`,
+ * `alternateTitle`), which are what Japanese artists' channels use ("原口沙輔" for "Sasuke Haraguchi").
+ */
+function trackNames(track) {
+  const names = [track];
+  const artist = track.alternateArtist || track.artist;
+  const title = track.alternateTitle || track.title;
+  if (artist !== track.artist || title !== track.title) names.push({ ...track, artist, title });
+  return names;
+}
+
+/** A candidate's best score under any of the song's names. */
+function scoreUnderNames(track, candidate) {
+  let best = null;
+  for (const names of trackNames(track)) {
+    const scored = scoreAudioSource(names, candidate);
+    if (scored && (!best || scored.score > best.score)) best = scored;
+  }
+  return best;
+}
+
+/**
+ * The artist's own upload of a song titled in another language ("イガク" for Spotify's "Medicine",
+ * "ウルトラトレーラー" for "Ultra Trailer"), where no title comparison can work: from a channel named for the song's
+ * main artist, the same length to within 3 seconds, no words of another title or version, and the only such upload
+ * found (two would be a guess between them).
+ */
+function ownUploadByLength(track, candidates) {
+  if (!track.durationSeconds) return null;
+  const names = trackNames(track);
+  const pool = new Set(names.flatMap((n) => normalizeMatchText(`${n.title} ${n.artist}`).split(" ")));
+  const fits = candidates.filter((c) => {
+    if (!c.durationSeconds || Math.abs(c.durationSeconds - track.durationSeconds) > 3) return false;
+    if (!names.some((n) => artistsOwnChannel(n.artist, c.channel ?? c.artist))) return false;
+    // (A version the song itself is, like a cover of a cover, is fine: notTheSong compares against the song's title.)
+    if (notTheSong(track, c) || (VERSION_WORDS.test(c.title) && !VERSION_WORDS.test(track.title)) || anotherVoice(track, c)) return false;
+    // Latin words the song's names don't have are another song's title ("Debug Drug" isn't "Medicine").
+    return !normalizeMatchText(withoutCredit(c.title)).split(" ").some((word) => /^[a-z]{4,}$/.test(word) && !pool.has(word));
+  });
+  if (fits.length !== 1) return null;
+  const [candidate] = fits;
+  return {
+    ...candidate,
+    sourceURL: `https://www.youtube.com/watch?v=${candidate.videoID}`,
+    score: 0.6,
+    confidence: "possible",
+    evidenceStrength: "metadata_only",
+    requiresReview: true,
+    autoSelectable: false,
+    actionable: false,
+    match: {
+      title: null,
+      artist: 1,
+      album: null,
+      duration: durationScore(track.durationSeconds, candidate.durationSeconds).score,
+      durationDeltaSeconds: Math.abs(candidate.durationSeconds - track.durationSeconds),
+      byArtistAndLength: 1,
+    },
+  };
+}
+
 function scoreAudioSource(track, candidate) {
-  const title = tokenScore(track.title, candidate.title);
-  const artist = Math.max(tokenScore(track.artist, candidate.artist), tokenScore(track.artist, candidate.title) * 0.75);
+  // Credits are left out of the title comparison: two of one producer's songs, both "feat. Hatsune Miku", otherwise
+  // share most of their title words.
+  const title = tokenScore(withoutCredit(track.title), withoutCredit(candidate.title));
+  // (An artist written in kana also counts spelled out: "takaokamizuki" for "タカオカミズキ".)
+  const spelledArtist = romajiName(mainArtist(track.artist));
+  let artist = track.localFile && !track.artist ? null : Math.max(
+    tokenScore(track.artist, candidate.artist),
+    tokenScore(track.artist, candidate.title) * 0.75,
+    spelledArtist ? tokenScore(spelledArtist, candidate.artist) : 0,
+  );
+  // A file of the user's own (see pastedLocalTrack) is often tagged with whoever uploaded it, or a folder's name
+  // ("Switch", "Game SoundTracks"), not the artist: where that names no one in the upload, its title and its exact
+  // length decide instead.
+  if (track.localFile && artist !== null && artist < 0.28) artist = null;
+  const untagged = artist === null;
   const album = track.album && candidate.album ? tokenScore(track.album, candidate.album) : null;
   const duration = durationScore(track.durationSeconds, candidate.durationSeconds);
   const weighted = [[0.46, title], [0.25, artist], [0.11, album], [0.18, duration.score]];
@@ -1125,15 +1694,24 @@ function scoreAudioSource(track, candidate) {
     weight += candidateWeight;
   }
   let score = weight ? total / weight : 0;
+  if (notTheSong(track, candidate) || anotherVoice(track, candidate)) return null;
+  // Channels of "high quality rips" that are mostly altered for a joke (SiIvaGunner and its sister channels).
+  if (/\b(?:siivagunner|giivasunner|tiivasunner|vinesauce ?is ?hope)\b/i.test(`${candidate.channel ?? ""} ${candidate.artist ?? ""}`)) return null;
   if (VERSION_WORDS.test(candidate.title) && !VERSION_WORDS.test(track.title)) score -= 0.18;
   if (hasUnmatchedQualifier(track.title, candidate.title)) score -= 0.18;
   if (candidate.officialArtist) score += 0.07;
   const targetNonLatin = (track.title.match(/[^\x00-\x7F]/g) || []).length;
   const candidateNonLatin = (candidate.title.match(/[^\x00-\x7F]/g) || []).length;
-  if (targetNonLatin === 0 && candidateNonLatin >= 3) score -= 0.14;
+  // Another language's version of a song, unless it's the artist's own upload: Japanese artists' uploads carry the
+  // Japanese title alongside the English one Spotify lists ("イガク/Medicine").
+  if (targetNonLatin === 0 && candidateNonLatin >= 3 && artist < 0.6) score -= 0.14;
   if (/\b(topic|official artist channel)\b/i.test(candidate.artist || "")) score += 0.035;
+  // The artist's own channel over someone else's upload of the same song.
+  if (artistsOwnChannel(track.artist, candidate.channel ?? candidate.artist)) score += 0.04;
   score = Math.max(0, Math.min(1, score));
-  if (title < 0.48 || artist < 0.28 || (duration.delta !== null && duration.delta > 24) || score < 0.56) return null;
+  if (untagged) {
+    if (title < 0.55 || duration.delta === null || duration.delta > 4 || score < 0.56) return null;
+  } else if (title < 0.48 || artist < 0.28 || (duration.delta !== null && duration.delta > 24) || score < 0.56) return null;
   return {
     ...candidate,
     sourceURL: `https://www.youtube.com/watch?v=${candidate.videoID}`,
@@ -1148,7 +1726,7 @@ function scoreAudioSource(track, candidate) {
     actionable: false,
     match: {
       title: Number(title.toFixed(4)),
-      artist: Number(artist.toFixed(4)),
+      artist: artist === null ? null : Number(artist.toFixed(4)),
       album: album === null ? null : Number(album.toFixed(4)),
       duration: duration.score === null ? null : Number(duration.score.toFixed(4)),
       durationDeltaSeconds: duration.delta,
@@ -1165,7 +1743,22 @@ function allowedYouTubeDocumentURL(value) {
   }
 }
 
-async function searchDocument(url, signal, fetchImpl) {
+/**
+ * YouTube turning this computer's searches away for a while: after a burst of them it redirects to its
+ * "unusual traffic" page (off YouTube), answers 429, or sends a page without results. It clears in about a minute.
+ */
+function youtubeSearchRefused() {
+  return Object.assign(
+    importError("searching_candidates", "YOUTUBE_SEARCH_BUSY", "YouTube is turning searches away for a moment. Try again in a minute."),
+    { retryable: true },
+  );
+}
+
+/**
+ * A YouTube page. `search`: it is a search results page, so YouTube refusing it (see `youtubeSearchRefused`) or not
+ * answering throws a retryable error instead of passing for a page with nothing on it.
+ */
+async function searchDocument(url, signal, fetchImpl, { search = false } = {}) {
   let current = url;
   let response = null;
   for (let redirects = 0; redirects <= 5; redirects += 1) {
@@ -1177,6 +1770,7 @@ async function searchDocument(url, signal, fetchImpl) {
       });
     } catch (error) {
       if (error?.name === "AbortError") throw error;
+      if (search) throw youtubeSearchRefused();
       return null;
     }
     if ([301, 302, 303, 307, 308].includes(response.status)) {
@@ -1184,13 +1778,17 @@ async function searchDocument(url, signal, fetchImpl) {
       await response.body?.cancel().catch(() => undefined);
       if (!location) return null;
       try { current = new URL(location, current); } catch { return null; }
-      if (!allowedYouTubeDocumentURL(current)) return null;
+      if (!allowedYouTubeDocumentURL(current)) {
+        if (search) throw youtubeSearchRefused();
+        return null;
+      }
       continue;
     }
     break;
   }
   if (!response?.ok || !allowedYouTubeDocumentURL(response.url || current.toString())) {
     await response?.body?.cancel().catch(() => undefined);
+    if (search && (response?.status === 429 || response?.status >= 500)) throw youtubeSearchRefused();
     return null;
   }
   try {
@@ -1201,6 +1799,7 @@ async function searchDocument(url, signal, fetchImpl) {
     );
   } catch (error) {
     if (error?.name === "AbortError") throw error;
+    if (search) throw youtubeSearchRefused();
     return null;
   }
 }
@@ -1221,33 +1820,211 @@ async function enrichCandidate(track, candidate, signal, fetchImpl) {
   };
 }
 
+/*
+ * Only YouTube's web results page is searched. YouTube Music's search page no longer carries its results in the
+ * page (they load afterwards), so fetching it found nothing and doubled the requests that get searches refused.
+ * Throws a retryable error (`youtubeSearchRefused`) when YouTube turns the search away, so a caller can tell that
+ * apart from no upload matching.
+ */
 async function searchYouTubeAudioSources(track, signal, fetchImpl = fetch, options = {}) {
   const maximumResults = Math.max(1, Math.min(MAX_RESULTS, Number(options.maxResults) || MAX_RESULTS));
   const shouldEnrich = options.enrich !== false;
-  const query = [track.artist, track.title, track.album].filter(Boolean).join(" ");
-  const musicURL = new URL("/search", "https://music.youtube.com");
-  musicURL.searchParams.set("q", query);
   const webURL = new URL("/results", "https://www.youtube.com");
-  webURL.searchParams.set("search_query", `${track.artist} ${track.title} official audio`);
+  // `broad`: a second try for a song the first search didn't find, under its last names (Japanese ones when Spotify
+  // has them) and without "official audio", which leaves out music videos and fan uploads.
+  const names = trackNames(track).at(-1);
+  // A file of the user's own (often a game's soundtrack, uploaded by fans) is looked for by its tags as they are; its
+  // broader search leaves out the artist tag, which is often an uploader's or a folder's name.
+  const query = track.localFile
+    ? (options.broad ? track.title : `${track.artist} ${track.title}`)
+    : options.broad ? `${names.artist} ${names.title}` : `${track.artist} ${track.title} official audio`;
+  // A word starting with "-" tells YouTube to leave out results with that word: "ヒバナ -Reloaded-" would find every
+  // ヒバナ but the Reloaded one. Those dashes are the title's punctuation, not that.
+  webURL.searchParams.set("search_query", query.replace(/(^|\s)-+(?=\S)/g, "$1").trim());
   webURL.searchParams.set("sp", "EgIQAQ%3D%3D");
-  const [musicHTML, webHTML] = await Promise.all([
-    searchDocument(musicURL, signal, fetchImpl),
-    searchDocument(webURL, signal, fetchImpl),
-  ]);
-  const unique = new Map();
-  for (const candidate of [
-    ...(musicHTML ? parseYouTubeMusicSearch(musicHTML) : []),
-    ...(webHTML ? parseYouTubeWebSearch(webHTML) : []),
-  ]) {
-    const existing = unique.get(candidate.videoID);
-    if (!existing || candidate.sourceProvider === "youtube_music") unique.set(candidate.videoID, candidate);
-  }
-  const preliminary = [...unique.values()].map((candidate) => scoreAudioSource(track, candidate))
-    .filter(Boolean).sort((left, right) => right.score - left.score).slice(0, maximumResults);
+  const webHTML = await searchDocument(webURL, signal, fetchImpl, { search: true });
+  const data = webHTML ? extractYouTubeInitialData(webHTML) : null;
+  // A page without search data, or without videos and without YouTube's own "No results found" (its empty-search
+  // icon), is one of the ways YouTube refuses a search, not an answer.
+  if (!data) throw youtubeSearchRefused();
+  const found = parseYouTubeSearchData(data).candidates;
+  if (!found.length && !webHTML.includes('"iconType":"EMPTY_SEARCH"')) throw youtubeSearchRefused();
+  const { ranked: preliminary, fallback } = rankedUploads(track, found, maximumResults);
+  if (!preliminary.length) return fallback;
   if (!shouldEnrich) return preliminary;
   const enriched = await Promise.all(preliminary.map((candidate) => enrichCandidate(track, candidate, signal, fetchImpl)));
-  return enriched.map((candidate) => scoreAudioSource(track, candidate)).filter(Boolean)
+  return enriched.map((candidate) => scoreUnderNames(track, candidate)).filter(Boolean)
     .sort((left, right) => right.score - left.score).slice(0, maximumResults);
+}
+
+/**
+ * A search's uploads for a song, best first (`ranked`: those the names agree on), or failing any, `fallback`: the
+ * artist's own upload of the same length (ownUploadByLength), if any, with the uploads of about the song's length.
+ */
+function rankedUploads(track, found, maximumResults) {
+  const unique = new Map();
+  for (const candidate of found) if (!unique.has(candidate.videoID)) unique.set(candidate.videoID, candidate);
+  const ranked = [...unique.values()].map((candidate) => scoreUnderNames(track, candidate))
+    .filter(Boolean).sort((left, right) => right.score - left.score).slice(0, maximumResults);
+  if (ranked.length) return { ranked, fallback: null };
+  const own = ownUploadByLength(track, [...unique.values()]);
+  return { ranked, fallback: withNearLength(own ? [own] : [], track, [...unique.values()]) };
+}
+
+/*
+ * YouTube Music's song search, through the API its own pages use (its search page carries no results). Its songs
+ * are the releases themselves (the labels' and distributors' "Topic" uploads, with the exact length), so most songs
+ * of a Spotify playlist are settled by it at once. It also answers far quicker than YouTube's results page lets this
+ * computer search (60 searches back to back went through, measured Nov 2026), so it's asked first and the results
+ * page only for what it hasn't got. The client version and visitor id its API wants are read from its home page
+ * once in a while.
+ */
+const YOUTUBE_MUSIC_ORIGIN = "https://music.youtube.com";
+/** Its search's "Songs" and "Videos" filters. */
+const YOUTUBE_MUSIC_SONGS = "EgWKAQIIAWoMEA4QChADEAQQCRAF";
+const YOUTUBE_MUSIC_VIDEOS = "EgWKAQIQAWoMEA4QChADEAQQCRAF";
+/** Used when its home page can't be read. */
+const YOUTUBE_MUSIC_CLIENT_VERSION = "1.20261110.04.00";
+const YOUTUBE_MUSIC_CLIENT_FOR_MS = 6 * 3_600_000;
+let youtubeMusicClient = null;
+
+async function youtubeMusicConfiguration(signal, fetchImpl) {
+  if (youtubeMusicClient && Date.now() - youtubeMusicClient.at < YOUTUBE_MUSIC_CLIENT_FOR_MS) return youtubeMusicClient;
+  let html = null;
+  try {
+    html = await searchDocument(new URL("/", YOUTUBE_MUSIC_ORIGIN), signal, fetchImpl);
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+  }
+  const clientVersion = html ? youtubeConfigurationValue(html, "INNERTUBE_CLIENT_VERSION", 128) : null;
+  const visitorData = html ? youtubeConfigurationValue(html, "VISITOR_DATA", 2_048) : null;
+  // Kept for a while only when read: otherwise its home page is tried again at the next search.
+  const configuration = { clientVersion: clientVersion || YOUTUBE_MUSIC_CLIENT_VERSION, visitorData, at: Date.now() };
+  if (clientVersion) youtubeMusicClient = configuration;
+  return configuration;
+}
+
+/**
+ * The songs (or videos) in a YouTube Music search response (see musicCandidate), as YouTube uploads. A song's artist
+ * is the release's, whose own channel ("- Topic") it is on; a video's is the channel it's on.
+ */
+function parseYouTubeMusicSongs(data, { videos = false } = {}) {
+  const songs = [];
+  walk(data, (record) => {
+    const renderer = record.musicResponsiveListItemRenderer;
+    if (!isRecord(renderer)) return;
+    const candidate = musicCandidate(renderer);
+    // (A video's line has its view count where a song's has its album.)
+    if (candidate) songs.push({ ...candidate, ...(videos ? { album: null } : {}), channel: candidate.artist, sourceProvider: "youtube" });
+  });
+  return songs;
+}
+
+/**
+ * Whether a release's title is the song's own, as YouTube Music writes it: the whole of it, or one of its names
+ * ("神っぽいな - God-ish" is "God-ish"), credits and punctuation aside. A name that only contains the song's
+ * ("Thunderbolt Music" for "THUNDERBOLT") is another song.
+ */
+function sameTitle(track, candidate) {
+  const compact = (title) => normalizeMatchText(withoutCredit(title || ""));
+  const own = new Set(trackNames(track).map((n) => compact(n.title)).filter(Boolean));
+  const parts = [candidate.title, ...String(candidate.title || "").split(/\s+[-–—]\s+|／|\s\/\s/)];
+  return parts.some((part) => own.has(compact(part)));
+}
+
+/**
+ * A song's releases on YouTube Music, best first, scored as YouTube's uploads are (see searchYouTubeAudioSources).
+ * Throws a retryable error (`youtubeSearchRefused`) when YouTube Music doesn't answer, so the song is searched on
+ * YouTube instead rather than taken for missing.
+ */
+async function searchYouTubeMusicSongs(track, signal, fetchImpl = fetch, options = {}) {
+  // `videos`: its videos instead (music videos, and the uploads of producers who don't release on it).
+  const videos = Boolean(options.videos);
+  const maximumResults = Math.max(1, Math.min(MAX_RESULTS, Number(options.maxResults) || 3));
+  const configuration = await youtubeMusicConfiguration(signal, fetchImpl);
+  const query = `${track.artist || ""} ${track.title || ""}`.replace(/(^|\s)-+(?=\S)/g, "$1").replace(/\s+/g, " ").trim();
+  const endpoint = new URL("/youtubei/v1/search", YOUTUBE_MUSIC_ORIGIN);
+  endpoint.searchParams.set("prettyPrint", "false");
+  let response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": SEARCH_USER_AGENT,
+        Origin: YOUTUBE_MUSIC_ORIGIN,
+        "X-YouTube-Client-Name": "67",
+        "X-YouTube-Client-Version": configuration.clientVersion,
+        ...(configuration.visitorData ? { "X-Goog-Visitor-Id": configuration.visitorData } : {}),
+      },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: "WEB_REMIX",
+            clientVersion: configuration.clientVersion,
+            hl: "en",
+            gl: "US",
+            ...(configuration.visitorData ? { visitorData: configuration.visitorData } : {}),
+          },
+        },
+        query,
+        params: videos ? YOUTUBE_MUSIC_VIDEOS : YOUTUBE_MUSIC_SONGS,
+      }),
+      redirect: "manual",
+      signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    // (`reason`: what it did instead of answering, for the app's log.)
+    throw Object.assign(youtubeSearchRefused(), { reason: `request failed: ${error?.cause?.code || error?.message || "unknown"}` });
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    // A client version it no longer takes: its home page is read again next time.
+    if (response.status === 400) youtubeMusicClient = null;
+    const where = [301, 302, 303, 307, 308].includes(response.status) ? ` to ${response.headers.get("location")?.slice(0, 80) || "?"}` : "";
+    throw Object.assign(youtubeSearchRefused(), { reason: `HTTP ${response.status}${where}` });
+  }
+  let data;
+  try {
+    data = JSON.parse(await responseTextWithLimit(
+      response,
+      MAX_SEARCH_DOCUMENT_BYTES,
+      importError("searching_candidates", "SEARCH_RESPONSE_TOO_LARGE", "A provider search response was too large."),
+    ));
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    throw Object.assign(youtubeSearchRefused(), { reason: "unreadable answer" });
+  }
+  // An answer has search contents (without songs when none match); anything else is it not answering.
+  if (!isRecord(data?.contents)) throw Object.assign(youtubeSearchRefused(), { reason: "answer without results" });
+  const { ranked, fallback } = rankedUploads(track, parseYouTubeMusicSongs(data, { videos }), maximumResults);
+  return ranked.length ? ranked : fallback;
+}
+
+/** How far an upload's length may be from the song's for it to be listened to (a music video's intro, say). */
+const NEAR_LENGTH_SECONDS = 8;
+/** Uploads kept to listen to, at most. */
+const MAX_NEAR_LENGTH = 3;
+
+/**
+ * `matched` (no upload the names agree on, or only the artist's own one of the same length), carrying `nearLength`:
+ * the search's other uploads about as long as the song, which aren't plainly something else (a cover, a karaoke
+ * track, another voice), most alike in name first. The names couldn't settle them (another script, another
+ * spelling, a soundtrack's channel), but how they sound can: see preview-check.mjs.
+ */
+function withNearLength(matched, track, uploads) {
+  if (!track.durationSeconds || track.localFile) return matched;
+  const taken = new Set(matched.map((c) => c.videoID));
+  const near = uploads
+    .filter((c) => c.videoID && !taken.has(c.videoID) && c.durationSeconds && Math.abs(c.durationSeconds - track.durationSeconds) <= NEAR_LENGTH_SECONDS)
+    .filter((c) => !notTheSong(track, c) && !anotherVoice(track, c) && !(VERSION_WORDS.test(c.title) && !VERSION_WORDS.test(track.title)))
+    .filter((c) => !/\b(?:siivagunner|giivasunner|tiivasunner|vinesauce ?is ?hope)\b/i.test(`${c.channel ?? ""} ${c.artist ?? ""}`))
+    .map((c) => ({ c, alike: Math.max(...trackNames(track).map((n) => tokenScore(withoutCredit(n.title), withoutCredit(c.title)))) }))
+    .sort((a, b) => b.alike - a.alike || Math.abs(a.c.durationSeconds - track.durationSeconds) - Math.abs(b.c.durationSeconds - track.durationSeconds))
+    .slice(0, MAX_NEAR_LENGTH)
+    .map(({ c }) => ({ ...c, sourceURL: `https://www.youtube.com/watch?v=${c.videoID}`, sourceProvider: "youtube" }));
+  return near.length ? Object.assign(matched, { nearLength: near }) : matched;
 }
 
 module.exports = {
@@ -1256,6 +2033,11 @@ module.exports = {
   extractYouTubeWatchDescription,
   isSpotifyURL,
   normalizeMatchText,
+  withoutCredit,
+  artistsOwnChannel,
+  ownUploadByLength,
+  scoreUnderNames,
+  trackNames,
   parseSpotifyEmbedEntity,
   parseSpotifyOEmbed,
   parseSpotifyPlaylistEmbed,
@@ -1269,8 +2051,19 @@ module.exports = {
   youtubeSearchPage,
   resolveSpotifyTrack,
   resolveSpotifyPlaylist,
+  resolveSpotifyTrackList,
+  readSpotifyTracks,
+  pastedSpotifyTrack,
+  pastedLocalTrack,
+  pastedSongsIn,
+  setSpotifyTrackStore,
+  MAX_PASTED_SONGS,
+  spotifyTrackIDsIn,
   scoreAudioSource,
   searchYouTubeAudioSources,
+  searchYouTubeMusicSongs,
+  parseYouTubeMusicSongs,
+  sameTitle,
   spotifyArtworkURL,
   spotifyPlaylistURL,
   youtubePlaylistID,

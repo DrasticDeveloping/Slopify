@@ -13,8 +13,20 @@ const {
   spotifyPlaylistURL,
   resolveSpotifyPlaylist,
   resolveSpotifyTrack,
+  readSpotifyTracks,
+  pastedSpotifyTrack,
+  pastedLocalTrack,
+  pastedSongsIn,
+  MAX_PASTED_SONGS,
   resolveYouTubePlaylist,
+  normalizeMatchText,
+  scoreUnderNames,
   searchYouTubeAudioSources,
+  searchYouTubeMusicSongs,
+  sameTitle,
+  artistsOwnChannel,
+  trackNames,
+  withoutCredit,
   youtubePlaylistID,
   youtubeVideoID,
 } = require("./local-import-core.cjs");
@@ -33,6 +45,7 @@ const {
   isSoundCloudURL,
   resolveSoundCloudAudio,
   resolveSoundCloudSource,
+  searchSoundCloudAudioSources,
   soundCloudSourceURL,
 } = require("./local-soundcloud.cjs");
 
@@ -406,6 +419,726 @@ function publicSoundCloudMetadata(track) {
   return metadata;
 }
 
+/*
+ * Playlist songs are matched to YouTube uploads by searching YouTube for each one. YouTube turns away a burst of
+ * searches from one computer (about a dozen within a few seconds) for about a minute; one every 2.5 seconds stays
+ * clear of that (measured Nov 2026). So playlist searches take turns at that pace, shared by every playlist being
+ * matched, and a search YouTube turns away waits and is asked again rather than losing the song. Every song stays
+ * listed: one that couldn't be matched says why, and one already in the library isn't searched for at all.
+ */
+const PLAYLIST_SEARCH_GAP_MS = 2_500;
+/** How long a turned-away search waits before each retry. */
+const PLAYLIST_SEARCH_BACKOFF_MS = [15_000, 30_000, 60_000];
+/** Songs in a row whose every retry was turned away before the rest are left unsearched (YouTube isn't letting up). */
+const PLAYLIST_SEARCH_GIVE_UP_AFTER = 2;
+let nextPlaylistSearchAt = 0;
+
+function pause(ms, signal) {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    const stop = () => {
+      clearTimeout(timer);
+      reject(abortError(signal));
+    };
+    if (signal?.aborted) stop();
+    else signal?.addEventListener("abort", stop, { once: true });
+  });
+}
+
+/*
+ * YouTube Music's song search (searchYouTubeMusicSongs) goes first, at its own pace: it answered 60 searches back to
+ * back without turning any away (Nov 2026), where YouTube's results page allows one every 2.5 seconds. A song it has
+ * (most of a Spotify playlist) needs no other search; the rest go on to SoundCloud's and YouTube's.
+ *
+ * Over a whole list (649 songs, Nov 2026) one search every 450 ms went through without a refusal; one every 380 ms
+ * had YouTube Music turning searches away after a few minutes, and YouTube's results page with it (its pauses more
+ * than doubled), so the list took twice as long. At 450 ms the whole list took 425 s, with 628 of 649 found.
+ */
+const MUSIC_SEARCH_GAP_MS = 450;
+/** Searches in flight at once (each still waits its turn): one answers in about 0.4 s, so one at a time can't keep the pace. */
+const MUSIC_SEARCHES_AT_ONCE = 2;
+/** How long YouTube Music rests after turning a search away (the first time, then the second time in a row on). */
+const MUSIC_SEARCH_BACKOFF_MS = [10_000, 30_000];
+/** Searches in a row YouTube Music turned away before it's left out for the rest of the list. */
+const MUSIC_SEARCH_GIVE_UP_AFTER = 3;
+/** A rest longer than this lets the other searches take songs YouTube Music hasn't reached. */
+const MUSIC_RESTING_MS = 2_000;
+/** How far a YouTube Music song's length may be from the Spotify song's for it to settle the song by itself. */
+const MUSIC_SETTLES_WITHIN_SECONDS = 6;
+let nextMusicSearchAt = 0;
+
+async function musicSearchTurn(signal, gap) {
+  const now = Date.now();
+  const at = Math.max(now, nextMusicSearchAt);
+  nextMusicSearchAt = at + gap;
+  await pause(at - now, signal);
+}
+
+/** SoundCloud searches' own pace: a separate service, so they don't wait on YouTube's. */
+const SOUNDCLOUD_SEARCH_GAP_MS = 1_200;
+const SOUNDCLOUD_SEARCH_BACKOFF_MS = [10_000, 30_000];
+/** How long the reading of pasted songs must have given no quick search to do before broader searches go on meanwhile. */
+const HEAVY_AFTER_IDLE_MS = 5_000;
+/** How long YouTube's search waits for SoundCloud's to reach a song before searching it anyway. */
+const SOUNDCLOUD_HEAD_START_MS = 4_000;
+let nextSoundCloudSearchAt = 0;
+
+async function soundCloudSearchTurn(signal, gap) {
+  const now = Date.now();
+  const at = Math.max(now, nextSoundCloudSearchAt);
+  nextSoundCloudSearchAt = at + gap;
+  await pause(at - now, signal);
+}
+
+/** Waits for this search's turn: `gap` after the one before it, across all playlists. */
+async function playlistSearchTurn(signal, gap) {
+  const now = Date.now();
+  const at = Math.max(now, nextPlaylistSearchAt);
+  nextPlaylistSearchAt = at + gap;
+  await pause(at - now, signal);
+}
+
+/**
+ * A playlist's rows, in its order: `entries` are `{ track, ready }`, where `ready` is a row needing no search (a
+ * direct SoundCloud stream). Others are searched for, unless `ownedSong(track)` names a library song that already is
+ * this one (the row then carries its `ownedSongId`), or `matchCache.get(track)` remembers its row from a recent
+ * search (`matchCache.set` is told each new one). A song not found is searched once more, broadly. A row nothing
+ * matched has no `sourceURL` and says `unmatched`: "not_found" (YouTube answered, nothing fit) or "search_failed"
+ * (YouTube kept turning the search away; not remembered, so it's searched again next time).
+ *
+ * `onStage` hears `preview(rows)` before the first search (every song, unmatched ones still `pending`), each row as
+ * it settles (`row: { at, candidate }`), and `waitingSeconds` while a turned-away search waits.
+ *
+ * `listen(track, links, { signal })` (preview-check.mjs's listenForMatch) hears the songs matched by artist and
+ * length alone, alongside the searches: a match that sounds like the song is kept as sure, one that surely doesn't is
+ * dropped. Each verdict is remembered with the match, so a song is listened to once (an unsure one again when
+ * LISTEN_VERSION goes up).
+ */
+/**
+ * Raised when listening improves (2: Deezer's own spelling of an artist's name is found and searched under; 3: songs
+ * not found, or matched by length and not confirmed, have the search's other uploads of about their length listened
+ * to; 4: uploads heard not to be the song aren't kept as fallbacks, and a Deezer track found under a suggested
+ * spelling of the artist can't rule a match out). Songs settled before it are looked at again: unsure ones listened
+ * to again, not found ones (those ruled out by ear included) searched again, and ones confirmed by ear keep no
+ * fallback that may have been heard and rejected; 5: matches by name are scored again under the whole-word title
+ * rules, and those whose titles only half agree are listened to; 6: YouTube Music's songs are searched first, so
+ * songs not found or unconfirmed are searched again there).
+ */
+const LISTEN_VERSION = 6;
+async function matchPlaylistRows(entries, { signal, onStage, search, searchMusic, searchSoundCloud, ownedSong, matchCache, preview, read, listen, pace = {} }) {
+  const gap = pace.gapMs ?? PLAYLIST_SEARCH_GAP_MS;
+  const musicGap = pace.musicGapMs ?? MUSIC_SEARCH_GAP_MS;
+  const musicBackoff = pace.musicBackoffMs ?? MUSIC_SEARCH_BACKOFF_MS;
+  const backoff = pace.backoffMs ?? PLAYLIST_SEARCH_BACKOFF_MS;
+  const soundCloudGap = pace.soundCloudGapMs ?? SOUNDCLOUD_SEARCH_GAP_MS;
+  const soundCloudBackoff = pace.soundCloudBackoffMs ?? SOUNDCLOUD_SEARCH_BACKOFF_MS;
+  const base = (track) => ({ importMetadata: track, playlistIndex: track.trackNumber });
+  /** A match by the artist's upload of the same length alone (see ownUploadByLength), to be listened to. */
+  const lengthOnly = (row) => Boolean(row?.match?.byArtistAndLength && typeof row.sourceURL === "string");
+  /**
+   * A match by name whose title only half agrees ("Maybe Mine" for "Be Mine": one word of two): taken, but listened
+   * to as well, so a different song by the same artist is caught rather than saved.
+   */
+  const WEAK_TITLE = 0.75;
+  const weakName = (row) => typeof row?.sourceURL === "string" && !row.match?.byArtistAndLength && typeof row.match?.title === "number" && row.match.title < WEAK_TITLE;
+  /** A match to listen to: by length alone, or by a title that only half agrees. */
+  const toVerify = (row) => lengthOnly(row) || weakName(row);
+  /** A song not found whose search had uploads of about its length the names couldn't settle, to be listened to. */
+  const rescuable = (row) => row?.unmatched === "not_found" && Array.isArray(row.nearby) && row.nearby.length > 0;
+  /*
+   * An upload naming another song of this playlist besides its own ("Fumble & Munchkin" for Fumble!, when the
+   * playlist has Munchkin too) is a mashup of the two, not the song. Songs' titles are known before they're searched
+   * (pasted songs' as each is read), so such uploads are left out as each song settles (before a save following the
+   * matching takes them), remembered ones included.
+   */
+  const compactTitle = (title) => normalizeMatchText(withoutCredit(title || "")).replace(/ /g, "");
+  const playlistTitles = new Set();
+  const noteTitle = (track) => {
+    const title = compactTitle(track.title);
+    if (title.length >= 5) playlistTitles.add(title);
+  };
+  for (const { track, unread } of entries) if (!unread) noteTitle(track);
+  const namesAnotherSong = (track, candidate) => {
+    const own = compactTitle(track.title);
+    const upload = normalizeMatchText(candidate.title || "").replace(/ /g, "");
+    for (const title of playlistTitles) if (title !== own && !own.includes(title) && upload.includes(title)) return true;
+    return false;
+  };
+  /** A remembered match by name (YouTube's or SoundCloud's: one scorer), scored by the current rules: null if they turn it down. */
+  const rescored = (track, known) => {
+    if (typeof known.sourceURL !== "string") return known;
+    const again = (c) => {
+      // A SoundCloud upload is scored as its live search scores it (local-soundcloud.cjs): title, credited artist,
+      // uploader and length only, the uploader known only as the artist's own account or not (`officialArtist`).
+      const scoring = c.sourceProvider === "soundcloud"
+        ? { title: c.title, artist: c.artist, channel: c.officialArtist ? c.artist : "", durationSeconds: c.durationSeconds, videoID: "0" }
+        : c;
+      const scored = scoreUnderNames(track, scoring);
+      return scored ? { ...c, score: scored.score, match: { ...c.match, ...scored.match } } : null;
+    };
+    const row = again(known);
+    if (!row) return null;
+    return { ...row, fallbackCandidates: (known.fallbackCandidates || []).map(again).filter(Boolean) };
+  };
+  /** A song's row before any search: already in the library, remembered from a recent search, or to be searched. */
+  const startRow = (track) => {
+    let owned = null;
+    try { owned = ownedSong?.(track) || null; } catch { owned = null; }
+    if (owned) return { ...base(track), ownedSongId: owned };
+    // A song matched (or found missing) recently needn't be searched for again.
+    let known = null;
+    try { known = matchCache?.get(track) || null; } catch { known = null; }
+    // Not found, or matched by length and not confirmed, before listening could look further (LISTEN_VERSION): searched again.
+    const unconfirmed = known?.unmatched === "not_found" || (known?.match?.byArtistAndLength && known.match.listened?.verdict !== "same");
+    const older = (known?.searchedV ?? 0) < LISTEN_VERSION;
+    if (known && listen && unconfirmed && older) known = null;
+    // Confirmed by ear by an older way of listening: its fallbacks may include uploads heard not to be the song.
+    if (known && older && known.match?.listened?.verdict === "same" && known.fallbackCandidates?.length) known = { ...known, fallbackCandidates: [] };
+    // A match by name from before the current title rules ("Maybe Mine" once passed for "Be Mine") is scored
+    // again (its fallbacks too): one the rules now turn down is searched again, one that only half agrees is then
+    // listened to (toVerify).
+    if (known && older && known.match?.listened?.verdict !== "same" && !known.match?.byArtistAndLength) known = rescored(track, known);
+    return known && !(typeof known.sourceURL === "string" && namesAnotherSong(track, known)) ? { ...known, ...base(track) } : { ...base(track), pending: true };
+  };
+  const rows = entries.map(({ track, ready, unread }) => {
+    if (ready) return { ...ready, importMetadata: track, playlistIndex: track.trackNumber, fallbackCandidates: [] };
+    if (unread) {
+      // A pasted song saved before is known from its link alone (its Spotify id), so it needn't be read at all.
+      let owned = null;
+      try { owned = ownedSong?.(track) || null; } catch { owned = null; }
+      if (owned) return { ...base(track), ownedSongId: owned };
+      // Pasted songs not read from Spotify yet (see `read`).
+      return { ...base(track), reading: true };
+    }
+    return startRow(track);
+  });
+  // Songs to search for: grows while pasted songs are read.
+  const todo = rows.flatMap((row, at) => (row.pending ? [at] : []));
+  const toRead = rows.filter((row) => row.reading).length;
+  const total = todo.length + toRead;
+  let completed = 0;
+  let readCount = 0;
+  let readingDone = !read || !toRead;
+  // Matches to listen to (see `listen`), and how many have been.
+  const toListen = [];
+  const queuedToListen = new Set();
+  let listenedCount = 0;
+  /** The progress line's fields: songs settled of those to settle, and how far reading pasted songs has got. */
+  const status = (extra = {}) => ({
+    stage: "searching_candidates",
+    completed,
+    total,
+    ...(toRead ? { reading: { completed: readCount, total: toRead } } : {}),
+    ...(queuedToListen.size ? { listening: { completed: listenedCount, total: queuedToListen.size } } : {}),
+    ...extra,
+  });
+  /**
+   * A match made by artist and length alone, or a song not found with uploads of about its length to listen to, not
+   * listened to yet, is queued to be; so is one left unsure by an older way of listening (LISTEN_VERSION).
+   */
+  const queueListen = (at) => {
+    if (!listen || queuedToListen.has(at)) return;
+    const row = rows[at];
+    if (!toVerify(row) && !rescuable(row)) return;
+    const heard = toVerify(row) ? row.match.listened : row.listened;
+    if (heard && (heard.verdict !== "unsure" || (heard.v ?? 1) >= LISTEN_VERSION)) return;
+    queuedToListen.add(at);
+    toListen.push(at);
+  };
+  rows.forEach((_, at) => queueListen(at));
+  onStage(status({ preview: preview(rows) }));
+
+  /** Remembers a song's row for next time (search failures aren't: see matchCache). */
+  const remember = (row) => {
+    try {
+      const { importMetadata: _metadata, playlistIndex: _index, listening: _listening, ...known } = row;
+      matchCache?.set(row.importMetadata, { ...known, searchedV: LISTEN_VERSION });
+    } catch {
+      // Remembering is only a shortcut for next time.
+    }
+  };
+  const settled = new Set();
+  /** Settles a song's row: shown, counted, and remembered. */
+  const settle = (at, row) => {
+    if (settled.has(at)) return;
+    settled.add(at);
+    rows[at] = row;
+    completed += 1;
+    remember(row);
+    queueListen(at);
+    onStage(status({ row: { at, candidate: row } }));
+  };
+  // A small ordered fallback set per song: a match can fail at download time even when another upload works.
+  /** A song's row from the uploads found for it, best first, or null if none is only this song. */
+  const matchedRow = (track, found) => {
+    const [candidate, ...fallbacks] = found.filter((value) => value && !namesAnotherSong(track, value));
+    if (!candidate) return null;
+    return {
+      ...candidate,
+      ...base(track),
+      fallbackCandidates: fallbacks.filter((value) => typeof value.sourceURL === "string").slice(0, 2),
+    };
+  };
+
+  /*
+   * Pasted songs are read from Spotify (a page each, at Spotify's pace) while the songs already read are searched
+   * for, so the first matches come in seconds, not after the whole list. Each song read joins the searches, or is
+   * settled at once (in the library, remembered, or not a public song).
+   */
+  const readerTask = async () => {
+    if (readingDone) return;
+    try {
+      await read((at, outcome) => {
+        readCount += 1;
+        const placeholder = rows[at].importMetadata;
+        if (outcome.track) {
+          // Its place is the placeholder's: the reader numbers only the songs it reads.
+          const track = { ...placeholder, ...outcome.track, trackNumber: placeholder.trackNumber };
+          noteTitle(track);
+          const row = startRow(track);
+          rows[at] = row;
+          if (row.pending) {
+            todo.push(at);
+            onStage(status({ row: { at, candidate: row } }));
+            return;
+          }
+          settled.add(at);
+          completed += 1;
+          queueListen(at);
+          onStage(status({ row: { at, candidate: row } }));
+          return;
+        }
+        // Not a public song ("not_on_spotify"), or Spotify never answered for it ("unread": pasting again asks again).
+        settled.add(at);
+        completed += 1;
+        rows[at] = { ...base(placeholder), unmatched: outcome.missing ? "not_on_spotify" : "unread" };
+        onStage(status({ row: { at, candidate: rows[at] } }));
+      }, (seconds) => onStage(status({ spotifyWaitingSeconds: seconds })), (at) => Boolean(rows[at]?.reading));
+    } finally {
+      readingDone = true;
+    }
+  };
+  /** Waits a moment for more songs to search, while pasted songs are still being read; false once none can come. */
+  const moreComing = async () => {
+    if (readingDone) return false;
+    await pause(100, signal);
+    return true;
+  };
+
+  /*
+   * Two searches run side by side, each at its own service's pace: SoundCloud's (quicker, and many producers post
+   * their own uploads there) and YouTube's. A song SoundCloud has as the artist's own upload is settled there and
+   * not searched on YouTube; YouTube looks first at songs SoundCloud has already been through without that. A
+   * weaker SoundCloud match is used only if YouTube finds nothing.
+   */
+  /*
+   * YouTube Music goes before both: a song it has a release of (named as the song, about as long) is settled there.
+   * The others go on to SoundCloud and YouTube, which wait for it to be through with a song before looking at it; a
+   * weaker release it found (another length, or only the artist's of the same length) is used if they find nothing.
+   */
+  const musicDone = new Set();
+  const musicFallback = new Map(); // at -> row
+  const musicNear = new Map(); // at -> uploads of about the song's length
+  let musicFinished = !searchMusic;
+  // (While YouTube Music rests after turning searches away, the others don't wait for it.)
+  const throughMusic = (at) => musicFinished || musicDone.has(at) || nextMusicSearchAt - Date.now() > MUSIC_RESTING_MS;
+  const musicPending = () => !musicFinished && todo.some((at) => !settled.has(at) && !musicDone.has(at));
+  const soundCloudResult = new Map(); // at -> row or null, once SoundCloud has been asked
+  const youTubeOutcome = new Map(); // at -> "none" | "failed", once YouTube found nothing
+  /** at -> uploads of about the song's length the names couldn't settle (see withNearLength), to listen to. */
+  const nearLength = new Map();
+  let soundCloudFinished = !searchSoundCloud;
+  const decide = (at) => {
+    if (settled.has(at) || !youTubeOutcome.has(at)) return;
+    if (!soundCloudResult.has(at) && !soundCloudFinished) return;
+    const track = rows[at].importMetadata;
+    const fromSoundCloud = soundCloudResult.get(at);
+    const nearby = nearLength.get(at) ?? [];
+    if (fromSoundCloud) settle(at, fromSoundCloud);
+    else if (musicFallback.has(at)) settle(at, musicFallback.get(at));
+    else if (youTubeOutcome.get(at) === "failed") settle(at, { ...base(track), unmatched: "search_failed" });
+    // Its uploads of about its length go with it, to be listened to (see listenLane).
+    else settle(at, { ...base(track), unmatched: "not_found", ...(nearby.length ? { nearby } : {}) });
+  };
+
+  let refusedInARow = 0;
+  /** One YouTube search, at its turn, asked again while YouTube turns it away: the uploads found, or null if it never answered. */
+  const searchYouTubeOnce = async (track, options) => {
+    for (let attempt = 0; ; attempt++) {
+      await playlistSearchTurn(signal, gap);
+      try {
+        const found = await search(track, signal, undefined, { maxResults: 3, enrich: false, ...options });
+        refusedInARow = 0;
+        return Array.isArray(found) ? found : [];
+      } catch (error) {
+        if (error?.name === "AbortError" || signal?.aborted) throw error;
+        if (!error?.retryable) return null;
+        if (attempt >= backoff.length) {
+          refusedInARow += 1;
+          return null;
+        }
+        // Every playlist's searches wait it out, not just this one.
+        nextPlaylistSearchAt = Math.max(nextPlaylistSearchAt, Date.now() + backoff[attempt]);
+        onStage(status({ waitingSeconds: Math.round(backoff[attempt] / 1000) }));
+      }
+    }
+  };
+
+  /*
+   * YouTube's searches go lightest first: every song's quick search ("official audio") before any heavier one. A
+   * song that search didn't settle (nothing found, or only its artist's upload of the same length) waits for a
+   * broader search until no quick one is left to do, so one hard song doesn't hold up the rest of the list.
+   */
+  const firstTried = new Set();
+  /** at -> what the quick search found: its row (a match by length alone) and uploads of about its length. */
+  const afterQuick = new Map();
+  /** Songs waiting for the broader search, in the order their quick searches left them. */
+  const heavier = [];
+  /** When the last quick search finished (see youTubeLane: broader searches wait for the reading). */
+  let lastQuickAt = Date.now();
+  /** Whether quick searches are still to come (listening waits for them: see listenLane). */
+  const quickPending = () => !readingDone || todo.some((at) => !settled.has(at) && !firstTried.has(at));
+  /** Settles a song from YouTube's searches: a match, or nothing (then SoundCloud's weaker match, if any, decides). */
+  const youTubeSettles = (at, row, near, failed) => {
+    if (settled.has(at)) return;
+    const listenTo = near.filter((n) => n.sourceURL !== row?.sourceURL).slice(0, 3);
+    // A match by length alone takes the other uploads of about its length along, in case it isn't the song.
+    if (row && listen && lengthOnly(row) && listenTo.length) row = { ...row, nearby: listenTo };
+    if (!row && listen && listenTo.length) nearLength.set(at, listenTo);
+    if (row) settle(at, row);
+    else {
+      youTubeOutcome.set(at, failed ? "failed" : "none");
+      decide(at);
+    }
+  };
+  const addNear = (near, uploads) => {
+    for (const upload of uploads?.nearLength ?? []) if (!near.some((n) => n.sourceURL === upload.sourceURL)) near.push(upload);
+  };
+
+  const youTubeLane = async () => {
+    const quickOpen = (at) => !settled.has(at) && !firstTried.has(at) && throughMusic(at);
+    const seen = (at) => quickOpen(at) && soundCloudResult.has(at);
+    for (;;) {
+      if (todo.some(quickOpen)) {
+        // SoundCloud goes first where it can: a song it settles needs no YouTube search at all.
+        for (const until = Date.now() + SOUNDCLOUD_HEAD_START_MS; !soundCloudFinished && Date.now() < until && !todo.some(seen) && todo.some(quickOpen);) {
+          await pause(50, signal);
+        }
+        const at = todo.find(seen) ?? todo.find(quickOpen);
+        if (at === undefined) continue;
+        firstTried.add(at);
+        const track = rows[at].importMetadata;
+        const found = refusedInARow < PLAYLIST_SEARCH_GIVE_UP_AFTER ? await searchYouTubeOnce(track, {}) : null;
+        lastQuickAt = Date.now();
+        if (settled.has(at)) continue;
+        const near = [...(musicNear.get(at) ?? [])];
+        addNear(near, found);
+        const row = found?.length ? matchedRow(track, found) : null;
+        // A file of the user's own without an artist tag was searched under its title alone already.
+        const broader = !(track.localFile && !track.artist);
+        // Settled unless it found nothing (and SoundCloud has no upload of it either, which is what the broader search
+        // would settle for) or only a match by length: those wait for the broader search.
+        const waits = broader && found && refusedInARow < PLAYLIST_SEARCH_GIVE_UP_AFTER
+          && (row ? lengthOnly(row) : !soundCloudResult.get(at));
+        if (waits) {
+          afterQuick.set(at, { row, near });
+          heavier.push(at);
+        } else youTubeSettles(at, row, near, !found);
+        continue;
+      }
+      // Broader searches wait for the reading too, so they don't delay the quick searches of songs read later; only a
+      // long lull in the reading (Spotify asking for a pause) lets them go on meanwhile.
+      if (heavier.length && (readingDone || Date.now() - lastQuickAt >= HEAVY_AFTER_IDLE_MS)) {
+        const at = heavier.shift();
+        const { row: quick, near } = afterQuick.get(at);
+        afterQuick.delete(at);
+        if (settled.has(at)) continue;
+        const track = rows[at].importMetadata;
+        // Not found under "official audio": once more more broadly (music videos, fan uploads, Japanese names). Not
+        // needed any more if SoundCloud has an upload of it by now.
+        const found = !quick && soundCloudResult.get(at) ? [] : refusedInARow < PLAYLIST_SEARCH_GIVE_UP_AFTER ? await searchYouTubeOnce(track, { broad: true }) : null;
+        if (settled.has(at)) continue;
+        addNear(near, found);
+        const broad = found?.length ? matchedRow(track, found) : null;
+        // A match by name beats one by length alone; otherwise the quick search's match by length stands.
+        const row = broad && !lengthOnly(broad) ? broad : quick ?? broad;
+        youTubeSettles(at, row, near, !quick && !found);
+        continue;
+      }
+      // Songs YouTube Music hasn't been through yet may still come this way.
+      if (musicPending()) {
+        await pause(100, signal);
+        continue;
+      }
+      if (await moreComing()) continue;
+      return;
+    }
+  };
+
+  /*
+   * A few searches in flight at once, each at its turn (musicGap apart). A song YouTube Music turns away goes on to
+   * the other searches rather than being asked again; YouTube Music rests a while (meanwhile the others take the
+   * songs it hasn't reached: see throughMusic) and after a few refusals in a row is left out.
+   */
+  const musicLane = async () => {
+    if (!searchMusic) return;
+    let refused = 0;
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        while (next >= todo.length) {
+          if (!(await moreComing())) return;
+        }
+        if (refused >= MUSIC_SEARCH_GIVE_UP_AFTER) return;
+        const at = todo[next++];
+        if (settled.has(at)) continue;
+        const track = rows[at].importMetadata;
+        try {
+          await musicFor(at, track);
+        } finally {
+          musicDone.add(at);
+        }
+      }
+    };
+    /** One YouTube Music search at its turn: what it found, or null if it didn't answer (or wasn't needed any more). */
+    const ask = async (at, track, options) => {
+      await musicSearchTurn(signal, musicGap);
+      if (refused >= MUSIC_SEARCH_GIVE_UP_AFTER || settled.has(at)) return null;
+      try {
+        const found = await searchMusic(track, signal, undefined, options);
+        refused = 0;
+        if (Array.isArray(found) && found.nearLength?.length) {
+          const near = musicNear.get(at) ?? [];
+          for (const upload of found.nearLength) if (!near.some((n) => n.sourceURL === upload.sourceURL)) near.push(upload);
+          musicNear.set(at, near);
+        }
+        return Array.isArray(found) && !settled.has(at) ? found : null;
+      } catch (error) {
+        if (error?.name === "AbortError" || signal?.aborted) throw error;
+        if (error?.retryable) {
+          refused += 1;
+          const rest = musicBackoff[Math.min(refused, musicBackoff.length) - 1] ?? 0;
+          nextMusicSearchAt = Math.max(nextMusicSearchAt, Date.now() + rest);
+          // (In the app's log, so its pace can be judged: see MUSIC_SEARCH_GAP_MS.)
+          console.warn(`[slopify] YouTube Music turned a search away (${error.reason || "no answer"}; ${refused} in a row): resting ${Math.round(rest / 1000)} s.`);
+        }
+        return null;
+      }
+    };
+    const near = (row) => {
+      const delta = row?.match?.durationDeltaSeconds;
+      return typeof delta !== "number" || delta <= MUSIC_SETTLES_WITHIN_SECONDS;
+    };
+    /**
+     * A song's releases first: one titled as the song (see sameTitle) and about as long settles it. Failing that, its
+     * videos: one on the artist's own channel, named as the song and about as long, settles it (others' uploads are
+     * left to SoundCloud's and YouTube's searches, which may have the artist's own). What else was found stands in
+     * if they find nothing.
+     */
+    const musicFor = async (at, track) => {
+      const songs = await ask(at, track, {});
+      if (!songs) return;
+      const release = matchedRow(track, songs.filter((c) => !c.match?.byArtistAndLength && sameTitle(track, c)));
+      if (release && near(release)) return settle(at, release);
+      const videos = await ask(at, track, { videos: true });
+      const own = videos && matchedRow(track, videos.filter((c) => !c.match?.byArtistAndLength
+        && trackNames(track).some((n) => artistsOwnChannel(n.artist, c.channel ?? c.artist))));
+      if (own && near(own)) return settle(at, own);
+      const standIn = (songs.length && matchedRow(track, songs)) || (videos?.length && matchedRow(track, videos)) || null;
+      if (standIn) musicFallback.set(at, standIn);
+    };
+    try {
+      await Promise.all(Array.from({ length: MUSIC_SEARCHES_AT_ONCE }, worker));
+    } finally {
+      musicFinished = true;
+    }
+  };
+
+  const soundCloudLane = async () => {
+    if (!searchSoundCloud) return;
+    try {
+      for (let next = 0; ; next++) {
+        while (next >= todo.length) {
+          if (!(await moreComing())) return;
+        }
+        const at = todo[next];
+        while (!settled.has(at) && !throughMusic(at)) await pause(50, signal);
+        if (settled.has(at)) continue;
+        const track = rows[at].importMetadata;
+        let result = null;
+        for (let attempt = 0; ; attempt++) {
+          await soundCloudSearchTurn(signal, soundCloudGap);
+          try {
+            result = await searchSoundCloud(track, signal);
+            break;
+          } catch (error) {
+            if (error?.name === "AbortError" || signal?.aborted) throw error;
+            if (!error?.retryable || attempt >= soundCloudBackoff.length) break;
+            nextSoundCloudSearchAt = Math.max(nextSoundCloudSearchAt, Date.now() + soundCloudBackoff[attempt]);
+          }
+        }
+        if (settled.has(at)) continue;
+        const candidates = result?.candidates?.length ? result.candidates : null;
+        const row = candidates ? matchedRow(track, candidates) : null;
+        if (row && result.strong) settle(at, row);
+        else {
+          soundCloudResult.set(at, row);
+          decide(at);
+        }
+      }
+    } finally {
+      soundCloudFinished = true;
+      if (!signal?.aborted) for (const at of todo) decide(at);
+    }
+  };
+
+  /**
+   * A row once listened to (`uploads`: what was listened to, the match and its fallbacks first, then the uploads of
+   * about its length): kept as sure (maybe as another of those uploads), dropped, or left to the user.
+   */
+  const heardRow = (row, heard, uploads) => {
+    const track = row.importMetadata;
+    const verdict = { verdict: heard.verdict === "different" ? "different" : "unsure", deezerID: heard.deezer?.id ?? null, v: LISTEN_VERSION };
+    if (rescuable(row) && heard.verdict !== "same") return { ...base(track), unmatched: "not_found", listened: verdict };
+    if (heard.verdict === "different") return { ...base(track), unmatched: "not_found", listened: verdict };
+    if (heard.verdict !== "same") return { ...row, match: { ...row.match, listened: verdict } };
+    const strip = ({ fallbackCandidates: _f, importMetadata: _m, playlistIndex: _i, nearby: _n, unmatched: _u, listened: _l, listening: _g, ...c }) => c;
+    const chosen = strip(uploads[heard.at]);
+    const { byArtistAndLength: _byLength, ...chosenMatch } = chosen.match || {};
+    // Fallbacks (played if the chosen upload fails) are the match's own ones not listened to yet, that is after the
+    // chosen one, and never a match by length alone: uploads heard not to be the song, and uploads only listened to,
+    // aren't.
+    const own = toVerify(row) ? [row, ...(row.fallbackCandidates || [])].filter((c, at) => at > heard.at && !c.match?.byArtistAndLength) : [];
+    return {
+      ...chosen,
+      ...base(track),
+      confidence: "likely",
+      evidenceStrength: "audio_fingerprint",
+      requiresReview: false,
+      match: { ...chosenMatch, listened: { verdict: "same", ber: heard.ber, deezerID: heard.deezer.id } },
+      fallbackCandidates: own.map(strip).slice(0, 2),
+    };
+  };
+  let searching = true;
+  /** Listens to the queued matches one at a time, while the searches go on, until both are done. */
+  const listenLane = async () => {
+    if (!listen) return;
+    for (;;) {
+      // The quick searches come first (they settle most songs); listening downloads audio, so it waits for them.
+      if (searching && quickPending()) {
+        await pause(200, signal);
+        continue;
+      }
+      const at = toListen.shift();
+      if (at === undefined) {
+        if (!searching) return;
+        await pause(200, signal);
+        continue;
+      }
+      const row = rows[at];
+      if (!toVerify(row) && !rescuable(row)) {
+        listenedCount += 1;
+        continue;
+      }
+      // The match and its fallbacks, then the uploads of about the song's length that the names couldn't settle.
+      const own = toVerify(row) ? [row, ...(row.fallbackCandidates || [])] : [];
+      const uploads = [...own, ...(row.nearby || [])].filter((c) => typeof c.sourceURL === "string");
+      rows[at] = { ...row, listening: true };
+      onStage(status({ row: { at, candidate: rows[at] } }));
+      let heard = null;
+      try {
+        heard = await listen(row.importMetadata, uploads.map((c) => c.sourceURL), { signal, strictFrom: own.length });
+      } catch (error) {
+        if (error?.name === "AbortError" || signal?.aborted) throw error;
+      }
+      listenedCount += 1;
+      // Couldn't listen (Deezer or the upload didn't answer): as it was, and asked again next time.
+      rows[at] = heard ? heardRow(row, heard, uploads) : row;
+      if (heard) remember(rows[at]);
+      onStage(status({ row: { at, candidate: rows[at] } }));
+    }
+  };
+
+  // A line every so often even while everything waits (Spotify or YouTube asking for a pause), so the app knows the
+  // matching is still going rather than stalled.
+  const heartbeat = setInterval(() => onStage(status()), 30_000);
+  try {
+    await Promise.all([
+      Promise.all([readerTask(), musicLane(), youTubeLane(), soundCloudLane()]).finally(() => { searching = false; }),
+      listenLane(),
+    ]);
+  } finally {
+    clearInterval(heartbeat);
+  }
+  // A song matched only as its artist's upload of the same length has its upload's title unchecked. If another song
+  // of the playlist matched an upload carrying that same title ("イガク/Medicine" for Medicine), the upload is that
+  // other song, and this match was a coincidence of length.
+  const titleOf = (title) => normalizeMatchText(withoutCredit(title || "").split(/\s[-–—|]\s|／|\//)[0]).replace(/ /g, "");
+  const compact = (title) => normalizeMatchText(title || "").replace(/ /g, "");
+  rows.forEach((row, at) => {
+    if (!row.match?.byArtistAndLength) return;
+    const key = titleOf(row.title);
+    if (key.length < 2) return;
+    const taken = rows.some((other, otherAt) => otherAt !== at
+      && typeof other.sourceURL === "string"
+      && other.importMetadata?.trackID !== row.importMetadata?.trackID
+      && compact(other.title).includes(key));
+    if (!taken) return;
+    const track = row.importMetadata;
+    rows[at] = { ...base(track), unmatched: "not_found" };
+    try {
+      matchCache?.set(track, { unmatched: "not_found", searchedV: LISTEN_VERSION });
+    } catch {
+      // Remembering is only a shortcut for next time.
+    }
+    onStage({ stage: "searching_candidates", completed, total, row: { at, candidate: rows[at] } });
+  });
+  return rows;
+}
+
+/** The error for a playlist with no song to offer: YouTube refusing searches, or nothing matching. */
+function noPlaylistMatches(rows, message) {
+  if (rows.some((row) => row.unmatched === "search_failed")) {
+    return localImportError("searching_candidates", "YOUTUBE_SEARCH_BUSY", "YouTube is turning searches away for a moment. Try the playlist again in a minute.");
+  }
+  return localImportError("searching_candidates", "NO_AUDIO_MATCH", message);
+}
+
+const playlistOffers = (rows) => rows.some((row) => typeof row.sourceURL === "string" || row.ownedSongId);
+
+/**
+ * A resolved playlist, everything but its rows. `playlist.unavailableCount`: songs the provider lists but doesn't
+ * offer publicly (rows that couldn't be matched are listed themselves, so aren't counted here).
+ */
+function playlistSummary(kind, provider, fallbackArtist, playlist) {
+  const { items, ...details } = playlist;
+  return {
+    kind,
+    mediaKind: "audio",
+    playlist: details,
+    track: {
+      provider,
+      type: "playlist",
+      trackID: playlist.playlistID,
+      title: playlist.title,
+      artist: playlist.author || fallbackArtist,
+      album: null,
+      trackNumber: null,
+      durationSeconds: items.reduce((total, item) => total + (item.durationSeconds || 0), 0) || null,
+      artworkURL: playlist.artworkURL,
+      embedURL: null,
+      sourceURL: playlist.sourceURL,
+    },
+  };
+}
+
+const soundCloudPlaylistSummary = (playlist) => playlistSummary("soundcloud_playlist", "soundcloud", "SoundCloud", playlist);
+const spotifyPlaylistSummary = (playlist) => playlistSummary("spotify_playlist", "spotify", "Spotify", playlist);
+
 async function resolveLocalImportMetadata(source, signal, adapters = {}, options = {}) {
   const mediaKind = normalizedMediaKind(options.mediaKind);
   assertNotAborted(signal);
@@ -489,62 +1222,79 @@ async function resolveLocalImportSource(source, signal, onStage = () => {}, adap
     }
 
     const playlist = resolved.playlist;
-    onStage({ stage: "searching_candidates", completed: 0, total: playlist.items.length });
-    const matched = [];
-    let completed = 0;
-    for (let offset = 0; offset < playlist.items.length; offset += 4) {
-      const chunk = playlist.items.slice(offset, offset + 4);
-      const results = await Promise.all(chunk.map(async (sourceTrack) => {
-        const track = publicSoundCloudMetadata(sourceTrack);
-        const direct = sourceTrack.directlyImportable ? directSoundCloudCandidate(sourceTrack) : null;
-        if (direct) {
-          return { ...direct, importMetadata: track, playlistIndex: track.trackNumber, fallbackCandidates: [] };
-        }
-        let alternatives = [];
-        try {
-          alternatives = await candidateSearch(track, signal, undefined, { maxResults: 3, enrich: false });
-        } catch (error) {
-          if (error?.name === "AbortError") throw error;
-        }
-        const candidate = alternatives[0] || null;
-        if (!candidate) return null;
-        return {
-          ...candidate,
-          importMetadata: track,
-          playlistIndex: track.trackNumber,
-          fallbackCandidates: alternatives.slice(1)
-            .filter((value) => value && typeof value.sourceURL === "string")
-            .slice(0, 2),
-        };
-      }));
-      matched.push(...results.filter(Boolean));
-      completed += chunk.length;
-      onStage({ stage: "searching_candidates", completed, total: playlist.items.length });
+    const summary = soundCloudPlaylistSummary(playlist);
+    const matched = await matchPlaylistRows(playlist.items.map((sourceTrack) => ({
+      track: publicSoundCloudMetadata(sourceTrack),
+      ready: sourceTrack.directlyImportable ? directSoundCloudCandidate(sourceTrack) : null,
+    })), {
+      signal,
+      onStage,
+      search: candidateSearch,
+      ownedSong: options.ownedSong,
+      matchCache: options.matchCache,
+      pace: adapters.playlistSearchPace,
+      preview: (rows) => ({ ...summary, candidates: rows }),
+    });
+    if (!playlistOffers(matched)) throw noPlaylistMatches(matched, "No public audio source could be imported from this SoundCloud playlist.");
+    return { ...summary, candidates: matched };
+  }
+  /** A Spotify playlist's (or pasted songs') rows, each song matched to an upload (see matchPlaylistRows). */
+  /** `read`: pasted songs still to read from Spotify (their items are placeholders); see matchPlaylistRows. */
+  const matchSpotifyPlaylist = async (playlist, read = null) => {
+    const summary = spotifyPlaylistSummary(playlist);
+    // (Pasted files of the user's own have nothing to read: their tags are all there is.)
+    const matched = await matchPlaylistRows(playlist.items.map((track) => ({ track, unread: Boolean(read) && !track.localFile })), {
+      read,
+      signal,
+      onStage,
+      search: candidateSearch,
+      // Searched before YouTube's results page; an adapter of null leaves YouTube Music out (as does a stand-in for
+      // YouTube's search without one for it, so a test's searches stay its own).
+      searchMusic: adapters.searchYouTubeMusicSongs !== undefined ? adapters.searchYouTubeMusicSongs
+        : adapters.searchYouTubeAudioSources ? null : searchYouTubeMusicSongs,
+      // Searched alongside YouTube; an adapter of null leaves SoundCloud out.
+      searchSoundCloud: adapters.searchSoundCloudAudioSources === undefined ? searchSoundCloudAudioSources : adapters.searchSoundCloudAudioSources,
+      ownedSong: options.ownedSong,
+      matchCache: options.matchCache,
+      listen: options.listen,
+      pace: adapters.playlistSearchPace,
+      preview: (rows) => ({ ...summary, candidates: rows }),
+    });
+    // Pasted songs Spotify didn't answer for are listed to ask again for, rather than ending in an error.
+    if (!playlistOffers(matched) && !matched.some((row) => row.unmatched === "unread")) {
+      throw noPlaylistMatches(matched, "No file-backed audio source matched the public tracks in this Spotify playlist.");
     }
-    if (!matched.length) {
-      throw localImportError("searching_candidates", "NO_AUDIO_MATCH", "No public audio source could be imported from this SoundCloud playlist.");
+    return { ...summary, candidates: matched };
+  };
+  // Several Spotify song links pasted together (Spotify's app copies one per song for a selection, the user's own
+  // files among them): one playlist, however long, where a playlist link gives only its first 100 songs.
+  const pastedSongs = pastedSongsIn(source);
+  if (pastedSongs.length > 1) {
+    if (mediaKind === "video") {
+      throw localImportError("resolving_metadata", "YOUTUBE_VIDEO_REQUIRED", "Spotify songs can only be imported as audio.");
     }
-    const durationSeconds = playlist.items.reduce((total, item) => total + (item.durationSeconds || 0), 0) || null;
-    const unavailableCount = playlist.unavailableCount + playlist.items.length - matched.length;
-    return {
-      kind: "soundcloud_playlist",
-      mediaKind: "audio",
-      playlist: { ...playlist, unavailableCount },
-      track: {
-        provider: "soundcloud",
-        type: "playlist",
-        trackID: playlist.playlistID,
-        title: playlist.title,
-        artist: playlist.author || "SoundCloud",
-        album: null,
-        trackNumber: null,
-        durationSeconds,
-        artworkURL: playlist.artworkURL,
-        embedURL: null,
-        sourceURL: playlist.sourceURL,
-      },
-      candidates: matched,
+    // Every song is listed at once and read from Spotify while the songs already read are being matched.
+    const songs = pastedSongs.slice(0, MAX_PASTED_SONGS);
+    const items = songs.map((song, at) => (song.trackID ? pastedSpotifyTrack(song.trackID, at) : pastedLocalTrack(song.local, at)));
+    const reader = adapters.readSpotifyTracks || readSpotifyTracks;
+    const ids = items.flatMap((track) => (track.trackID ? [track.trackID] : []));
+    // Reads the Spotify songs among them that are still to read (`wanted`: not files, not known from their links),
+    // numbered by the reader among those; `places` turns its numbers back into the list's.
+    const read = (onTrack, onWait, wanted = () => true) => {
+      const places = items.flatMap((track, at) => (track.trackID && wanted(at) ? [at] : []));
+      if (!places.length) return undefined;
+      return reader(places.map((at) => items[at].trackID), signal, undefined, (at, outcome) => onTrack(places[at], outcome), onWait);
     };
+    return matchSpotifyPlaylist({
+      playlistID: null,
+      title: "Songs pasted from Spotify",
+      author: "Spotify",
+      artworkURL: null,
+      sourceURL: null,
+      items,
+      unavailableCount: 0,
+      truncated: pastedSongs.length > songs.length,
+    }, ids.length ? read : null);
   }
   if (isSpotifyURL(source)) {
     if (mediaKind === "video") {
@@ -571,62 +1321,7 @@ async function resolveLocalImportSource(source, signal, onStage = () => {}, adap
         playlist = await playlistResolve(source, signal);
       }
     }
-    if (playlist) {
-      onStage({ stage: "searching_candidates", completed: 0, total: playlist.items.length });
-      const matched = [];
-      let completed = 0;
-      for (let offset = 0; offset < playlist.items.length; offset += 4) {
-        const chunk = playlist.items.slice(offset, offset + 4);
-        const results = await Promise.all(chunk.map(async (track) => {
-          try {
-            // Keep a small ordered fallback set for each item. A metadata
-            // match can fail during the later byte-transfer probe even when a
-            // second provider candidate is usable; dropping it here turns one
-            // bad match into an avoidable playlist failure.
-            const candidates = await candidateSearch(track, signal, undefined, { maxResults: 3, enrich: false });
-            const [candidate, ...fallbackCandidates] = Array.isArray(candidates) ? candidates : [];
-            return candidate
-              ? {
-                ...candidate,
-                importMetadata: track,
-                playlistIndex: track.trackNumber,
-                fallbackCandidates: fallbackCandidates.filter((value) => value && typeof value.sourceURL === "string").slice(0, 2),
-              }
-              : null;
-          } catch (error) {
-            if (error?.name === "AbortError") throw error;
-            return null;
-          }
-        }));
-        matched.push(...results.filter(Boolean));
-        completed += chunk.length;
-        onStage({ stage: "searching_candidates", completed, total: playlist.items.length });
-      }
-      if (!matched.length) {
-        throw localImportError("searching_candidates", "NO_AUDIO_MATCH", "No file-backed audio source matched the public tracks in this Spotify playlist.");
-      }
-      const durationSeconds = playlist.items.reduce((total, item) => total + (item.durationSeconds || 0), 0) || null;
-      const unavailableCount = playlist.unavailableCount + playlist.items.length - matched.length;
-      return {
-        kind: "spotify_playlist",
-        mediaKind: "audio",
-        playlist: { ...playlist, unavailableCount },
-        track: {
-          provider: "spotify",
-          type: "playlist",
-          trackID: playlist.playlistID,
-          title: playlist.title,
-          artist: playlist.author || "Spotify",
-          album: null,
-          trackNumber: null,
-          durationSeconds,
-          artworkURL: playlist.artworkURL,
-          embedURL: null,
-          sourceURL: playlist.sourceURL,
-        },
-        candidates: matched,
-      };
-    }
+    if (playlist) return matchSpotifyPlaylist(playlist);
     const track = await spotifyResolve(source, signal);
     onStage({ stage: "searching_candidates", track });
     const candidates = await candidateSearch(track, signal);
@@ -883,7 +1578,7 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
   const fileMove = adapters.moveFile || moveFile;
   const temporaryRoot = input.temporaryRoot || os.tmpdir();
   const temporary = await fs.mkdtemp(path.join(temporaryRoot, "resonance-local-import-"));
-  const sourcePath = path.join(temporary, mediaKind === "video" ? "source.mp4" : soundCloudSource ? "source.mp3" : "source.m4a");
+  let sourcePath = path.join(temporary, mediaKind === "video" ? "source.mp4" : soundCloudSource ? "source.mp3" : "source.m4a");
   const outputPath = path.join(temporary, "tagged.m4a");
   const metadataSnapshot = input.metadataSnapshot || { settled: false, metadata: null };
   if (input.metadataPromise) {
@@ -941,6 +1636,12 @@ async function importConfirmedSource(input, signal, onStage = () => {}, adapters
         result = completedSoundCloudDownload(preparedAudio, download);
       } else {
         result = await soundCloudDownload(input.sourceURL, sourcePath, signal, downloadProgress);
+      }
+      // An HLS track arrives as AAC in M4A: named so, its audio is copied as it is when tagged, not re-encoded.
+      if (result.download?.format === "m4a") {
+        const m4a = path.join(temporary, "source.m4a");
+        await fs.rename(sourcePath, m4a);
+        sourcePath = m4a;
       }
     } else {
       result = await youtubeDownload(input.sourceURL, sourcePath, signal, downloadProgress, undefined, input.maxVideoHeight ? { maxHeight: input.maxVideoHeight } : {});
