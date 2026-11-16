@@ -536,7 +536,12 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
   const rescored = (track, known) => {
     if (typeof known.sourceURL !== "string") return known;
     const again = (c) => {
-      const scored = scoreUnderNames(track, c);
+      // A SoundCloud upload is scored as its live search scores it (local-soundcloud.cjs): title, credited artist,
+      // uploader and length only, the uploader known only as the artist's own account or not (`officialArtist`).
+      const scoring = c.sourceProvider === "soundcloud"
+        ? { title: c.title, artist: c.artist, channel: c.officialArtist ? c.artist : "", durationSeconds: c.durationSeconds, videoID: "0" }
+        : c;
+      const scored = scoreUnderNames(track, scoring);
       return scored ? { ...c, score: scored.score, match: { ...c.match, ...scored.match } } : null;
     };
     const row = again(known);
