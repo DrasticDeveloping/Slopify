@@ -35,7 +35,16 @@ export type Modal =
   | { type: "settings"; tab?: SettingsTab }
   | { type: "listenAlong" }
   | { type: "clipEditor"; trackId?: string }
-  | { type: "sharePlaylist"; id: string };
+  | { type: "sharePlaylist"; id: string }
+  | { type: "savePlaylist"; count: number; owned: number; name: string; matching: boolean }
+  | { type: "importSummary"; saved: number; playlistId: string | null; playlistName: string | null; missing: ImportMissing[] };
+
+/** A playlist song a save left out: never matched to an upload, or matched but not downloadable. */
+export interface ImportMissing {
+  title: string;
+  artist: string;
+  reason: "not_found" | "search_failed" | "not_on_spotify" | "unread" | "failed";
+}
 
 export interface RoomMember { userId: string; name: string; avatarUrl: string | null; host: boolean }
 

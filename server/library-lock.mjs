@@ -112,11 +112,25 @@ export function lockLibrary(dataDir, { port, onLost = () => process.exit(1) } = 
   }
 
   let lost = false;
+  /**
+   * true: the lock is ours. false: it's someone else's. null: it couldn't be read this instant (Windows briefly locks
+   * a file a virus scanner or indexer has open), which is no sign of a takeover: asked again later.
+   */
   const ours = () => {
     try {
       return JSON.parse(fs.readFileSync(file, "utf8"))?.token === token;
+    } catch (error) {
+      return error?.code === "ENOENT" ? false : null;
+    }
+  };
+  /** Like `ours`, but a lock deleted from under us is recreated (ours again), unless someone else has it by now. */
+  const check = () => {
+    const state = ours();
+    if (state !== false || fs.existsSync(file)) return state;
+    try {
+      return create(file, mine) ? true : ours();
     } catch {
-      return false;
+      return true; // The folder is gone; nothing to protect.
     }
   };
   const giveUp = () => {
@@ -127,24 +141,21 @@ export function lockLibrary(dataDir, { port, onLost = () => process.exit(1) } = 
     onLost();
   };
   const touch = setInterval(() => {
-    if (ours()) {
+    const state = check();
+    if (state === true) {
       const now = new Date();
       try { fs.utimesSync(file, now, now); } catch { /* Gone this instant; next time recreates it. */ }
-    } else if (!fs.existsSync(file) && (() => { try { return create(file, mine); } catch { return true; /* The folder is gone; nothing to protect. */ } })()) {
-      // Deleted from under us: recreated, unless someone else has the library now.
-    } else {
-      giveUp();
-    }
+    } else if (state === false) giveUp();
   }, TOUCH_EVERY);
   touch.unref();
   process.once("exit", () => {
     clearInterval(touch);
     try {
-      if (!lost && ours()) fs.unlinkSync(file);
+      if (!lost && ours() === true) fs.unlinkSync(file);
     } catch { /* Already gone. */ }
   });
   return function owned() {
-    if (!lost && !ours()) giveUp();
+    if (!lost && check() === false) giveUp();
     return !lost;
   };
 }

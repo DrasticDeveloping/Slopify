@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { useStore, type Modal } from "../../state/store";
 import { ClipEditorModal } from "./ClipEditor";
+import { ImportSummaryModal, SavePlaylistModal } from "./ImportModals";
 import { SettingsModal } from "./SettingsModal";
 import { ClosingContext } from "./Shell";
 import { ShareModal } from "./ShareModal";
@@ -22,6 +23,10 @@ function render(modal: Modal) {
       return <ClipEditorModal trackId={modal.trackId} />;
     case "sharePlaylist":
       return <ShareModal id={modal.id} />;
+    case "savePlaylist":
+      return <SavePlaylistModal count={modal.count} owned={modal.owned} name={modal.name} matching={modal.matching} />;
+    case "importSummary":
+      return <ImportSummaryModal saved={modal.saved} playlistId={modal.playlistId} playlistName={modal.playlistName} missing={modal.missing} />;
   }
 }
 

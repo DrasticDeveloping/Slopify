@@ -5,6 +5,7 @@ import { getState, useStore, type MenuState } from "../state/store";
 import { installApp, usePwa } from "../state/pwa";
 import { cloudEnabled, manageAccount, signIn, signOut, useAccount } from "../state/cloud";
 import { openShared, parseShareLink } from "../state/social";
+import { spotifySongLinks } from "../state/importer";
 import { Icon } from "./Icon";
 import { useContextPlaying } from "./Shelf";
 
@@ -119,6 +120,13 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
           ref={input}
           value={draft}
           onChange={(e) => onSearch(e.target.value)}
+          onPaste={(e) => {
+            // Songs copied from Spotify's app arrive as one link per line, which a one-line box would run together.
+            const songs = spotifySongLinks(e.clipboardData.getData("text"));
+            if (songs.length < 2) return;
+            e.preventDefault();
+            onSearch(songs.join(" "));
+          }}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               if (draft) onSearch("");

@@ -3,16 +3,18 @@ import { engine } from "../audio/engine";
 import { hashString, paletteFromSeed } from "../data/library";
 import { isUploadLink, splitArtists, uploadCredit, uploadTitle } from "../lib/credits";
 import type { Album, Artist, ClipRange, Genre, Track } from "../data/types";
+import { candidateSources, ownedIndex } from "../recommend/owned";
 import { meaningfulArtist, type ReasonKind } from "../recommend/taste";
 import {
-  addToPlaylist, ask, cancelServerDelete, connectStreams, createPlaylist, hideDiscovery, isServerDeletePending, keepDiscovery, linkSavedStream, navigate,
+  addToPlaylist, ask, cancelServerDelete, closeModal, connectStreams, createPlaylist, dismissToast, hideDiscovery, isServerDeletePending, keepDiscovery, linkSavedStream, moveInPlaylist,
+  navigate, openModal,
   playList, retryServerDeletes, toast, togglePlay, updateToast, type StreamMedia,
 } from "./actions";
 import { dropFromDevice } from "./device";
 import { keepPicture, prunePictures } from "./pictures";
 import { downloadTracks, keepLibraryOnDevice } from "./server";
 import { listSongs, pendingSongChanges, updateSong, type ServerSong } from "./song-api";
-import { getState, setState, subscribe as subscribeApp, type AppState } from "./store";
+import { getState, setState, subscribe as subscribeApp, type AppState, type ImportMissing } from "./store";
 
 /*
  * Saving music from the web, ported from Resonance's local import flow: search
@@ -45,6 +47,8 @@ export interface SourceTrack {
   creatorAvatarURL?: string | null;
   sourceURL?: string | null;
   sourcePageURL?: string | null;
+  /** A file of the user's own that they added to Spotify, pasted with its songs: known only by its tags. */
+  localFile?: boolean;
 }
 
 export interface Candidate {
@@ -74,11 +78,25 @@ export interface Candidate {
   playlistIndex?: number | null;
   importMetadata?: SourceTrack;
   fallbackCandidates?: Candidate[];
-  match?: Record<string, number | null>;
+  /**
+   * How it matched: scores, `byArtistAndLength` (only its artist and length fit), and `listened` once its sound was
+   * compared with Deezer's preview of the song ("same": kept as sure; "unsure": Deezer had no preview, or it was another mix).
+   */
+  match?: { [score: string]: number | null | undefined | { verdict: "same" | "unsure"; ber?: number; deezerID?: number | null } };
   requiresReview?: boolean;
   autoSelectable?: boolean;
   actionable?: boolean;
   sourceKind?: string | null;
+  /** A playlist song already in the library (a music server song id): not searched for, and not offered for saving. */
+  ownedSongId?: string;
+  /** A playlist song not searched for yet (while the playlist's songs are still being matched). */
+  pending?: boolean;
+  /** A playlist song with no source: YouTube had no fitting upload, or kept turning the search away. */
+  unmatched?: "not_found" | "search_failed" | "not_on_spotify" | "unread";
+  /** A pasted Spotify song not read from Spotify yet (its title and artist come once it is). */
+  reading?: boolean;
+  /** A match made by artist and length alone, being compared with Deezer's preview of the song right now. */
+  listening?: boolean;
 }
 
 export interface Resolution {
@@ -86,11 +104,42 @@ export interface Resolution {
   mediaKind: MediaKind;
   track: SourceTrack;
   candidates: Candidate[];
-  playlist?: { title?: string; unavailableCount?: number; truncated?: boolean };
+  /** `spotifyLimit`: Spotify listed its 100 songs, all it shows other apps, so the playlist may have more. */
+  /** `unreadCount`: pasted Spotify songs Spotify didn't answer for (asked again on Search again). */
+  playlist?: { title?: string; unavailableCount?: number; unreadCount?: number; truncated?: boolean; spotifyLimit?: boolean };
   unavailableProviders?: string[];
   /** A search's next page of results, for searchMore; absent when there are no more. */
   more?: string | null;
+  /** A playlist whose songs are still being matched to uploads (searched for one at a time; see matchPlaylistRows). */
+  matching?: {
+    completed: number;
+    total: number;
+    /** Seconds YouTube asked to wait. */
+    waitingSeconds?: number;
+    /** Pasted songs read from Spotify so far, while they're still being read. */
+    reading?: { completed: number; total: number };
+    /** Seconds Spotify asked to wait before reading more. */
+    spotifyWaitingSeconds?: number;
+    /** Unsure matches compared with Deezer previews so far (see Candidate.listening). */
+    listening?: { completed: number; total: number };
+  };
 }
+
+/** A resolve progress line. A playlist sends all its rows first (`preview`), then each `row` as it is matched. */
+type ResolveProgress = {
+  stage: Stage;
+  completed?: number;
+  total?: number;
+  reading?: { completed: number; total: number };
+  spotifyWaitingSeconds?: number;
+  listening?: { completed: number; total: number };
+  preview?: Resolution;
+  row?: { at: number; candidate: Candidate };
+  waitingSeconds?: number;
+};
+
+/** Playlist rows without a source (pending, unmatched, already owned) come without a link; they get an empty one. */
+const withSources = (r: Resolution): Resolution => ({ ...r, candidates: r.candidates.map((c) => (typeof c.sourceURL === "string" ? c : { ...c, sourceURL: "" })) });
 
 export interface ImportFailure {
   stage: string;
@@ -119,6 +168,20 @@ export interface ImportState {
   /** "2 of 14 • Song" while a playlist downloads, otherwise the song title. */
   transferName: string;
   preview: { index: number; status: "loading" | "playing" | "paused" } | null;
+  /** A playlist's save under way: the song it's on, of those queued so far (`following`: more may be found). */
+  batch: { index: number; total: number; following: boolean } | null;
+  /** How the last playlist save ended, for its Search page to say so (and open the playlist). */
+  saved: PlaylistSaved | null;
+}
+
+export interface PlaylistSaved {
+  source: string;
+  playlistTitle: string;
+  playlistId: string | null;
+  kept: number;
+  total: number;
+  failed: number;
+  cancelled: boolean;
 }
 
 const AUTO_RESOLVE_DELAY = 450;
@@ -136,6 +199,8 @@ const blank = (): Omit<ImportState, "available"> => ({
   providerFocus: "youtube",
   transferName: "",
   preview: null,
+  batch: null,
+  saved: null,
 });
 
 let state: ImportState = { available: null, ...blank() };
@@ -192,6 +257,17 @@ export function sourceIsReady(value: string) {
     return ["embed", "live", "shorts"].includes(segments[0] || "") && /^[a-zA-Z0-9_-]{11}$/.test(segments[1] || "");
   }
   return false;
+}
+
+/**
+ * Spotify song links in pasted text, in order and each once. Spotify's app copies one link per song for a
+ * selection, so a whole playlist can be pasted this way (a playlist link brings only its first 100 songs). Files of
+ * the user's own added to Spotify copy as "open.spotify.com/local/…" links (their tags, URL-encoded), kept as they are.
+ */
+export function spotifySongLinks(text: string): string[] {
+  const links = [...text.matchAll(/(?:open\.spotify\.com\/(?:intl-[a-z]{2}(?:-[a-z]{2})?\/)?track\/|spotify:track:)([A-Za-z0-9]{22})|open\.spotify\.com\/local\/[^/\s]*\/[^/\s]*\/[^/\s]*\/\d{1,6}|spotify:local:[^:\s]*:[^:\s]*:[^:\s]*:\d{1,6}/gi)]
+    .map((m) => (m[1] ? `https://open.spotify.com/track/${m[1]}` : m[0].startsWith("spotify:") ? m[0] : `https://${m[0]}`));
+  return [...new Set(links)];
 }
 
 export function inputIsLink(value: string) {
@@ -276,7 +352,7 @@ function asFailure(error: unknown, stage: string): ImportFailure {
 }
 
 /** POSTs to an NDJSON endpoint, reporting progress lines until the final result line. */
-async function streamCall<T>(path: string, body: unknown, signal: AbortSignal, onProgress: (p: { stage: Stage; completed?: number; total?: number }) => void, stage: string): Promise<ApiResult<T>> {
+async function streamCall<T>(path: string, body: unknown, signal: AbortSignal, onProgress: (p: ResolveProgress) => void, stage: string): Promise<ApiResult<T>> {
   const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
   if (!res.ok || !res.body) {
     // Prefer the server's own explanation (e.g. a damaged library file).
@@ -309,13 +385,50 @@ async function streamCall<T>(path: string, body: unknown, signal: AbortSignal, o
 
 /* ───────────────────────── discovery (Home → Discover new music) ───────────────────────── */
 
-/** A provider search for discovery. It has its own request, so an open import dialog is left alone. */
-export async function searchDiscovery(query: string, signal: AbortSignal, mediaKind: MediaKind = "audio"): Promise<Resolution> {
-  const result = await streamCall<Resolution>("/api/import/resolve", { source: query, mediaKind }, signal, () => undefined, "searching_candidates");
+/**
+ * A provider search for discovery. It has its own request, so an open import dialog is left alone.
+ * `onPartial`: a playlist link's songs while they are still being matched, on every progress line (so also while
+ * YouTube asks for a pause), each with `matching` set.
+ */
+export async function searchDiscovery(
+  query: string,
+  signal: AbortSignal,
+  mediaKind: MediaKind = "audio",
+  onPartial?: (r: Resolution) => void,
+  /** Songs pasted from Spotify, while their details are read (before any `onPartial`). */
+  onReading?: (progress: { completed: number; total: number }) => void,
+): Promise<Resolution> {
+  let partial: Resolution | null = null;
+  const result = await streamCall<Resolution>("/api/import/resolve", { source: query, mediaKind }, signal, (p) => {
+    if (!partial && !p.preview && p.stage === "resolving_metadata" && p.total) onReading?.({ completed: p.completed ?? 0, total: p.total });
+    if (p.preview) partial = p.preview;
+    else if (partial && p.row) {
+      const candidates = partial.candidates.slice();
+      candidates[p.row.at] = p.row.candidate;
+      partial = { ...partial, candidates };
+    }
+    if (partial && onPartial) {
+      onPartial(withSources({
+        ...partial,
+        matching: { completed: p.completed ?? 0, total: p.total ?? 0, waitingSeconds: p.waitingSeconds, reading: p.reading, spotifyWaitingSeconds: p.spotifyWaitingSeconds, listening: p.listening },
+      }));
+    }
+  }, "searching_candidates");
   // Nothing found is an answer, not a failure.
   if (!result.ok && result.error.code === "NO_SEARCH_RESULTS") return { kind: "search_results", mediaKind: "audio", track: {}, candidates: [] };
   if (!result.ok) throw result.error;
-  return result.result;
+  return withSources(result.result);
+}
+
+/**
+ * The library song a playlist row already is, saved as `kind` (a song saved as audio doesn't stand in for its video):
+ * the music server's match, else one recognised here by name or source.
+ */
+export function playlistOwnedTrack(c: Candidate, kind: MediaKind, s: Pick<AppState, "tracks" | "artists"> = getState()): string | undefined {
+  const server = c.ownedSongId ? s.tracks[`srv_${c.ownedSongId}`] : undefined;
+  if (server && server.kind === kind) return server.id;
+  const meta = c.importMetadata;
+  return ownedIndex(s).find({ artist: meta?.artist, title: meta?.title, sources: candidateSources(c) }).find((id) => s.tracks[id]?.kind === kind);
 }
 
 /** The next page of a search's results (Resolution.more). */
@@ -345,9 +458,57 @@ export function reviewDiscoveredSong(candidate: Candidate, kind: ReasonKind, opt
   navigate({ name: "search", q: state.source });
 }
 
-/** Saves the chosen search results through the same download pipeline as the import dialog. */
-export async function saveSearchResults(source: string, resolution: Resolution, selected: number[]) {
+/**
+ * A playlist still being matched, for a save that keeps going: `next` waits for more songs to save (matched and
+ * wanted), each with its row; it answers null once matching has ended and none are left. `latest` is the playlist
+ * as it stands, for putting the songs in order at the end.
+ */
+export interface PlaylistFollow {
+  next(signal: AbortSignal): Promise<{ at: number; candidate: Candidate }[] | null>;
+  latest(): Resolution;
+}
+/** The follow for the playlist save about to start (see saveSearchResults). */
+let pendingFollow: PlaylistFollow | null = null;
+
+/**
+ * How a playlist's songs are saved (asked in the Save dialog): `playlistName` is the playlist they go in (made, or
+ * topped up if one has that name), or null for none; `includeOwned` puts the list's songs already in the library in
+ * that playlist too.
+ */
+export interface PlaylistSaveOptions {
+  playlistName: string | null;
+  includeOwned: boolean;
+}
+let pendingSaveOptions: PlaylistSaveOptions | null = null;
+/** What the Save dialog starts once answered (see askToSavePlaylist). */
+let saveStarter: ((options: PlaylistSaveOptions) => void) | null = null;
+
+/**
+ * Asks how to save a playlist's songs (the Save dialog: whether to make a playlist, and its name), then `start`s the
+ * save with the answer. Closing the dialog saves nothing.
+ */
+export function askToSavePlaylist(details: { count: number; owned: number; name: string; matching: boolean }, start: (options: PlaylistSaveOptions) => void) {
   if (importBusy()) return;
+  saveStarter = start;
+  openModal({ type: "savePlaylist", ...details });
+}
+
+/** The Save dialog's answer: closes it and starts the save. */
+export function startPlaylistSave(options: PlaylistSaveOptions) {
+  const start = saveStarter;
+  saveStarter = null;
+  closeModal();
+  start?.(options);
+}
+
+/**
+ * Saves the chosen search results through the same download pipeline as the import dialog. `follow`: a playlist
+ * still being matched, whose songs are saved as they're found too, in the same transfer.
+ */
+export async function saveSearchResults(source: string, resolution: Resolution, selected: number[], follow?: PlaylistFollow, options?: PlaylistSaveOptions) {
+  if (importBusy()) return;
+  pendingFollow = isPlaylist(resolution) ? follow ?? null : null;
+  pendingSaveOptions = isPlaylist(resolution) ? options ?? null : null;
   resolveController?.abort();
   clearAuto();
   stopPreview({ resume: true });
@@ -695,11 +856,18 @@ function placeServerTrack(p: ServerSong, artists: Record<string, Artist>, albums
   };
 }
 
+/**
+ * When each server song was added here. A library sync whose song list was asked for before then can't know the
+ * song yet, so it mustn't take it for one deleted elsewhere (which also takes it out of its playlists).
+ */
+const addedHere = new Map<string, number>();
+
 /** Adds (or finds) a saved song in the app library, starts keeping its file on this device, and returns its track id. */
 export function addServerTrack(p: ServerSong) {
   cancelServerDelete(p.id);
   const s = getState();
   const id = `srv_${p.id}`;
+  addedHere.set(id, Date.now());
   if (!s.tracks[id]) {
     const artists = { ...s.artists };
     const albums = { ...s.albums };
@@ -734,6 +902,7 @@ function clipChange(clips: Record<string, ClipRange>, id: string, p: ServerSong)
  */
 export async function syncServerLibrary() {
   let list: ServerSong[];
+  const asked = Date.now();
   try {
     list = await listSongs();
     set({ available: true });
@@ -745,7 +914,9 @@ export async function syncServerLibrary() {
   retryServerDeletes();
   const s = getState();
   const live = new Set(list.map((t) => `srv_${t.id}`));
-  const gone = new Set(Object.values(s.tracks).filter((t) => t.serverId && !live.has(t.id)).map((t) => t.id));
+  // A song added since the list was asked for isn't in it yet; the next sync has it.
+  const gone = new Set(Object.values(s.tracks).filter((t) => t.serverId && !live.has(t.id) && !((addedHere.get(t.id) ?? -1) >= asked)).map((t) => t.id));
+  for (const [id, at] of addedHere) if (at < asked) addedHere.delete(id);
   const artists = { ...s.artists };
   const albums = { ...s.albums };
   const tracks = { ...s.tracks };
@@ -1085,7 +1256,7 @@ export async function resolveImport() {
     }, "resolving_metadata");
     if (resolveController !== controller) return;
     if (!result.ok) throw result.error;
-    const resolution = result.result;
+    const resolution = withSources(result.result);
     const playlist = isPlaylist(resolution);
     const search = resolution.kind === "search_results";
     const providerFocus = search ? activeProvider(resolution, state.providerFocus) : state.providerFocus;
@@ -1123,7 +1294,28 @@ function transferToastAlive() {
   return transferToast !== 0 && getState().toasts.some((t) => t.id === transferToast);
 }
 
+/** The source whose page is on screen showing its own save progress (a playlist's Search page), if any. */
+let inlineSource: string | null = null;
+const shownInline = () => inlineSource !== null && inlineSource === state.source;
+
+/**
+ * A playlist's Search page, while open, shows its save's progress and outcome itself; the transfer toast is for when
+ * it isn't on screen (so leaving the page brings the toast up, and coming back puts it away).
+ */
+export function showTransferInline(source: string | null) {
+  if (inlineSource === source) return;
+  inlineSource = source;
+  lastToastKey = "";
+  if (state.busy === "import") showTransfer();
+}
+
 function showTransfer() {
+  if (shownInline()) {
+    if (transferToastAlive()) dismissToast(transferToast);
+    transferToast = 0;
+    lastToastKey = "";
+    return;
+  }
   const { stage, progress, transferName } = state;
   const ratio = stage === "downloading" && progress?.total ? progress.completed / progress.total : -1;
   const batch = batchProgress;
@@ -1141,9 +1333,12 @@ function showTransfer() {
   }
 }
 
-function finishTransfer(message: string, opts: Parameters<typeof toast>[1] = {}) {
+function finishTransfer(message: string, opts: Parameters<typeof toast>[1] = {}, { quietInline = false } = {}) {
   const { duration = 6000, ...rest } = opts;
-  if (transferToastAlive()) updateToast(transferToast, { message, detail: undefined, progress: undefined, sticky: false, tone: "default", action: undefined, ...rest }, duration);
+  // (`quietInline`: the page on screen says how it ended itself.)
+  if (quietInline && shownInline()) {
+    if (transferToastAlive()) dismissToast(transferToast);
+  } else if (transferToastAlive()) updateToast(transferToast, { message, detail: undefined, progress: undefined, sticky: false, tone: "default", action: undefined, ...rest }, duration);
   else toast(message, { duration, ...rest });
   transferToast = 0;
   transferToastClosed = false;
@@ -1355,7 +1550,7 @@ function end(controller: AbortController) {
   if (importController !== controller) return;
   importController = null;
   batchProgress = null;
-  set({ busy: null, progress: null });
+  set({ busy: null, progress: null, batch: null });
 }
 
 /** One transfer per provider track, even when a playlist repeats it. */
@@ -1374,42 +1569,130 @@ function transferKey(c: Candidate, kind: MediaKind) {
 async function confirmPlaylist(resolution: Resolution) {
   const kind = resolution.mediaKind;
   const noun = kind === "video" ? "video" : "song";
-  const chosen = state.selected.map((i) => resolution.candidates[i]).filter(Boolean);
-  if (!chosen.length) {
+  // A playlist still being matched: songs found while this runs are saved too.
+  const follow = pendingFollow;
+  pendingFollow = null;
+  const sourceTitle = resolution.playlist?.title || resolution.track.title || "Imported Playlist";
+  const options = pendingSaveOptions ?? { playlistName: sourceTitle, includeOwned: true };
+  pendingSaveOptions = null;
+  const makePlaylist = options.playlistName !== null;
+  /**
+   * Songs already in the library aren't saved again, but still take their place in the imported playlist (when
+   * there is one, and they're wanted in it).
+   */
+  const ownedIn = (r: Resolution, queued: Set<number>) => r.candidates.flatMap((c, at) => {
+    if (queued.has(at) || !makePlaylist || !options.includeOwned) return [];
+    const id = playlistOwnedTrack(c, kind);
+    return id ? [{ at, id }] : [];
+  });
+  const seen = new Set<string>();
+  // Each song to save with its row in the playlist, once each (a playlist can list one twice).
+  const queue: { at: number; candidate: Candidate }[] = [];
+  const enqueue = (entries: { at: number; candidate: Candidate }[]) => {
+    for (const entry of entries) {
+      const key = transferKey(entry.candidate, kind);
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      queue.push(entry);
+    }
+  };
+  enqueue(state.selected.flatMap((at) => (resolution.candidates[at] ? [{ at, candidate: resolution.candidates[at] }] : [])));
+  const owned = ownedIn(resolution, new Set(state.selected));
+  if (!queue.length && !owned.length && !follow) {
     fail({ stage: "awaiting_selection", message: `Choose at least one playlist ${noun} to download.` });
     return;
   }
-  const seen = new Set<string>();
-  const queue = chosen.filter((c) => {
-    const key = transferKey(c, kind);
-    if (!key) return true;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  const playlistTitle = resolution.playlist?.title || resolution.track.title || "Imported Playlist";
+  const playlistTitle = options.playlistName?.trim() || sourceTitle;
   const providerName = resolution.kind === "spotify_playlist" ? "Spotify" : resolution.kind === "soundcloud_playlist" ? "SoundCloud" : "YouTube";
-  const first = queue[0].importMetadata?.title || queue[0].title || "Playlist item 1";
-  batchProgress = { index: 0, total: queue.length };
-  const controller = begin(`1 of ${queue.length} • ${first}`);
+  /**
+   * Puts songs in the playlist named after the source, each at its place there (`at`, its row in the source).
+   * Importing again tops it up: songs saved in a later batch (or a later import) go where the source has them, not at
+   * the end, among the songs it has from this source. Songs added to it some other way stay where they are.
+   */
+  const place = (entries: { at: number; id: string }[], source: Resolution = resolution) => {
+    if (!makePlaylist) return undefined;
+    const sorted = [...entries].sort((a, b) => a.at - b.at);
+    const ids = [...new Set(sorted.map((e) => e.id))];
+    if (!ids.length) return undefined;
+    // Where each of this source's songs belongs, including ones already in the playlist.
+    const position = new Map<string, number>();
+    source.candidates.forEach((c, at) => {
+      const id = playlistOwnedTrack(c, kind);
+      if (id && !position.has(id)) position.set(id, at);
+    });
+    for (const { at, id } of sorted) if (!position.has(id)) position.set(id, at);
+    const existing = getState().playlists.find((p) => !p.system && p.name === playlistTitle);
+    let playlistId: string;
+    if (existing) {
+      const had = new Set(existing.trackIds);
+      addToPlaylist(existing.id, ids, { silent: true });
+      playlistId = existing.id;
+      for (const id of ids) {
+        if (had.has(id)) continue;
+        const at = position.get(id)!;
+        const current = getState().playlists.find((p) => p.id === playlistId)?.trackIds ?? [];
+        const before = current.find((other) => other !== id && (position.get(other) ?? -1) > at) ?? null;
+        if (before) moveInPlaylist(playlistId, id, before);
+      }
+    } else playlistId = createPlaylist(playlistTitle, ids, `Imported from ${providerName}.`);
+    return { label: "Open", run: () => navigate({ name: "playlist", id: playlistId }), playlistId };
+  };
+  /** Records how the save ended, for the playlist's Search page (see ImportState.saved). */
+  const settle = (outcome: Omit<PlaylistSaved, "source" | "playlistTitle">) =>
+    set({ saved: { source: state.source, playlistTitle: makePlaylist ? playlistTitle : "", ...outcome } });
+  if (!queue.length && !follow) {
+    // Every song is already saved: only the playlist is made.
+    const open = place(owned);
+    settle({ playlistId: open?.playlistId ?? null, kept: 0, total: 0, failed: 0, cancelled: false });
+    if (!shownInline()) toast(`Added ${owned.length} ${noun}${owned.length === 1 ? "" : "s"} to “${playlistTitle}”`, { tone: "success", detail: "All of them were already in your library.", action: open });
+    set({ stage: "complete" });
+    return;
+  }
+  const first = queue[0] ? queue[0].candidate.importMetadata?.title || queue[0].candidate.title || "Playlist item 1" : "Waiting for songs to be found…";
+  batchProgress = { index: 0, total: Math.max(1, queue.length) };
+  set({ saved: null, batch: { index: 0, total: queue.length, following: Boolean(follow) } });
+  const controller = begin(queue.length ? `1 of ${queue.length} • ${first}` : first);
+  /** "3 of 12", or "3 of 12 so far" while more may still be found. */
+  let following = Boolean(follow);
+  const of = (index: number) => `${index + 1} of ${queue.length}${following ? " so far" : ""}`;
   // Each kept song by its place in the queue, so ones settled later (below) still land where they were.
   const slots: string[] = [];
-  const failures: string[] = [];
+  const failures: { line: string; title: string; artist: string }[] = [];
+  const failed = (title: string, artist?: string | null) => failures.push({ line: `${title}${artist ? ` — ${artist}` : ""}`, title, artist: artist || "" });
   // Songs that sound like ones already saved: asked about together once the rest are in, then put in their place.
   const similar: (SimilarPair & { option: Candidate; meta: SourceTrack; at: number })[] = [];
   let created = 0;
   let duplicates = 0;
   let cancelled = false;
   try {
-    for (let index = 0; index < queue.length; index++) {
+    for (let index = 0; ; index++) {
       if (controller.signal.aborted) {
         cancelled = true;
         break;
       }
-      const candidate = queue[index];
+      // Out of songs: while the playlist is still being matched, wait for the next ones found.
+      while (index >= queue.length && follow && following) {
+        set({ transferName: `Waiting for the next song to be found (${queue.length} saved or saving)`, stage: "searching_candidates", progress: null, batch: { index, total: queue.length, following: true } });
+        showTransfer();
+        let more: { at: number; candidate: Candidate }[] | null = null;
+        try {
+          more = await follow.next(controller.signal);
+        } catch {
+          // Cancelled while waiting (checked below).
+        }
+        if (controller.signal.aborted) break;
+        if (more) enqueue(more);
+        else following = false;
+      }
+      if (controller.signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      if (index >= queue.length) break;
+      const candidate = queue[index].candidate;
       const meta = candidate.importMetadata || candidate;
       batchProgress = { index, total: queue.length };
-      set({ transferName: `${index + 1} of ${queue.length} • ${meta.title || candidate.title || `Playlist item ${index + 1}`}`, stage: "inspecting_source", progress: null });
+      set({ transferName: `${of(index)} • ${meta.title || candidate.title || `Playlist item ${index + 1}`}`, stage: "inspecting_source", progress: null, batch: { index, total: queue.length, following } });
       showTransfer();
       const options = [candidate, ...(candidate.fallbackCandidates ?? []).filter(isDownloadable)];
       let result: ApiResult<StartResult> | null = null;
@@ -1436,7 +1719,7 @@ async function confirmPlaylist(resolution: Resolution) {
         break;
       }
       if (!result?.ok) {
-        failures.push(`${meta.title || "Untitled"}${meta.artist ? ` — ${meta.artist}` : ""}`);
+        failed(meta.title || "Untitled", meta.artist);
         continue;
       }
       if (result.result.kind === "similar") {
@@ -1473,7 +1756,7 @@ async function confirmPlaylist(resolution: Resolution) {
               cancelled = true;
               break;
             }
-            failures.push(`${item.saving.title}${item.saving.artist ? ` — ${item.saving.artist}` : ""}`);
+            failed(item.saving.title, item.saving.artist);
             continue;
           }
           id = addServerTrack(again.result.track);
@@ -1487,36 +1770,50 @@ async function confirmPlaylist(resolution: Resolution) {
       }
     }
   } finally {
-    // In queue order, each song once (a playlist can list one twice, or two of its songs be one already saved).
-    const imported = [...new Set(slots.filter(Boolean))];
-    let playlistId: string | null = null;
-    if (imported.length) {
-      // Same name as the source playlist; importing it again tops it up.
-      const existing = getState().playlists.find((p) => !p.system && p.name === playlistTitle);
-      if (existing) {
-        addToPlaylist(existing.id, imported, { silent: true });
-        playlistId = existing.id;
-      } else playlistId = createPlaylist(playlistTitle, imported, `Imported from ${providerName}.`);
-    }
-    const open = playlistId ? { label: "Open", run: () => navigate({ name: "playlist", id: playlistId! }) } : undefined;
+    // In the source playlist's order, each song once (a playlist can list one twice, or two of its songs be one
+    // already saved). Songs already in the library join only if at least one song was kept, so a cancelled or
+    // failed download doesn't leave a playlist of only those.
     const kept = created + duplicates;
+    const placed = slots.flatMap((id, index) => (id ? [{ at: queue[index].at, id }] : []));
+    // The playlist as it now stands (a followed one has more rows, and songs owned among them).
+    const final = follow?.latest() ?? resolution;
+    if (placed.length) placed.push(...(follow ? ownedIn(final, new Set(queue.map((entry) => entry.at))) : owned));
+    const open = place(placed, final);
     const plural = (n: number) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+    settle({ playlistId: open?.playlistId ?? null, kept, total: queue.length, failed: failures.length, cancelled });
     if (cancelled) {
-      finishTransfer("Playlist download cancelled", { detail: `Kept ${kept} of ${plural(queue.length)}.`, action: open });
+      finishTransfer("Playlist download cancelled", { detail: `Kept ${kept} of ${plural(queue.length)}.`, action: open }, { quietInline: true });
       set({ stage: "cancelled" });
     } else if (failures.length) {
-      finishTransfer(`Kept ${kept} of ${plural(queue.length)}`, { tone: "error", detail: `Failed after retrying: ${failures.slice(0, 3).join("; ")}${failures.length > 3 ? ` and ${failures.length - 3} more` : ""}.`, action: open, duration: 9000 });
+      finishTransfer(`Kept ${kept} of ${plural(queue.length)}`, { tone: "error", detail: `Failed after retrying: ${failures.slice(0, 3).map((f) => f.line).join("; ")}${failures.length > 3 ? ` and ${failures.length - 3} more` : ""}.`, action: open, duration: 9000 }, { quietInline: true });
       set({ stage: "failed", error: { stage: "downloading", message: `${failures.length} ${noun}${failures.length === 1 ? "" : "s"} could not be downloaded.` } });
     } else {
+      const already = duplicates + owned.length;
       finishTransfer(`Kept ${plural(kept)} from “${playlistTitle}”`, {
         tone: "success",
-        detail: duplicates ? `${duplicates} already in your library.` : "Saved to your music server and kept on this device.",
+        detail: already ? `${already} ${already === 1 ? "was" : "were"} already in your library; ${already === 1 ? "it's" : "they're"} in the playlist too.` : "Saved to your music server and kept on this device.",
         action: open,
-      });
+      }, { quietInline: true });
       set({ stage: "complete" });
     }
     end(controller);
+    if (!cancelled) showSaveSummary(final, kept, open?.playlistId ?? null, makePlaylist ? playlistTitle : null, failures);
   }
+}
+
+/**
+ * Once a playlist's songs are saved, the ones that weren't, in the list's order: never matched to an upload (or
+ * never read from Spotify), then those that couldn't be downloaded. Nothing to show, no dialog; nor over another one.
+ */
+function showSaveSummary(final: Resolution, saved: number, playlistId: string | null, playlistName: string | null, failures: { title: string; artist: string }[]) {
+  const missing: ImportMissing[] = final.candidates.flatMap((c) => {
+    if (!c.unmatched) return [];
+    const meta = c.importMetadata;
+    return [{ title: meta?.title || `Song ${c.playlistIndex ?? ""}`.trim(), artist: meta?.artist || "", reason: c.unmatched }];
+  });
+  missing.push(...failures.map((f) => ({ title: f.title, artist: f.artist, reason: "failed" as const })));
+  if (!missing.length || getState().modal) return;
+  openModal({ type: "importSummary", saved, playlistId, playlistName, missing });
 }
 
 export function cancelImport() {
