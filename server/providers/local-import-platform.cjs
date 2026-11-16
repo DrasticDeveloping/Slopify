@@ -479,8 +479,11 @@ async function playlistSearchTurn(signal, gap) {
  *
  * `listen(track, links, { signal })` (preview-check.mjs's listenForMatch) hears the songs matched by artist and
  * length alone, alongside the searches: a match that sounds like the song is kept as sure, one that surely doesn't is
- * dropped. Each verdict is remembered with the match, so a song is listened to once.
+ * dropped. Each verdict is remembered with the match, so a song is listened to once (an unsure one again when
+ * LISTEN_VERSION goes up).
  */
+/** Raised when listening improves (2: Deezer's own spelling of an artist's name is found and searched under). */
+const LISTEN_VERSION = 2;
 async function matchPlaylistRows(entries, { signal, onStage, search, searchSoundCloud, ownedSong, matchCache, preview, read, listen, pace = {} }) {
   const gap = pace.gapMs ?? PLAYLIST_SEARCH_GAP_MS;
   const backoff = pace.backoffMs ?? PLAYLIST_SEARCH_BACKOFF_MS;
@@ -548,10 +551,14 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
     ...(queuedToListen.size ? { listening: { completed: listenedCount, total: queuedToListen.size } } : {}),
     ...extra,
   });
-  /** A match made by artist and length alone, not listened to yet, is queued to be. */
+  /**
+   * A match made by artist and length alone, not listened to yet, is queued to be; so is one left unsure by an older
+   * way of listening (LISTEN_VERSION), which may settle it now.
+   */
   const queueListen = (at) => {
     const match = rows[at]?.match;
-    if (!listen || !match?.byArtistAndLength || match.listened || queuedToListen.has(at)) return;
+    const settled = match?.listened && (match.listened.verdict !== "unsure" || (match.listened.v ?? 1) >= LISTEN_VERSION);
+    if (!listen || !match?.byArtistAndLength || settled || queuedToListen.has(at)) return;
     queuedToListen.add(at);
     toListen.push(at);
   };
@@ -753,7 +760,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
   const heardRow = (row, heard) => {
     const track = row.importMetadata;
     if (heard.verdict === "different") return { ...base(track), unmatched: "not_found" };
-    if (heard.verdict !== "same") return { ...row, match: { ...row.match, listened: { verdict: "unsure", deezerID: heard.deezer?.id ?? null } } };
+    if (heard.verdict !== "same") return { ...row, match: { ...row.match, listened: { verdict: "unsure", deezerID: heard.deezer?.id ?? null, v: LISTEN_VERSION } } };
     const uploads = [row, ...(row.fallbackCandidates || [])];
     const { fallbackCandidates: _fallbacks, ...chosen } = uploads[heard.at];
     const { byArtistAndLength: _byLength, ...chosenMatch } = chosen.match || {};

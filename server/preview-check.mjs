@@ -110,20 +110,58 @@ export async function findDeezerTrack(track, { signal, fetchImpl = fetch } = {})
   if (!track?.title || !track.durationSeconds) return null;
   let fallback = null;
   const seen = new Set();
+  /** Deezer's own spellings of the artist's name (see below): its tracks under them count as the artist's. */
+  const aliases = new Set();
+  const consider = (hit) => {
+    // A track seen before an alias was known is weighed again with it.
+    const key = `${hit?.id}:${aliases.size}`;
+    if (!hit?.preview || seen.has(key) || Math.abs(Number(hit.duration) - track.durationSeconds) > SAME_LENGTH_SECONDS) return null;
+    seen.add(key);
+    const scored = scoreUnderNames(track, { title: hit.title, artist: hit.artist?.name, durationSeconds: Number(hit.duration) });
+    const title = scored?.match.title ?? overlap(track.title, hit.title);
+    const artist = aliases.has(normalizeMatchText(hit.artist?.name || "")) ? 1 : scored?.match.artist ?? overlap(track.artist, hit.artist?.name);
+    const found = { id: hit.id, title: hit.title, artist: hit.artist?.name || null, durationSeconds: Number(hit.duration), preview: hit.preview, strong: title >= 0.75 && artist >= 0.5 };
+    if (!fallback && (title >= 0.5 || artist >= 0.5)) fallback = found;
+    return found.strong ? found : null;
+  };
   for (const query of deezerQueries(track)) {
     for (const hit of await searchDeezer(query, signal, fetchImpl)) {
-      if (!hit?.preview || seen.has(hit.id) || Math.abs(Number(hit.duration) - track.durationSeconds) > SAME_LENGTH_SECONDS) continue;
-      seen.add(hit.id);
-      const scored = scoreUnderNames(track, { title: hit.title, artist: hit.artist?.name, durationSeconds: Number(hit.duration) });
-      const title = scored?.match.title ?? overlap(track.title, hit.title);
-      const artist = scored?.match.artist ?? overlap(track.artist, hit.artist?.name);
-      const found = { id: hit.id, title: hit.title, artist: hit.artist?.name || null, durationSeconds: Number(hit.duration), preview: hit.preview, strong: title >= 0.75 && artist >= 0.5 };
-      if (found.strong) return found;
-      if (!fallback && (title >= 0.5 || artist >= 0.5)) fallback = found;
+      const found = consider(hit);
+      if (found) return found;
+    }
+  }
+  /*
+   * Deezer may know the artist by another spelling (ぴーなた is "pinata" there), so none of the searches above find the
+   * song. Its plain search for the artist's name does list their songs under that spelling: the name most of those
+   * songs carry is taken as the artist's, and the song is searched for under it.
+   */
+  for (const main of [...new Set(artistNames(track).map(mainArtist).filter(Boolean))]) {
+    const hits = await searchDeezer(main, signal, fetchImpl);
+    const counts = new Map();
+    for (const hit of hits) {
+      const name = normalizeMatchText(hit.artist?.name || "");
+      if (name && name !== normalizeMatchText(main)) counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    const [alias, count] = [...counts].sort((a, b) => b[1] - a[1])[0] ?? [];
+    if (!alias || count < 2 || count < hits.length / 3) continue;
+    aliases.add(alias);
+    const spelled = hits.find((hit) => normalizeMatchText(hit.artist?.name || "") === alias).artist.name;
+    for (const hit of hits) {
+      const found = consider(hit);
+      if (found) return found;
+    }
+    for (const query of [...new Set(titleNames(track).map((t) => bareTitle(t) || t))].map((t) => `${spelled} ${t}`)) {
+      for (const hit of await searchDeezer(query, signal, fetchImpl)) {
+        const found = consider(hit);
+        if (found) return found;
+      }
     }
   }
   return fallback;
 }
+
+const artistNames = (track) => [track.artist, track.alternateArtist].filter(Boolean);
+const titleNames = (track) => [track.title, track.alternateTitle].filter(Boolean);
 
 /** The share of one name's words the other has (for names the scorer turned down outright). */
 function overlap(expected, actual) {
