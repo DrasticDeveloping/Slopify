@@ -342,7 +342,7 @@ export function ExternalSearch({ query }: { query: string }) {
   const saveRef = useRef(saveNow);
   saveRef.current = saveNow;
   const save = () => askToSavePlaylist(
-    { count: selected.length, owned: ownedIds.filter(Boolean).length, name: playlistTitle, matching: Boolean(matching) },
+    { count: toSave, owned: ownedIds.filter(Boolean).length, name: playlistTitle, matching: Boolean(matching) },
     (options) => saveRef.current(options),
   );
   // Songs YouTube kept turning away: searched again on request (the ones found come back from the server's memory).
@@ -366,6 +366,12 @@ export function ExternalSearch({ query }: { query: string }) {
       } else stats.found += 1;
     });
   }
+  /**
+   * The songs a save brings in, counted from the list itself rather than the matches so far: those ticked, and those
+   * still being read or matched (a save while matching takes them as they're found). Songs already in the library and
+   * ones not found aren't counted.
+   */
+  const toSave = selected.length + (matching ? stats.waiting : 0);
   // The playlist a save of these songs goes into (named after the source), once it exists.
   const playlistTitle = r?.playlist?.title || r?.track?.title || "Imported Playlist";
   const outcomeEarly = transfer.saved?.source === query ? transfer.saved : null;
@@ -559,7 +565,7 @@ export function ExternalSearch({ query }: { query: string }) {
                     {savingHere ? (
                       <>
                         <button type="button" className="btn" disabled>
-                          {savingLabel(transfer.batch)}
+                          {savingLabel(transfer.batch, matching ? stats.waiting : 0)}
                         </button>
                         <button type="button" className="text-btn" onClick={cancelImport}>Cancel</button>
                       </>
@@ -573,7 +579,7 @@ export function ExternalSearch({ query }: { query: string }) {
                         onClick={save}
                         title={matching ? "Saves the songs found so far, then each one as it's found, even if you leave this page." : undefined}
                       >
-                        {`Save ${countSongs(selected.length)}`}
+                        {`Save ${countSongs(toSave)}`}
                       </button>
                     ) : savedPlaylist ? (
                       <button type="button" className="btn primary" onClick={() => navigate({ name: "playlist", id: savedPlaylist })}>Open playlist</button>
@@ -702,10 +708,11 @@ function sameName(a: string, b: string) {
  * The import bar's status line: the save under way (this playlist's, while its page is open), where matching has
  * got, or how the last save ended.
  */
-/** The Save button while its save runs: how many songs, so far. */
-function savingLabel(b: ImportState["batch"]) {
-  if (!b?.total) return b?.streaming ? "Adding…" : "Saving…";
-  return `${b.streaming ? "Adding" : "Saving"} ${countSongs(b.total)}…`;
+/** The Save button while its save runs: how many songs, those still to be found (`toFind`, while it follows the matching) included. */
+function savingLabel(b: ImportState["batch"], toFind: number) {
+  const total = (b?.total ?? 0) + (b?.following ? toFind : 0);
+  if (!total) return b?.streaming ? "Adding…" : "Saving…";
+  return `${b?.streaming ? "Adding" : "Saving"} ${countSongs(total)}…`;
 }
 
 function ImportStatus({ matching, toGo, saving, outcome, offerOpen }: {

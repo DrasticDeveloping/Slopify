@@ -45,14 +45,15 @@ export function SavePlaylistModal({ count, owned, name: suggested, matching }: {
               <Toggle checked={download} onChange={setDownload} label="Download the songs" />
             </div>
           )}
-          {playlistNeeded ? null : (
+          {onlyPlaylist ? null : (
+            // Stays in view when the songs aren't downloaded: the playlist is then how they're kept (so it's always on).
             <div className="set-row">
               <span className="set-icon"><Icon name="playlists" size={19} /></span>
               <span className="set-copy">
                 <strong>Make a playlist</strong>
-                <small>With the saved songs, in the list's order.</small>
+                <small>{download ? "With the saved songs, in the list's order." : "The songs stream from it, in the list's order."}</small>
               </span>
-              <Toggle checked={makePlaylist} onChange={setMakePlaylist} label="Make a playlist" />
+              <Toggle checked={makePlaylist || !download} onChange={setMakePlaylist} label="Make a playlist" disabled={!download} />
             </div>
           )}
           {makePlaylist || playlistNeeded ? (
