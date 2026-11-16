@@ -305,10 +305,11 @@ export function ExternalSearch({ query }: { query: string }) {
   const [provider, setProvider] = useState<"all" | Provider>("all");
   /**
    * Which playlist songs are ticked, ones still arriving included: at first every song with a source except those
-   * matched only by artist and length (`unsure`), after "Select all" every one, after "Select none" none; `except`
-   * flips single songs from that.
+   * matched only by artist and length (`unsure`), after "Select all" every one, after "Select none" none. `chosen`
+   * holds the songs the user ticked or unticked themselves: that choice stands whatever the song turns out to be (a
+   * waiting song found as a "Check match", a "Check match" confirmed by ear).
    */
-  const [ticks, setTicks] = useState<{ mode: "default" | "all" | "none"; except: number[] }>({ mode: "default", except: [] });
+  const [ticks, setTicks] = useState<{ mode: "default" | "all" | "none"; chosen: Record<number, boolean> }>({ mode: "default", chosen: {} });
   const { lookup, resolution: first, reading, loading, error } = usePlatformSearch(query, kind, attempt);
   const { resolution: r, loadMore, loadingMore, moreError, hasMore, stalled } = useMoreResults(first, kind);
   const paged = first?.kind === "search_results";
@@ -323,16 +324,17 @@ export function ExternalSearch({ query }: { query: string }) {
   const artists = useStore((s) => s.artists);
   const ownedIds = useMemo(() => (playlist && r ? r.candidates.map((c) => playlistOwnedTrack(c, r.mediaKind, { tracks, artists })) : []), [playlist, r, tracks, artists]);
   const ownedAt = (index: number) => ownedIds[index];
-  const tickedFirst = (i: number) => (ticks.mode === "default" ? !unsure(r!.candidates[i]) : ticks.mode === "all");
+  /** Whether a row is ticked: the user's own choice for it, else what the mode gives a song like it. */
+  const tickedFor = (i: number, c: Candidate | undefined) => ticks.chosen[i] ?? (ticks.mode === "default" ? !unsure(c) : ticks.mode === "all");
   /** Whether a row is ticked now; a song still being found shows the tick it'll be saved with. */
-  const tickedNow = (i: number) => tickedFirst(i) !== ticks.except.includes(i);
-  const selected = playlist && r ? downloadable(r).filter((i) => !ownedAt(i) && tickedFirst(i) !== ticks.except.includes(i)) : [];
+  const tickedNow = (i: number) => tickedFor(i, r!.candidates[i]);
+  const selected = playlist && r ? downloadable(r).filter((i) => !ownedAt(i) && tickedNow(i)) : [];
   // Whether a song found later should be saved by a save that's following the matching: as ticked now.
   const wanted = useRef<(at: number) => boolean>(() => false);
   wanted.current = (at) => {
     const c = lookup?.resolution?.candidates[at];
     if (!c || !isDownloadable(c) || playlistOwnedTrack(c, kind)) return false;
-    return (ticks.mode === "default" ? !unsure(c) : ticks.mode === "all") !== ticks.except.includes(at);
+    return tickedFor(at, c);
   };
   /** Saves the ticked songs (as asked: in a playlist or not); while matching, keeps saving the songs found after them too. */
   const saveNow = (options: PlaylistSaveOptions) => {
@@ -430,7 +432,7 @@ export function ExternalSearch({ query }: { query: string }) {
   // New results start unfiltered, with every song of a playlist selected.
   useEffect(() => {
     setProvider("all");
-    setTicks({ mode: "default", except: [] });
+    setTicks({ mode: "default", chosen: {} });
     setOpenGroups({ missing: null, owned: false });
   }, [query, kind, attempt]);
 
@@ -479,7 +481,7 @@ export function ExternalSearch({ query }: { query: string }) {
       busy={busy}
       owned={ownedAt(index)}
       selected={c.pending || c.reading ? tickedNow(index) : selected.includes(index)}
-      onSelect={() => setTicks((t) => ({ ...t, except: t.except.includes(index) ? t.except.filter((n) => n !== index) : [...t.except, index] }))}
+      onSelect={() => setTicks((t) => ({ ...t, chosen: { ...t.chosen, [index]: !tickedNow(index) } }))}
       onPlay={() => play(c, index)}
       onMenu={(e) => menu(e, c, index)}
       onSave={() => void saveSearchResults(query, r!, [index])}
@@ -565,12 +567,12 @@ export function ExternalSearch({ query }: { query: string }) {
                     {stats.waiting ? <li className="waiting"><b>{stats.waiting}</b> to go</li> : null}
                   </ul>
                   <div className="import-actions">
-                    <button type="button" className="text-btn" disabled={fixedSelection || (selected.length === downloadable(r).filter((i) => !ownedAt(i)).length && stats.waitingTicked === stats.waiting)} onClick={() => setTicks({ mode: "all", except: [] })}>Select all</button>
-                    <button type="button" className="text-btn" disabled={fixedSelection || (!selected.length && !stats.waitingTicked)} onClick={() => setTicks({ mode: "none", except: [] })}>Clear</button>
+                    <button type="button" className="text-btn" disabled={fixedSelection || (selected.length === downloadable(r).filter((i) => !ownedAt(i)).length && stats.waitingTicked === stats.waiting)} onClick={() => setTicks({ mode: "all", chosen: {} })}>Select all</button>
+                    <button type="button" className="text-btn" disabled={fixedSelection || (!selected.length && !stats.waitingTicked)} onClick={() => setTicks({ mode: "none", chosen: {} })}>Clear</button>
                     {savingHere ? (
                       <>
                         <button type="button" className="btn" disabled>
-                          {savingLabel(transfer.batch, matching ? stats.waiting : 0)}
+                          {savingLabel(transfer.batch, matching ? stats.waitingTicked : 0)}
                         </button>
                         <button type="button" className="text-btn" onClick={cancelImport}>Cancel</button>
                       </>

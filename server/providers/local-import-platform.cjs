@@ -447,6 +447,8 @@ function pause(ms, signal) {
 /** SoundCloud searches' own pace: a separate service, so they don't wait on YouTube's. */
 const SOUNDCLOUD_SEARCH_GAP_MS = 1_200;
 const SOUNDCLOUD_SEARCH_BACKOFF_MS = [10_000, 30_000];
+/** How long the reading of pasted songs must have given no quick search to do before broader searches go on meanwhile. */
+const HEAVY_AFTER_IDLE_MS = 5_000;
 /** How long YouTube's search waits for SoundCloud's to reach a song before searching it anyway. */
 const SOUNDCLOUD_HEAD_START_MS = 4_000;
 let nextSoundCloudSearchAt = 0;
@@ -711,6 +713,8 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
   const afterQuick = new Map();
   /** Songs waiting for the broader search, in the order their quick searches left them. */
   const heavier = [];
+  /** When the last quick search finished (see youTubeLane: broader searches wait for the reading). */
+  let lastQuickAt = Date.now();
   /** Whether quick searches are still to come (listening waits for them: see listenLane). */
   const quickPending = () => !readingDone || todo.some((at) => !settled.has(at) && !firstTried.has(at));
   /** Settles a song from YouTube's searches: a match, or nothing (then SoundCloud's weaker match, if any, decides). */
@@ -744,6 +748,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
         firstTried.add(at);
         const track = rows[at].importMetadata;
         const found = refusedInARow < PLAYLIST_SEARCH_GIVE_UP_AFTER ? await searchYouTubeOnce(track, {}) : null;
+        lastQuickAt = Date.now();
         if (settled.has(at)) continue;
         const near = [];
         addNear(near, found);
@@ -760,7 +765,9 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
         } else youTubeSettles(at, row, near, !found);
         continue;
       }
-      if (heavier.length) {
+      // Broader searches wait for the reading too, so they don't delay the quick searches of songs read later; only a
+      // long lull in the reading (Spotify asking for a pause) lets them go on meanwhile.
+      if (heavier.length && (readingDone || Date.now() - lastQuickAt >= HEAVY_AFTER_IDLE_MS)) {
         const at = heavier.shift();
         const { row: quick, near } = afterQuick.get(at);
         afterQuick.delete(at);
@@ -832,8 +839,10 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
     const strip = ({ fallbackCandidates: _f, importMetadata: _m, playlistIndex: _i, nearby: _n, unmatched: _u, listened: _l, listening: _g, ...c }) => c;
     const chosen = strip(uploads[heard.at]);
     const { byArtistAndLength: _byLength, ...chosenMatch } = chosen.match || {};
-    // The match's own fallbacks stay fallbacks; uploads only listened to don't.
-    const own = lengthOnly(row) ? [row, ...(row.fallbackCandidates || [])] : [];
+    // Fallbacks (played if the chosen upload fails) are the match's own ones not listened to yet, that is after the
+    // chosen one, and never a match by length alone: uploads heard not to be the song, and uploads only listened to,
+    // aren't.
+    const own = lengthOnly(row) ? [row, ...(row.fallbackCandidates || [])].filter((c, at) => at > heard.at && !c.match?.byArtistAndLength) : [];
     return {
       ...chosen,
       ...base(track),
@@ -841,7 +850,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
       evidenceStrength: "audio_fingerprint",
       requiresReview: false,
       match: { ...chosenMatch, listened: { verdict: "same", ber: heard.ber, deezerID: heard.deezer.id } },
-      fallbackCandidates: own.filter((c) => c.sourceURL !== chosen.sourceURL).map(strip).slice(0, 2),
+      fallbackCandidates: own.map(strip).slice(0, 2),
     };
   };
   let searching = true;

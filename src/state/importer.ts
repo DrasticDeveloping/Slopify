@@ -647,6 +647,43 @@ export function streamSong(id: string): StreamSong | null {
   };
 }
 
+/** The playlist song a result stands for (a Spotify or SoundCloud track, or a file of the user's own by its tags), or null. */
+function sourceSongKey(meta: SourceTrack | null | undefined) {
+  if (!meta) return null;
+  if (meta.provider && meta.trackID) return `${meta.provider}:${meta.trackID}`;
+  return meta.localFile && meta.title ? `local:${meta.artist ?? ""}|${meta.title}|${meta.durationSeconds ?? ""}` : null;
+}
+
+/**
+ * What a streamed song needs to stream again in a later session (kept with playlists made without downloading:
+ * store.ts): the upload and its other matched copies by link, and the song's own details; not search scores,
+ * thumbnails of every copy, or uploads only listened to.
+ */
+function keptStream(id: string): StreamSong | null {
+  const song = streamSong(id);
+  if (!song) return null;
+  const slim = (c: Candidate): Candidate => ({
+    sourceURL: c.sourceURL,
+    sourceProvider: c.sourceProvider,
+    searchProvider: c.searchProvider,
+    videoID: c.videoID,
+    providerID: c.providerID,
+    title: c.title,
+    artist: c.artist,
+    durationSeconds: c.durationSeconds,
+    thumbnailURL: c.thumbnailURL,
+  });
+  const meta = song.candidate.importMetadata;
+  return {
+    ...song,
+    candidate: {
+      ...slim(song.candidate),
+      ...(meta ? { importMetadata: { provider: meta.provider, trackID: meta.trackID, title: meta.title, artist: meta.artist, album: meta.album, durationSeconds: meta.durationSeconds, artworkURL: meta.artworkURL, localFile: meta.localFile } } : {}),
+      fallbackCandidates: (song.candidate.fallbackCandidates ?? []).filter(isDownloadable).slice(0, 2).map(slim),
+    },
+  };
+}
+
 /** The platform a result is listed under. */
 export function resultPlatform(c: Candidate): Provider {
   if (c.searchProvider) return c.searchProvider;
@@ -1729,13 +1766,19 @@ async function confirmPlaylist(resolution: Resolution) {
     if (existing) {
       // Songs it streams (made earlier without downloading) that are saved now, by this save or before: the saved
       // copy takes the stream's place rather than joining beside it.
-      const swap = new Map<string, string>();
+      // Matched by the playlist song each stands for, not by its upload: listening may have settled on another one since.
+      const savedFor = new Map<string, string>();
       for (const { at, id } of sorted) {
-        const c = source.candidates[at];
-        if (!c || !canStream(c) || getState().tracks[id]?.stream) continue;
-        swap.set(streamTrackId(resultStreamKey(c, kind)), id);
+        const song = sourceSongKey(source.candidates[at]?.importMetadata);
+        if (song && !getState().tracks[id]?.stream) savedFor.set(song, id);
       }
-      if (existing.trackIds.some((id) => swap.has(id))) {
+      const swap = new Map<string, string>();
+      for (const id of existing.trackIds) {
+        const song = getState().tracks[id]?.stream ? sourceSongKey(streamSources.get(id)?.candidate.importMetadata) : null;
+        const saved = song ? savedFor.get(song) : undefined;
+        if (saved) swap.set(id, saved);
+      }
+      if (swap.size) {
         const swapped = existing.trackIds.map((id) => swap.get(id) ?? id);
         const trackIds = swapped.filter((id, i) => swapped.indexOf(id) === i);
         const target = existing.id;
@@ -1968,9 +2011,14 @@ function showSaveSummary(final: Resolution, saved: number, playlistId: string | 
     return [{ title: meta?.title || `Song ${c.playlistIndex ?? ""}`.trim(), artist: meta?.artist || "", reason: c.unmatched }];
   });
   missing.push(...failures.map((f) => ({ title: f.title, artist: f.artist, reason: streamed ? "unstreamable" as const : "failed" as const })));
-  if (!missing.length || getState().modal) return;
-  openModal({ type: "importSummary", saved, playlistId, playlistName, missing, streamed });
+  if (!missing.length) return;
+  const summary = { type: "importSummary" as const, saved, playlistId, playlistName, missing, streamed };
+  // Over another dialog it waits, and opens once that one closes (see the app wiring below).
+  if (getState().modal) pendingSummary = summary;
+  else openModal(summary);
 }
+/** A save's summary held back while another dialog was open. */
+let pendingSummary: Extract<NonNullable<AppState["modal"]>, { type: "importSummary" }> | null = null;
 
 export function cancelImport() {
   if (state.busy === "import") {
@@ -2090,6 +2138,11 @@ let lastPlaying = getState().isPlaying;
 let lastVolume = `${getState().volume}|${getState().muted}`;
 subscribeApp(() => {
   const s = getState();
+  if (pendingSummary && !s.modal) {
+    const summary = pendingSummary;
+    pendingSummary = null;
+    openModal(summary);
+  }
   // Starting the main player stops a preview (playing or still loading) without resuming anything later.
   if (s.isPlaying && !lastPlaying && previewAudio) {
     if (state.preview?.status === "loading") {
@@ -2107,7 +2160,7 @@ subscribeApp(() => {
 });
 
 // Playlists made without downloading keep their streamed songs (store.ts): they're playable songs again from the start.
-keepStreamsWith(streamSong);
+keepStreamsWith(keptStream);
 registerStreams(Object.values(savedPlaylistStreams()));
 
 // Live audio and app state cannot be swapped in place: when this module (or anything it imports) changes, reload the page.

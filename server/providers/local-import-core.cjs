@@ -1446,8 +1446,8 @@ function normalizeMatchText(value) {
     .replace(/[^\p{Letter}\p{Number}]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
-/** Romanised Japanese without spaces and with its long vowels written short ("shoujo rei" -> "shojorei"). */
-const longVowelsShort = (text) => text.replace(/ /g, "").replace(/ou|oo/g, "o").replace(/uu/g, "u");
+/** Romanised Japanese with its long vowels written short, word by word ("shoujo rei" -> " shojo rei "). */
+const longVowelsShort = (text) => ` ${text.replace(/ou|oo/g, "o").replace(/uu/g, "u")} `;
 
 /*
  * Kana spelled out in Latin letters (Hepburn), so a name written in kana on Spotify ("タカオカミズキ") is recognised
@@ -1525,6 +1525,7 @@ function tokenScore(expected, actual) {
     // its long vowels spelled either way: "Shojo Rei" on Spotify, "Shoujo Rei" on YouTube. Only for titles long
     // enough not to turn up inside unrelated words.
     const compactLeft = left.replace(/ /g, "");
+    // (Long vowels are compared as whole words: "for you" isn't inside "four young".)
     if (compactLeft.length >= 5 && (right.replace(/ /g, "").includes(compactLeft) || longVowelsShort(right).includes(longVowelsShort(left)))) return 0.92;
   }
   const leftTokens = new Set(left.split(" "));

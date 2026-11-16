@@ -125,8 +125,14 @@ export async function findDeezerTrack(track, { signal, fetchImpl = fetch } = {})
     seen.add(key);
     const scored = scoreUnderNames(track, { title: hit.title, artist: hit.artist?.name, durationSeconds: Number(hit.duration) });
     const title = scored?.match.title ?? overlap(track.title, hit.title);
-    const artist = aliases.has(normalizeMatchText(hit.artist?.name || "")) ? 1 : scored?.match.artist ?? overlap(track.artist, hit.artist?.name);
-    const found = { id: hit.id, title: hit.title, artist: hit.artist?.name || null, durationSeconds: Number(hit.duration), preview: hit.preview, strong: title >= 0.75 && artist >= 0.5 };
+    const byAlias = aliases.has(normalizeMatchText(hit.artist?.name || ""));
+    const artist = byAlias ? 1 : scored?.match.artist ?? overlap(track.artist, hit.artist?.name);
+    // A track found under a spelling of the artist's name that Deezer's search suggested is taken, but isn't sure
+    // enough to rule a match out ("different"): the spelling could be another artist's ("Pips" in "Gladys Knight & the
+    // Pips").
+    const named = title >= 0.75 && artist >= 0.5;
+    const found = { id: hit.id, title: hit.title, artist: hit.artist?.name || null, durationSeconds: Number(hit.duration), preview: hit.preview, strong: named && !byAlias };
+    if (named && byAlias) return found;
     if (!fallback && (title >= 0.5 || artist >= 0.5)) fallback = found;
     return found.strong ? found : null;
   };
