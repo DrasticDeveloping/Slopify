@@ -532,16 +532,16 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
     for (const title of playlistTitles) if (title !== own && !own.includes(title) && upload.includes(title)) return true;
     return false;
   };
-  /** A remembered YouTube match by name, scored by the current rules: null if they turn it down. */
+  /** A remembered match by name (YouTube's or SoundCloud's: one scorer), scored by the current rules: null if they turn it down. */
   const rescored = (track, known) => {
-    if (typeof known.sourceURL !== "string" || !/^youtube/.test(known.sourceProvider || "")) return known;
+    if (typeof known.sourceURL !== "string") return known;
     const again = (c) => {
       const scored = scoreUnderNames(track, c);
       return scored ? { ...c, score: scored.score, match: { ...c.match, ...scored.match } } : null;
     };
     const row = again(known);
     if (!row) return null;
-    return { ...row, fallbackCandidates: (known.fallbackCandidates || []).map((c) => (/^youtube/.test(c.sourceProvider || "") ? again(c) : c)).filter(Boolean) };
+    return { ...row, fallbackCandidates: (known.fallbackCandidates || []).map(again).filter(Boolean) };
   };
   /** A song's row before any search: already in the library, remembered from a recent search, or to be searched. */
   const startRow = (track) => {
@@ -557,7 +557,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
     if (known && listen && unconfirmed && older) known = null;
     // Confirmed by ear by an older way of listening: its fallbacks may include uploads heard not to be the song.
     if (known && older && known.match?.listened?.verdict === "same" && known.fallbackCandidates?.length) known = { ...known, fallbackCandidates: [] };
-    // A YouTube match by name from before the current title rules ("Maybe Mine" once passed for "Be Mine") is scored
+    // A match by name from before the current title rules ("Maybe Mine" once passed for "Be Mine") is scored
     // again (its fallbacks too): one the rules now turn down is searched again, one that only half agrees is then
     // listened to (toVerify).
     if (known && older && known.match?.listened?.verdict !== "same" && !known.match?.byArtistAndLength) known = rescored(track, known);

@@ -536,9 +536,15 @@ function merge(base: LibraryData | null, mine: LibraryData, theirsAsSent: Librar
     spot: newestSpot(mine.spot, theirs.spot),
     counts,
     reasonsResetAt: resetAt,
-    // Only the streamed songs a playlist still has.
-    streams: pick(mergeMap(base?.streams, mine.streams, theirs.streams ?? base?.streams), (id) => Object.values(playlists).some((p) => p.trackIds.includes(id))),
+    streams: mergedStreams(base, mine, theirs, playlists),
   };
+}
+
+/** The streamed songs' records after a merge: only those a playlist still has, kept to their share of the size limit. */
+function mergedStreams(base: LibraryData | null, mine: LibraryData, theirs: LibraryData, playlists: Record<string, Playlist>) {
+  const streams = pick(mergeMap(base?.streams, mine.streams, theirs.streams ?? base?.streams), (id) => Object.values(playlists).some((p) => p.trackIds.includes(id)));
+  fitStreams(streams);
+  return streams;
 }
 
 /**
@@ -550,7 +556,8 @@ function keepDeviceSongs(syncedIds: string[], own: string[], isDeviceSong: (id: 
   const after = new Map<string | null, string[]>();
   let anchor: string | null = null;
   for (const id of own) {
-    if (isDeviceSong(id)) after.set(anchor, [...(after.get(anchor) ?? []), id]);
+    // (One the synced list has already is in its place there, not put back twice.)
+    if (isDeviceSong(id) && !present.has(id)) after.set(anchor, [...(after.get(anchor) ?? []), id]);
     else if (present.has(id)) anchor = id;
   }
   return [...(after.get(null) ?? []), ...syncedIds.flatMap((id) => [id, ...(after.get(id) ?? [])])];
