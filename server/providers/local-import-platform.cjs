@@ -501,6 +501,14 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
   const base = (track) => ({ importMetadata: track, playlistIndex: track.trackNumber });
   /** A match by the artist's upload of the same length alone (see ownUploadByLength), to be listened to. */
   const lengthOnly = (row) => Boolean(row?.match?.byArtistAndLength && typeof row.sourceURL === "string");
+  /**
+   * A match by name whose title only half agrees ("Maybe Mine" for "Be Mine": one word of two): taken, but listened
+   * to as well, so a different song by the same artist is caught rather than saved.
+   */
+  const WEAK_TITLE = 0.75;
+  const weakName = (row) => typeof row?.sourceURL === "string" && !row.match?.byArtistAndLength && typeof row.match?.title === "number" && row.match.title < WEAK_TITLE;
+  /** A match to listen to: by length alone, or by a title that only half agrees. */
+  const toVerify = (row) => lengthOnly(row) || weakName(row);
   /** A song not found whose search had uploads of about its length the names couldn't settle, to be listened to. */
   const rescuable = (row) => row?.unmatched === "not_found" && Array.isArray(row.nearby) && row.nearby.length > 0;
   /*
@@ -577,8 +585,8 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
   const queueListen = (at) => {
     if (!listen || queuedToListen.has(at)) return;
     const row = rows[at];
-    if (!lengthOnly(row) && !rescuable(row)) return;
-    const heard = lengthOnly(row) ? row.match.listened : row.listened;
+    if (!toVerify(row) && !rescuable(row)) return;
+    const heard = toVerify(row) ? row.match.listened : row.listened;
     if (heard && (heard.verdict !== "unsure" || (heard.v ?? 1) >= LISTEN_VERSION)) return;
     queuedToListen.add(at);
     toListen.push(at);
@@ -839,7 +847,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
   const heardRow = (row, heard, uploads) => {
     const track = row.importMetadata;
     const verdict = { verdict: heard.verdict === "different" ? "different" : "unsure", deezerID: heard.deezer?.id ?? null, v: LISTEN_VERSION };
-    if (!lengthOnly(row) && heard.verdict !== "same") return { ...base(track), unmatched: "not_found", listened: verdict };
+    if (rescuable(row) && heard.verdict !== "same") return { ...base(track), unmatched: "not_found", listened: verdict };
     if (heard.verdict === "different") return { ...base(track), unmatched: "not_found", listened: verdict };
     if (heard.verdict !== "same") return { ...row, match: { ...row.match, listened: verdict } };
     const strip = ({ fallbackCandidates: _f, importMetadata: _m, playlistIndex: _i, nearby: _n, unmatched: _u, listened: _l, listening: _g, ...c }) => c;
@@ -848,7 +856,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
     // Fallbacks (played if the chosen upload fails) are the match's own ones not listened to yet, that is after the
     // chosen one, and never a match by length alone: uploads heard not to be the song, and uploads only listened to,
     // aren't.
-    const own = lengthOnly(row) ? [row, ...(row.fallbackCandidates || [])].filter((c, at) => at > heard.at && !c.match?.byArtistAndLength) : [];
+    const own = toVerify(row) ? [row, ...(row.fallbackCandidates || [])].filter((c, at) => at > heard.at && !c.match?.byArtistAndLength) : [];
     return {
       ...chosen,
       ...base(track),
@@ -876,12 +884,12 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
         continue;
       }
       const row = rows[at];
-      if (!lengthOnly(row) && !rescuable(row)) {
+      if (!toVerify(row) && !rescuable(row)) {
         listenedCount += 1;
         continue;
       }
       // The match and its fallbacks, then the uploads of about the song's length that the names couldn't settle.
-      const own = lengthOnly(row) ? [row, ...(row.fallbackCandidates || [])] : [];
+      const own = toVerify(row) ? [row, ...(row.fallbackCandidates || [])] : [];
       const uploads = [...own, ...(row.nearby || [])].filter((c) => typeof c.sourceURL === "string");
       rows[at] = { ...row, listening: true };
       onStage(status({ row: { at, candidate: rows[at] } }));

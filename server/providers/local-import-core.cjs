@@ -1446,6 +1446,21 @@ function normalizeMatchText(value) {
     .replace(/[^\p{Letter}\p{Number}]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
+/** Text in a script written without spaces between words. */
+const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/** Whether some run of consecutive `words`, written together, is exactly `compact` ("honto no" spells "hontono"). */
+function wordsSpell(words, compact) {
+  for (let start = 0; start < words.length; start++) {
+    let joined = "";
+    for (let end = start; end < words.length && joined.length < compact.length; end++) {
+      joined += words[end];
+      if (joined === compact) return true;
+    }
+  }
+  return false;
+}
+
 /** Romanised Japanese with its long vowels written short, word by word ("shoujo rei" -> " shojo rei "). */
 const longVowelsShort = (text) => ` ${text.replace(/ou|oo/g, "o").replace(/uu/g, "u")} `;
 
@@ -1512,10 +1527,13 @@ function tokenScore(expected, actual) {
   const right = normalizeMatchText(actual);
   if (!left || !right) return 0;
   if (left === right) return 1;
-  if (right.includes(left) || left.includes(right)) return 0.92;
+  // One inside the other, as whole words in Latin text ("be mine" isn't inside "maybe mine"); Japanese and Chinese
+  // have no spaces to go by (see below).
+  const inside = (part, whole) => (CJK.test(part) ? whole.includes(part) : ` ${whole} `.includes(` ${part} `));
+  if (inside(left, right) || inside(right, left)) return 0.92;
   // Japanese and Chinese aren't written with spaces between words, so where the spaces fall is up to whoever
   // typed the title ("愛して 愛して 愛して" on Spotify, "愛して愛して愛して" on YouTube). Compared without them.
-  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(left)) {
+  if (CJK.test(left)) {
     const compactLeft = left.replace(/ /g, "");
     const compactRight = right.replace(/ /g, "");
     if (compactLeft === compactRight) return 1;
@@ -1525,8 +1543,8 @@ function tokenScore(expected, actual) {
     // its long vowels spelled either way: "Shojo Rei" on Spotify, "Shoujo Rei" on YouTube. Only for titles long
     // enough not to turn up inside unrelated words.
     const compactLeft = left.replace(/ /g, "");
-    // (Long vowels are compared as whole words: "for you" isn't inside "four young".)
-    if (compactLeft.length >= 5 && (right.replace(/ /g, "").includes(compactLeft) || longVowelsShort(right).includes(longVowelsShort(left)))) return 0.92;
+    // Both only as whole words: "be mine" isn't inside "maybe mine", nor "for you" inside "four young".
+    if (compactLeft.length >= 5 && (wordsSpell(right.split(" "), compactLeft) || longVowelsShort(right).includes(longVowelsShort(left)))) return 0.92;
   }
   const leftTokens = new Set(left.split(" "));
   const rightTokens = new Set(right.split(" "));

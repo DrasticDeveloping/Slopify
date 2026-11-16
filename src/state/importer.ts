@@ -672,6 +672,11 @@ function keptStream(id: string): StreamSong | null {
     artist: c.artist,
     durationSeconds: c.durationSeconds,
     thumbnailURL: c.thumbnailURL,
+    // How sure the match is, so saving it later still asks for a look where it should (reviewDiscoveredSong).
+    score: c.score,
+    confidence: c.confidence,
+    requiresReview: c.requiresReview,
+    ...(c.match ? { match: Object.fromEntries(Object.entries(c.match).filter(([key]) => ["title", "artist", "duration", "byArtistAndLength"].includes(key))) } : {}),
   });
   const meta = song.candidate.importMetadata;
   return {
@@ -2143,10 +2148,14 @@ let lastPlaying = getState().isPlaying;
 let lastVolume = `${getState().volume}|${getState().muted}`;
 subscribeApp(() => {
   const s = getState();
+  // (A moment later, so a dialog closing only to open another, in one go, isn't taken for the way being clear.)
   if (pendingSummary && !s.modal) {
-    const summary = pendingSummary;
-    pendingSummary = null;
-    openModal(summary);
+    setTimeout(() => {
+      if (!pendingSummary || getState().modal) return;
+      const summary = pendingSummary;
+      pendingSummary = null;
+      openModal(summary);
+    }, 0);
   }
   // Starting the main player stops a preview (playing or still loading) without resuming anything later.
   if (s.isPlaying && !lastPlaying && previewAudio) {
