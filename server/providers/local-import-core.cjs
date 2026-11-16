@@ -1975,13 +1975,15 @@ async function searchYouTubeMusicSongs(track, signal, fetchImpl = fetch, options
     });
   } catch (error) {
     if (error?.name === "AbortError") throw error;
-    throw youtubeSearchRefused();
+    // (`reason`: what it did instead of answering, for the app's log.)
+    throw Object.assign(youtubeSearchRefused(), { reason: `request failed: ${error?.cause?.code || error?.message || "unknown"}` });
   }
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
     // A client version it no longer takes: its home page is read again next time.
     if (response.status === 400) youtubeMusicClient = null;
-    throw youtubeSearchRefused();
+    const where = [301, 302, 303, 307, 308].includes(response.status) ? ` to ${response.headers.get("location")?.slice(0, 80) || "?"}` : "";
+    throw Object.assign(youtubeSearchRefused(), { reason: `HTTP ${response.status}${where}` });
   }
   let data;
   try {
@@ -1992,10 +1994,10 @@ async function searchYouTubeMusicSongs(track, signal, fetchImpl = fetch, options
     ));
   } catch (error) {
     if (error?.name === "AbortError") throw error;
-    throw youtubeSearchRefused();
+    throw Object.assign(youtubeSearchRefused(), { reason: "unreadable answer" });
   }
   // An answer has search contents (without songs when none match); anything else is it not answering.
-  if (!isRecord(data?.contents)) throw youtubeSearchRefused();
+  if (!isRecord(data?.contents)) throw Object.assign(youtubeSearchRefused(), { reason: "answer without results" });
   const { ranked, fallback } = rankedUploads(track, parseYouTubeMusicSongs(data, { videos }), maximumResults);
   return ranked.length ? ranked : fallback;
 }
