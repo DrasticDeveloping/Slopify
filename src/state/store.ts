@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import { hashString, likedPlaylist, paletteFromSeed } from "../data/library";
 import type { HeaderInfo } from "../components/Hero";
 import type { Album, Artist, ClipRange, Playlist, Track } from "../data/types";
@@ -36,6 +36,8 @@ export type Modal =
   | { type: "listenAlong" }
   | { type: "clipEditor"; trackId?: string }
   | { type: "sharePlaylist"; id: string }
+  /** The desktop app's waiting update: what's changed in it (UpdateBanner.tsx). */
+  | { type: "whatsNew" }
   | { type: "savePlaylist"; count: number; owned: number; name: string; matching: boolean }
   | { type: "importSummary"; saved: number; playlistId: string | null; playlistName: string | null; missing: ImportMissing[] };
 
@@ -83,7 +85,7 @@ export interface MenuState {
   x: number;
   y: number;
   title?: string;
-  subtitle?: string;
+  subtitle?: ReactNode;
   art?: MenuArt;
   items: MenuItem[];
 }

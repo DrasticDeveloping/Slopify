@@ -5,6 +5,7 @@ import { ImportSummaryModal, SavePlaylistModal } from "./ImportModals";
 import { SettingsModal } from "./SettingsModal";
 import { ClosingContext } from "./Shell";
 import { ShareModal } from "./ShareModal";
+import { WhatsNewModal } from "./WhatsNew";
 import { AddSongsModal, ListenAlongModal, PlaylistFormModal } from "./SimpleModals";
 
 function render(modal: Modal) {
@@ -27,6 +28,8 @@ function render(modal: Modal) {
       return <SavePlaylistModal count={modal.count} owned={modal.owned} name={modal.name} matching={modal.matching} />;
     case "importSummary":
       return <ImportSummaryModal saved={modal.saved} playlistId={modal.playlistId} playlistName={modal.playlistName} missing={modal.missing} />;
+    case "whatsNew":
+      return <WhatsNewModal />;
   }
 }
 

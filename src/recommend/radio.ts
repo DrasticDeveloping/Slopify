@@ -32,8 +32,7 @@ const current = (r: Session) => session === r && getState().context?.radioKey ==
 
 /** The next batch of new songs for this radio. Nothing changes until the caller adopts them. */
 async function findMore(r: Session) {
-  const { songs } = await discover({ seeds: r.seeds, signal: AbortSignal.timeout(90_000), refresh: r.batch++, exclude: r.seen, limit: BATCH, budget: 12 });
-  return songs;
+  return discover({ seeds: r.seeds, signal: AbortSignal.timeout(90_000), refresh: r.batch++, exclude: r.seen, limit: BATCH, budget: 12 });
 }
 
 /** Makes found songs playable and marks them seen, once the radio is known to still be wanted. */
@@ -48,13 +47,14 @@ function adopt(r: Session, found: DiscoveredSong[]) {
 /** Mixes a new batch into the rest of the queue, one after every two songs still to come. */
 async function topUp(r: Session) {
   try {
-    const found = await findMore(r);
+    const { songs: found, failed } = await findMore(r);
     if (!current(r)) return;
     const { ids, picks } = adopt(r, found);
     const s = getState();
     const added = ids.filter((id) => !s.order.includes(id));
     if (!added.length) {
-      r.exhausted = true;
+      // Nothing new while music search wasn't answering isn't the end of the radio: it asks again next time.
+      if (!failed) r.exhausted = true;
       return;
     }
     const order = [...s.order.slice(0, s.index + 1), ...interleave(s.order.slice(s.index + 1), added)];
@@ -98,12 +98,12 @@ function start(seedIds: string[], name: string) {
   const before = s.context;
   toast(`Finding songs for ${label}`);
   r.pending = findMore(r)
-    .then((songs) => {
+    .then(({ songs, failed }) => {
       // Something else started playing meanwhile.
       if (session !== r || getState().context !== before) return;
       const { ids: found, picks } = adopt(r, songs);
       if (found.length) playList(found, found[0], { label, radioKey: key, picks });
-      else toast("No playable songs found for this radio yet");
+      else toast(failed ? "Radio discovery is unavailable right now" : "No playable songs found for this radio yet");
     })
     .catch(() => {
       toast("Radio discovery is unavailable right now");

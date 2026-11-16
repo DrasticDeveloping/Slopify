@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useCoverPalette } from "../lib/art-colors";
 import { useMediaQuery } from "../lib/hooks";
@@ -55,7 +55,7 @@ function splitQuick(items: MenuItem[], sub?: boolean) {
   return { quick, list };
 }
 
-function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet, plain }: { items: MenuItem[]; x: number; y: number; flipX?: number; title?: string; subtitle?: string; art?: MenuArt; onDone: () => void; sub?: boolean; sheet?: boolean; plain?: boolean }) {
+function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet, plain }: { items: MenuItem[]; x: number; y: number; flipX?: number; title?: string; subtitle?: ReactNode; art?: MenuArt; onDone: () => void; sub?: boolean; sheet?: boolean; plain?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y, ready: false, origin: "top left" });
   const coverTrack = useMenuCoverTrack(sub ? undefined : art);
@@ -98,8 +98,9 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
   const key = (e: KeyboardEvent<HTMLDivElement>) => {
     // The submenu is portalled but React still bubbles its events to the parent menu.
     e.stopPropagation();
-    const buttons = [...(ref.current?.querySelectorAll<HTMLButtonElement>(":scope > .menu-quick > button:not(:disabled), :scope > .menu-items > button:not(:disabled)") ?? [])];
-    const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    // The header's own controls (a hidden email to reveal) come first, so arrows reach them too: Tab is held below.
+    const buttons = [...(ref.current?.querySelectorAll<HTMLElement>(":scope > .menu-head [role=button][tabindex='0'], :scope > .menu-quick > button:not(:disabled), :scope > .menu-items > button:not(:disabled)") ?? [])];
+    const i = buttons.indexOf(document.activeElement as HTMLElement);
     const tiles = [...(ref.current?.querySelectorAll<HTMLButtonElement>(":scope > .menu-quick > button:not(:disabled)") ?? [])];
     const tile = tiles.indexOf(document.activeElement as HTMLButtonElement);
     if (tile >= 0 && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
@@ -167,6 +168,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
               role={item.on !== undefined ? "menuitemcheckbox" : "menuitem"}
               aria-checked={item.on}
               aria-label={item.label}
+              title={item.short ? item.label : undefined}
               className={`menu-tile${item.on ? " on" : ""}`}
               style={{ "--i": i } as CSSProperties}
               disabled={item.disabled}

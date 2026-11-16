@@ -103,3 +103,15 @@ export const formatPopularity = (rank: number) => new Intl.NumberFormat("en", { 
 
 /** Versions not worth showing next to a title: the plain album recording. */
 export const notableVersion = (version: string) => (/^\(?\s*(album|single|original)\s+version\s*\)?$/i.test(version.trim()) ? "" : version.trim());
+
+/** Versions that are the same recording as the plain song (a remaster, a radio edit, a year), so either copy will do. */
+const SAME_RECORDING = /remaster|radio\s+edit|single\s+edit|explicit|clean|mono|stereo|^\(?\s*\d{4}\s*\)?$/i;
+
+/**
+ * The song's title as it's searched for and matched: with its version when that's a different recording (a remix,
+ * a live or extended mix), so "Groovejet (Extended Vocal Mix)" isn't looked for, or played, as the radio single.
+ */
+export const fullTitle = (song: Pick<TopSong, "title" | "version">) => {
+  const version = notableVersion(song.version ?? "");
+  return version && !SAME_RECORDING.test(version) ? `${song.title} ${/^[([]/.test(version) ? version : `(${version})`}` : song.title;
+};

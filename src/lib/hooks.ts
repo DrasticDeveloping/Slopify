@@ -70,3 +70,22 @@ export function useReducedMotion() {
   const system = useMediaQuery("(prefers-reduced-motion: reduce)");
   return setting || system;
 }
+
+/** Re-renders at each local midnight while `active`, so "today" and "yesterday" stay true. */
+export function useDayChange(active = true) {
+  const [, setDay] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    let timer = 0;
+    const schedule = () => {
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      timer = window.setTimeout(() => {
+        setDay((d) => d + 1);
+        schedule();
+      }, next.getTime() - now.getTime() + 1000);
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, [active]);
+}

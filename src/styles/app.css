@@ -882,10 +882,9 @@ button.th:not(:disabled):hover { color: var(--text); }
 .mix-cover .art { width: 100%; height: 100%; border-radius: 0; }
 .mix-collage { position: absolute; inset: 0; display: grid; grid-template: 1fr 1fr / 1fr 1fr; background: var(--band-2); }
 .mix-collage img { width: 100%; height: 100%; object-fit: cover; min-width: 0; min-height: 0; }
-.mix-band { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px 12px 11px; background: linear-gradient(180deg, color-mix(in oklab, var(--band) 88%, transparent), color-mix(in oklab, var(--band-2) 96%, black)); box-shadow: 0 -10px 24px -8px rgb(0 0 0 / 0.35); }
+.mix-band { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; display: flex; flex-direction: column; align-items: flex-start; padding: 22px 12px 11px; background: linear-gradient(180deg, transparent, rgb(0 0 0 / 0.38)); -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4); -webkit-mask-image: linear-gradient(180deg, transparent, #000 14px); mask-image: linear-gradient(180deg, transparent, #000 14px); }
 .quick-art .mix-cover, .card-art > .mix-cover { width: 100%; height: 100%; }
-.mix-label { position: relative; max-width: 100%; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: clamp(16px, 1.8cqi, 22px); font-weight: 850; letter-spacing: -0.03em; line-height: 1; color: #fff; text-shadow: 0 2px 16px rgb(0 0 0 / 0.35); }
-.mix-tag { position: relative; color: #fff; padding: 2px 8px; border-radius: 99px; background: rgb(0 0 0 / 0.4); backdrop-filter: blur(8px); font-size: 10.5px; font-weight: 750; letter-spacing: 0.06em; text-transform: uppercase; }
+.mix-label { position: relative; max-width: 100%; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: clamp(16px, 1.8cqi, 22px); font-weight: 850; letter-spacing: -0.03em; line-height: 1; color: #fff; text-shadow: 0 1px 12px rgb(0 0 0 / 0.5); }
 
 /* ───────────────────────── Home ───────────────────────── */
 
@@ -1609,7 +1608,85 @@ button.th:not(:disabled):hover { color: var(--text); }
 .toast-progress i { display: block; height: 100%; background: var(--accent); transform-origin: left; transform: scaleX(var(--p)); transition: transform 200ms linear; border-radius: inherit; }
 .toast .text-btn { color: var(--accent-ink); }
 /* The desktop app's update (UpdateBanner.tsx): top right, over the full player but under dialogs. */
-.update-banner { position: fixed; top: calc(var(--titlebar-h, 0px) + 12px); right: 16px; z-index: 65; width: min(360px, calc(100vw - 32px)); }
+/* The desktop app's update (UpdateBanner.tsx): one size however much changed; the changes are in What's new. */
+.update-banner {
+  --ub-muted: #9895a5; /* Small text here: lighter than --text-3, for contrast. */
+  position: fixed; top: calc(var(--titlebar-h, 0px) + 12px); right: 16px; z-index: 65; width: min(368px, calc(100vw - 32px));
+  overflow: hidden; border-radius: var(--r-lg);
+  background: radial-gradient(220px 110px at 0% 0%, color-mix(in oklab, var(--accent) 16%, transparent), transparent 70%), color-mix(in oklab, var(--panel-solid) 96%, white);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 20px 48px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3), inset 0 1px 0 rgb(255 255 255 / 0.05);
+  animation: ub-in 480ms var(--ease-spring) both;
+}
+@keyframes ub-in { from { opacity: 0; transform: translateY(-8px) scale(0.98); } }
+.ub-top { display: flex; align-items: flex-start; gap: 12px; padding: 14px 10px 0 14px; }
+.update-banner.compact .ub-top { padding: 14px 14px 13px; }
+.update-banner.compact .ub-close { position: absolute; top: 11px; right: 10px; margin: 0; }
+.ub-badge { flex: none; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 10px; color: var(--on-accent); background: linear-gradient(140deg, var(--accent), var(--accent-2)); box-shadow: 0 4px 12px color-mix(in oklab, var(--accent) 22%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.3); }
+.ub-badge .icon { stroke-width: 2.1; }
+.ub-badge .spin { animation: ub-spin 1.1s linear infinite; }
+@keyframes ub-spin { to { transform: rotate(360deg); } }
+.ub-head { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ub-eyebrow, .modal-eyebrow { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 720; letter-spacing: 0.07em; line-height: 16px; text-transform: uppercase; color: var(--accent-ink); }
+.ub-chip { display: inline-flex; align-items: center; height: 16px; padding: 0 6px; border-radius: 999px; font-size: 9.5px; font-weight: 720; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); background: var(--raised); border: 1px solid var(--line); white-space: nowrap; }
+.ub-chip.new { color: var(--accent-ink); background: var(--accent-soft); border-color: transparent; }
+.ub-title { margin-top: 1px; font-size: 15.5px; font-weight: 740; letter-spacing: -0.015em; line-height: 1.25; }
+.ub-meta { color: var(--ub-muted); font-size: 12.5px; }
+.ub-close { margin-top: -3px; color: var(--ub-muted); }
+.ub-progress { display: block; height: 4px; margin-top: 8px; border-radius: 4px; overflow: hidden; background: rgb(255 255 255 / 0.09); }
+.ub-progress i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transform-origin: left; transform: scaleX(var(--p)); transition: transform 200ms linear; }
+/* Installing: the whole track shimmers, so it never reads as a fill level. */
+.ub-progress.shimmer { background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 30%, transparent) 0 30%, var(--accent-2) 50%, color-mix(in oklab, var(--accent) 30%, transparent) 70% 100%) 0 0 / 200% 100%; animation: ub-shimmer 1.4s linear infinite; }
+@keyframes ub-shimmer { to { background-position: -200% 0; } }
+.ub-row { display: flex; justify-content: space-between; gap: 10px; margin-top: 5px; color: var(--ub-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ub-actions { display: flex; align-items: center; gap: 8px; padding: 12px 12px 0 14px; }
+.ub-actions .btn.sm { height: 32px; font-size: 13px; }
+.ub-go { flex: 1; }
+.ub-count { min-width: 18px; height: 18px; padding: 0 5px; display: inline-grid; place-items: center; border-radius: 999px; font-size: 11px; font-weight: 720; font-variant-numeric: tabular-nums; color: var(--accent-ink); background: var(--accent-soft); }
+.ub-foot { padding: 8px 14px 12px; font-size: 12px; color: var(--ub-muted); }
+.ub-foot.warn { color: var(--text-2); }
+.ub-foot.warn::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--warn); vertical-align: 1px; }
+
+/* What's new (modals/WhatsNew.tsx) */
+.modal.whats-new { --ub-muted: #9895a5; background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 18%, var(--panel-solid)) 0%, var(--panel-solid) 140px); }
+.whats-new .modal-head { padding: 18px 14px 14px 22px; }
+.whats-new .modal-head h2 { margin-top: 1px; line-height: 1.2; }
+.whats-new .modal-art { width: auto; overflow: visible; box-shadow: none; border-radius: 0; }
+.whats-new .ub-badge { width: 42px; height: 42px; border-radius: 12px; }
+.modal.whats-new.has-art .modal-head { align-items: flex-start; }
+.modal.md.whats-new { max-width: 540px; }
+.wn-version { display: block; margin-top: 3px; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11px; color: var(--ub-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.whats-new .modal-body { padding: 0 22px 10px; gap: 0; border-top: 1px solid var(--line); }
+.whats-new .modal-body.more-below { mask-image: linear-gradient(180deg, #000 calc(100% - 44px), transparent); }
+.wn-build { padding: 12px 0 4px; }
+.wn-build + .wn-build { border-top: 1px solid var(--line); }
+.wn-build-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12.5px; font-weight: 700; color: var(--text-2); }
+.wn-changes { margin: 0; padding: 0; list-style: none; }
+.wn-changes li { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 6px; align-items: baseline; padding: 6px 0; font-size: 13.5px; }
+.wn-changes li::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); transform: translateY(-2px); }
+.wn-changes.newest li::before { background: var(--accent); }
+.wn-changes li a { padding: 0 2px; border-radius: 4px; color: var(--ub-muted); font-size: 12px; font-weight: 600; text-decoration: none; font-variant-numeric: tabular-nums; }
+.wn-changes li a:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.wn-changes li.wn-more a { grid-column: 2; padding: 0; font-size: 13px; }
+.wn-older { display: flex; align-items: center; gap: 8px; width: 100%; margin: 6px 0 4px; padding: 9px 12px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); color: var(--text-2); font-size: 13px; font-weight: 600; }
+.wn-older:hover { background: var(--press); color: var(--text); }
+.wn-older .icon { margin-left: auto; }
+.wn-link { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; padding: 4px 2px; color: var(--text-2); font-size: 13px; font-weight: 600; text-decoration: none; }
+.wn-link:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.whats-new .modal-foot { flex-wrap: wrap; gap: 8px; padding: 12px 14px 14px 22px; }
+/* Narrow windows: the badge beside the title only, the summary and version below at full width; the GitHub link on its own row. */
+@media (max-width: 520px) {
+  .whats-new .modal-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 12px; align-items: center; padding-left: 18px; }
+  .whats-new .modal-head > div { display: contents; }
+  .whats-new .modal-art { grid-row: 1 / 3; }
+  .whats-new .ub-badge { width: 38px; height: 38px; }
+  .whats-new .modal-eyebrow, .whats-new .modal-head h2 { grid-column: 2; }
+  .whats-new .modal-head .icon-btn.round { grid-column: 3; grid-row: 1 / 3; align-self: start; }
+  .whats-new .modal-head p { grid-column: 1 / -1; margin-top: 10px; }
+  .whats-new .modal-body { padding: 0 18px 10px; }
+  .whats-new .wn-link { flex-basis: 100%; }
+  .whats-new .modal-foot .btn { flex: 1; }
+}
 
 .modal-layer { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 20px; background: rgb(0 0 0 / 0.55); backdrop-filter: blur(6px); animation: fade-in 200ms ease both; }
 .modal-layer.closing { animation: fade-out 180ms ease both; }
@@ -1817,6 +1894,10 @@ button.th:not(:disabled):hover { color: var(--text); }
 .set-copy { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .set-copy strong { font-weight: 620; }
 .set-copy small { color: var(--text-2); font-size: 12.5px; }
+/* An email address, blurred until clicked (HiddenEmail). */
+.hidden-email { cursor: pointer; filter: blur(5px); user-select: none; border-radius: 4px; transition: filter 160ms var(--ease-out); }
+.hidden-email.shown { filter: none; user-select: text; }
+.hidden-email:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .set-control { display: flex; align-items: center; gap: 10px; }
 .set-slider { display: flex; align-items: center; gap: 12px; padding: 0 16px 16px 66px; transition: opacity 200ms; }
 .set-slider.off { opacity: 0.45; }

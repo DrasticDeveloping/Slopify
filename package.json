@@ -18,6 +18,7 @@
     "typecheck": "tsc -b",
     "test:duplicates": "node --test scripts/test-duplicates.mjs",
     "test:youtube": "node --test scripts/test-youtube-requests.mjs",
+    "test:changelog": "node --test scripts/test-changelog.cjs",
     "desktop": "npm run build && node scripts/run-desktop.mjs",
     "dist:win": "npm run build && node scripts/package-windows.mjs",
     "dist:win:nightly": "npm run build && node scripts/package-windows.mjs --channel nightly",

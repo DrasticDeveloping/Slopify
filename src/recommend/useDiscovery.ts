@@ -135,7 +135,8 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
           if (!live()) return;
           const nothingNew = !result.songs.length && edition > 0 && before.current.length > 0;
           const next = nothingNew ? before.current : result.songs;
-          const nextNote = nothingNew ? "Nothing new found. Try again later." : result.note;
+          // An outage isn't "nothing new": say the searches didn't work.
+          const nextNote = nothingNew && !result.failed ? "Nothing new found. Try again later." : result.note;
           setSongs(next);
           setNote(nextNote);
           // Only a search that found something is kept: an empty one (even when the

@@ -9,7 +9,7 @@ import { usePlays } from "../lib/plays";
 import { openArtist } from "../recommend/artist";
 import { discoveryKey } from "../recommend/discover";
 import { ownedIndex } from "../recommend/owned";
-import { formatPopularity, notableVersion, POPULARITY_MAX, useSongStats, type SongStats } from "../recommend/popular";
+import { formatPopularity, fullTitle, notableVersion, POPULARITY_MAX, useSongStats, type SongStats } from "../recommend/popular";
 import { resolveSong } from "../recommend/releases";
 import { openTrackMenu } from "../lib/menus";
 import { isLiked, navigate, playList, songRoute, startRadio, toast, toggleLike, togglePlay } from "../state/actions";
@@ -51,7 +51,7 @@ export function SongView({ artist, title, id }: { artist: string; title: string;
   const playable = async () => {
     if (trackId) return trackId;
     setFinding(true);
-    const found = await resolveSong({ title: s?.title ?? title, artist, durationSeconds: s?.durationSeconds ?? null, artwork: s?.artwork, album: s?.origin?.album ?? s?.album, released: s?.origin?.released });
+    const found = await resolveSong({ title: s ? fullTitle(s) : title, artist, durationSeconds: s?.durationSeconds ?? null, artwork: s?.artwork, album: s?.origin?.album ?? s?.album, released: s?.origin?.released }, undefined, { priority: "click" });
     setFinding(false);
     if (found.state === "ready") {
       setFoundId(found.id);

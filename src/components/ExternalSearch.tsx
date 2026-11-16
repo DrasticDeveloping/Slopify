@@ -5,10 +5,11 @@ import { navigate, playList, togglePlay } from "../state/actions";
 import { getState, useStore } from "../state/store";
 import {
   askToSavePlaylist, canStream, cancelImport, failureText, getImport, inputIsLink, isAudioOnlySource, spotifySongLinks, type PlaylistFollow, isDownloadable, isPlaylist, PROVIDERS, providerLabel, registerStreams,
-  playlistOwnedTrack, saveSearchResults, searchDiscovery, searchMore, showTransferInline, stageLabel, streamTrackId, useImport, type Candidate, type ImportState, type MediaKind,
+  playlistOwnedTrack, saveSearchResults, searchDiscovery, showTransferInline, stageLabel, streamTrackId, useImport, type Candidate, type ImportState, type MediaKind,
   type PlaylistSaveOptions, type PlaylistSaved, type Provider, type Resolution,
 } from "../state/importer";
 import { candidateSources, ownedIndex } from "../recommend/owned";
+import { searchTyped, searchTypedMore } from "../recommend/service";
 import { TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 
@@ -87,12 +88,15 @@ function startLookup(query: string, kind: MediaKind, attempt: number): LinkLooku
     idleTimer = window.setTimeout(() => idle.abort(new DOMException("The search took too long.", "TimeoutError")), IDLE_TIMEOUT);
   };
   touch();
-  searchDiscovery(query, AbortSignal.any([lookup.controller.signal, idle.signal]), kind, (partial) => {
-    touch();
-    changed({ resolution: partial, reading: null });
-  }, (reading) => {
-    touch();
-    changed({ reading });
+  searchDiscovery(query, AbortSignal.any([lookup.controller.signal, idle.signal]), kind, false, {
+    onPartial: (partial) => {
+      touch();
+      changed({ resolution: partial, reading: null });
+    },
+    onReading: (reading) => {
+      touch();
+      changed({ reading });
+    },
   })
     .then((resolution) => changed({ resolution, done: true }))
     .catch((e: unknown) => {
@@ -207,7 +211,7 @@ function usePlatformSearch(query: string, kind: MediaKind, attempt: number) {
       return () => controller.abort();
     }
     const timer = window.setTimeout(() => {
-      searchDiscovery(query, AbortSignal.any([controller.signal, AbortSignal.timeout(IDLE_TIMEOUT)]), kind)
+      searchTyped(query, AbortSignal.any([controller.signal, AbortSignal.timeout(IDLE_TIMEOUT)]), kind)
         .then(show)
         .catch((e: unknown) => {
           if (controller.signal.aborted) return;
@@ -256,7 +260,7 @@ function useMoreResults(first: Resolution | null, kind: MediaKind) {
     running.current = controller;
     setLoading(true);
     setError("");
-    searchMore(current.more, kind, AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]))
+    searchTypedMore(current.more, AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]), kind)
       .then((page) => {
         if (controller.signal.aborted) return;
         setPages((p) => {
