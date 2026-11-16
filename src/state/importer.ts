@@ -689,6 +689,35 @@ function keptStream(id: string): StreamSong | null {
   };
 }
 
+/**
+ * A playlist's streamed song as synced to your other devices and account (sync.ts): only what's needed to stream it
+ * there and show it, since the account's copy of the whole library is limited in size (about 400 bytes a song).
+ */
+export function syncedStream(id: string): StreamSong | null {
+  const song = keptStream(id);
+  if (!song) return null;
+  const c = song.candidate;
+  const meta = c.importMetadata;
+  return {
+    key: song.key,
+    kind: song.kind,
+    title: song.title,
+    artist: song.artist,
+    ...(song.artwork ? { artwork: song.artwork } : {}),
+    ...(song.video !== undefined ? { video: song.video } : {}),
+    candidate: {
+      sourceURL: c.sourceURL,
+      sourceProvider: c.sourceProvider,
+      ...(c.searchProvider ? { searchProvider: c.searchProvider } : {}),
+      ...(c.videoID ? { videoID: c.videoID } : {}),
+      durationSeconds: c.durationSeconds,
+      ...(c.requiresReview ? { requiresReview: true } : {}),
+      ...(meta ? { importMetadata: { provider: meta.provider, trackID: meta.trackID, durationSeconds: meta.durationSeconds, ...(meta.localFile ? { localFile: true, title: meta.title, artist: meta.artist } : {}) } } : {}),
+      ...(c.fallbackCandidates?.length ? { fallbackCandidates: c.fallbackCandidates.map((f) => ({ sourceURL: f.sourceURL, sourceProvider: f.sourceProvider })) } : {}),
+    },
+  };
+}
+
 /** The platform a result is listed under. */
 export function resultPlatform(c: Candidate): Provider {
   if (c.searchProvider) return c.searchProvider;
