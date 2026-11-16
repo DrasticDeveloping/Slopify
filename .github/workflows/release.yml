@@ -7,6 +7,11 @@
 # Releases live in this public source repository. Publishing uses GITHUB_TOKEN, and
 # only the publish job can write to the repository. Manual builds default to
 # downloadable artifacts only.
+#
+# A release that's published (nightly or stable) first deploys the online service from
+# the same source: the database's new migrations, the Worker, and the shared-playlist
+# link site (cloud/share-site/). The release isn't published if that fails. The cloud
+# job needs the secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (docs/cloud.md).
 name: Release
 
 on:
@@ -112,8 +117,71 @@ jobs:
             release/*/
           retention-days: 1
 
-  publish:
+  # The online service, deployed before the app that uses it is published. It keeps
+  # answering older versions of the app (see "Old versions of the app" in docs/cloud.md).
+  cloud:
     needs: windows
+    if: needs.windows.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CHANNEL: ${{ github.event.inputs.channel || 'nightly' }}
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      # Without the Cloudflare secrets (docs/cloud.md) nothing is deployed, rather than holding up the release.
+      - name: Check for the Cloudflare secrets
+        id: creds
+        shell: bash
+        # (Before the checkout, cloud/ isn't there yet.)
+        working-directory: .
+        run: |
+          if [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID isn't set, so the online service wasn't deployed."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
+
+      - uses: actions/setup-node@v7
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud/package-lock.json
+
+      - name: Install
+        if: steps.creds.outputs.ok == 'true'
+        run: npm ci
+
+      - name: Typecheck
+        if: steps.creds.outputs.ok == 'true'
+        run: npm run typecheck
+
+      - name: Migrate the database
+        if: steps.creds.outputs.ok == 'true'
+        run: npm run db:migrate
+
+      - name: Deploy the Worker
+        if: steps.creds.outputs.ok == 'true'
+        run: npx wrangler deploy --message "$CHANNEL release from ${GITHUB_SHA::7}"
+
+      # From the repository's root: in cloud/, wrangler would take the Worker's config for the site's.
+      - name: Deploy the shared-playlist link site
+        if: steps.creds.outputs.ok == 'true'
+        working-directory: .
+        run: npx --prefix cloud wrangler pages deploy cloud/share-site --project-name slopify-app --branch master --commit-hash "$GITHUB_SHA"
+
+  publish:
+    needs: [windows, cloud]
     if: needs.windows.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15

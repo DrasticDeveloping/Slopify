@@ -59,6 +59,21 @@ Links to shared playlists open on `https://slopify-app.pages.dev/p/<id>` (`share
 npx wrangler pages deploy <repo>/cloud/share-site --project-name slopify-app --branch master
 ```
 
+### Deploying with releases, and previews
+
+Each published release, nightly or stable (`.github/workflows/release.yml`), first deploys the service from the same source: `npm run db:migrate`, the Worker, then the shared-playlist link site. If that fails, the release isn't published. Deploy by hand only to fix production between releases.
+
+A pull request that changes `cloud/` gets its own Preview (`.github/workflows/cloud-preview.yml`, Cloudflare's Worker Previews): the branch's Worker at `https://pr-<number>-slopify-cloud.gavdie01.workers.dev`, posted as a comment, and deleted when the pull request closes. Previews use the `previews` settings in `wrangler.jsonc`:
+- a separate database, `slopify-preview`, with no real accounts;
+- their own call limits and Listen Along rooms;
+- no daily cron.
+
+Sign-in is the same Clerk app, so any account signs in there with an empty library. Renewing sign-ins needs `CLERK_SECRET_KEY` as a Preview secret (`npx wrangler preview secret put`); without it, previews answer that staying signed in isn't set up. Try one by hand with `npx wrangler preview --name <name>` in `cloud/`. `npm run db:migrate:preview` applies migrations to the previews' database; the workflow runs it before each Preview.
+
+Both workflows need two repository secrets:
+- `CLOUDFLARE_ACCOUNT_ID`;
+- `CLOUDFLARE_API_TOKEN`: an account API token with Workers Scripts, D1 and Cloudflare Pages edit permissions (the "Edit Cloudflare Workers" template, plus D1 and Pages).
+
 ### 3. The app
 
 In `release.config.json`, set `cloudUrl` to the service's address and `clerkPublishableKey` to the same Publishable Key. The next `npm run desktop`, `node server/main.mjs --open` or EXE build includes them (`SLOPIFY_CLOUD_URL` and `SLOPIFY_CLERK_PUBLISHABLE_KEY` override them for one build).
