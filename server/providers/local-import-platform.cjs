@@ -20,6 +20,7 @@ const {
   MAX_PASTED_SONGS,
   resolveYouTubePlaylist,
   normalizeMatchText,
+  scoreUnderNames,
   searchYouTubeAudioSources,
   withoutCredit,
   youtubePlaylistID,
@@ -490,9 +491,10 @@ async function playlistSearchTurn(signal, gap) {
  * to; 4: uploads heard not to be the song aren't kept as fallbacks, and a Deezer track found under a suggested
  * spelling of the artist can't rule a match out). Songs settled before it are looked at again: unsure ones listened
  * to again, not found ones (those ruled out by ear included) searched again, and ones confirmed by ear keep no
- * fallback that may have been heard and rejected.
+ * fallback that may have been heard and rejected; 5: matches by name are scored again under the whole-word title
+ * rules, and those whose titles only half agree are listened to).
  */
-const LISTEN_VERSION = 4;
+const LISTEN_VERSION = 5;
 async function matchPlaylistRows(entries, { signal, onStage, search, searchSoundCloud, ownedSong, matchCache, preview, read, listen, pace = {} }) {
   const gap = pace.gapMs ?? PLAYLIST_SEARCH_GAP_MS;
   const backoff = pace.backoffMs ?? PLAYLIST_SEARCH_BACKOFF_MS;
@@ -530,6 +532,17 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
     for (const title of playlistTitles) if (title !== own && !own.includes(title) && upload.includes(title)) return true;
     return false;
   };
+  /** A remembered YouTube match by name, scored by the current rules: null if they turn it down. */
+  const rescored = (track, known) => {
+    if (typeof known.sourceURL !== "string" || !/^youtube/.test(known.sourceProvider || "")) return known;
+    const again = (c) => {
+      const scored = scoreUnderNames(track, c);
+      return scored ? { ...c, score: scored.score, match: { ...c.match, ...scored.match } } : null;
+    };
+    const row = again(known);
+    if (!row) return null;
+    return { ...row, fallbackCandidates: (known.fallbackCandidates || []).map((c) => (/^youtube/.test(c.sourceProvider || "") ? again(c) : c)).filter(Boolean) };
+  };
   /** A song's row before any search: already in the library, remembered from a recent search, or to be searched. */
   const startRow = (track) => {
     let owned = null;
@@ -544,6 +557,10 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchSound
     if (known && listen && unconfirmed && older) known = null;
     // Confirmed by ear by an older way of listening: its fallbacks may include uploads heard not to be the song.
     if (known && older && known.match?.listened?.verdict === "same" && known.fallbackCandidates?.length) known = { ...known, fallbackCandidates: [] };
+    // A YouTube match by name from before the current title rules ("Maybe Mine" once passed for "Be Mine") is scored
+    // again (its fallbacks too): one the rules now turn down is searched again, one that only half agrees is then
+    // listened to (toVerify).
+    if (known && older && known.match?.listened?.verdict !== "same" && !known.match?.byArtistAndLength) known = rescored(track, known);
     return known && !(typeof known.sourceURL === "string" && namesAnotherSong(track, known)) ? { ...known, ...base(track) } : { ...base(track), pending: true };
   };
   const rows = entries.map(({ track, ready, unread }) => {

@@ -7,7 +7,7 @@ import { applyEngineSettings, setSpeed, toast, toggleShuffle } from "./actions";
 import { connectLibrarySync, defaultSettings, getState, initialLibrarySync, persistLater, savingLater, setState, subscribe, type AppState, type Settings } from "./store";
 import { adoptPlaybackSpot, device, onPlaybackSpot, playbackSpot, type PlaybackSpot } from "./resume";
 import { adoptSlipIns, allSlipIns, onSlipIns, type SlipIn } from "./slipins";
-import { registerStreams, syncServerLibrary, syncedStream, type StreamSong } from "./importer";
+import { fromSyncedStream, registerStreams, syncServerLibrary, syncedStream, type StreamSong } from "./importer";
 import { flushSongChanges } from "./song-api";
 import { CloudError, cloudCall, deleteSignIn, getAccount, onSignedIn, signOut } from "./cloud";
 import { leaveRoom } from "./listen";
@@ -454,9 +454,25 @@ function mergePlaylist(b: Playlist, m: Playlist, t: Playlist): Playlist {
   return out;
 }
 
+/**
+ * A copy written by a version of the app that doesn't sync playlists' streamed songs (it has no `streams`; this
+ * version always writes one, empty or not) left them out without removing them: they're put back where the agreed
+ * copy had them, so they aren't taken as deleted.
+ */
+function withStreamsKept(base: LibraryData | null, theirs: LibraryData): LibraryData {
+  if (theirs.streams || !base?.streams) return theirs;
+  const playlists: Record<string, Playlist> = {};
+  for (const [id, p] of Object.entries(theirs.playlists)) {
+    const agreed = base.playlists[id]?.trackIds ?? [];
+    playlists[id] = { ...p, trackIds: keepDeviceSongs(p.trackIds, agreed, streamed) };
+  }
+  return { ...theirs, playlists, streams: base.streams };
+}
+
 const newestSpot = (...spots: Array<PlaybackSpot | null | undefined>) => spots.filter((x): x is PlaybackSpot => Boolean(x)).sort((a, b) => b.at - a.at)[0] ?? null;
 
-function merge(base: LibraryData | null, mine: LibraryData, theirs: LibraryData): LibraryData {
+function merge(base: LibraryData | null, mine: LibraryData, theirsAsSent: LibraryData): LibraryData {
+  const theirs = withStreamsKept(base, theirsAsSent);
   const playlists = mergeMap(base ? canonicalAll(base.playlists) : undefined, canonicalAll(mine.playlists), canonicalAll(theirs.playlists), (b, m, t) => {
     // A fresh browser creates an empty Liked Songs automatically; it isn't an edit
     // to the listener's server collection. Preserve both libraries on first sync.
@@ -522,7 +538,7 @@ function keepDeviceSongs(syncedIds: string[], own: string[], isDeviceSong: (id: 
 function apply(data: LibraryData) {
   // Playlists' streamed songs become playable songs here first, so the playlists can list them.
   // (One already playable here keeps what this browser knows of it, which may be more than the synced summary.)
-  if (data.streams) registerStreams(Object.entries(data.streams).filter(([id]) => !getState().tracks[id]).map(([, song]) => song));
+  if (data.streams) registerStreams(Object.entries(data.streams).filter(([id]) => !getState().tracks[id]).map(([, song]) => fromSyncedStream(song)));
   setState((s) => {
     // (A playlist's streamed songs are synced like server songs, so one removed elsewhere goes here too.)
     const local = (id: string) => !synced(id) && !(data.streams && streamed(id)) && Boolean(s.tracks[id]);

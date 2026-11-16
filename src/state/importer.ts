@@ -718,6 +718,24 @@ export function syncedStream(id: string): StreamSong | null {
   };
 }
 
+/**
+ * A synced streamed song (see syncedStream) with the song's details back where saving it looks for them: the
+ * upload's and the playlist song's title, artist and artwork, which the synced record keeps only once.
+ */
+export function fromSyncedStream(song: StreamSong): StreamSong {
+  const c = song.candidate;
+  const meta = c.importMetadata;
+  return {
+    ...song,
+    candidate: {
+      ...c,
+      title: c.title ?? song.title,
+      artist: c.artist ?? song.artist,
+      ...(meta ? { importMetadata: { ...meta, title: meta.title ?? song.title, artist: meta.artist ?? song.artist, artworkURL: meta.artworkURL ?? song.artwork ?? null } } : {}),
+    },
+  };
+}
+
 /** The platform a result is listed under. */
 export function resultPlatform(c: Candidate): Provider {
   if (c.searchProvider) return c.searchProvider;
