@@ -14,7 +14,7 @@ import { dropFromDevice } from "./device";
 import { keepPicture, prunePictures } from "./pictures";
 import { downloadTracks, keepLibraryOnDevice } from "./server";
 import { listSongs, pendingSongChanges, updateSong, type ServerSong } from "./song-api";
-import { getState, setState, subscribe as subscribeApp, type AppState, type ImportMissing } from "./store";
+import { getState, keepStreamsWith, savedPlaylistStreams, setState, subscribe as subscribeApp, type AppState, type ImportMissing } from "./store";
 
 /*
  * Saving music from the web, ported from Resonance's local import flow: search
@@ -170,8 +170,11 @@ export interface ImportState {
   /** "2 of 14 • Song" while a playlist downloads, otherwise the song title. */
   transferName: string;
   preview: { index: number; status: "loading" | "playing" | "paused" } | null;
-  /** A playlist's save under way: the song it's on, of those queued so far (`following`: more may be found). */
-  batch: { index: number; total: number; following: boolean } | null;
+  /**
+   * A playlist's save under way: the song it's on, of those queued so far (`following`: more may be found;
+   * `streaming`: put in the playlist as streams, not downloaded).
+   */
+  batch: { index: number; total: number; following: boolean; streaming?: boolean } | null;
   /** How the last playlist save ended, for its Search page to say so (and open the playlist). */
   saved: PlaylistSaved | null;
 }
@@ -184,6 +187,8 @@ export interface PlaylistSaved {
   total: number;
   failed: number;
   cancelled: boolean;
+  /** The songs went in the playlist as streams, without downloading them. */
+  streamed?: boolean;
 }
 
 const AUTO_RESOLVE_DELAY = 450;
@@ -476,11 +481,13 @@ let pendingFollow: PlaylistFollow | null = null;
 /**
  * How a playlist's songs are saved (asked in the Save dialog): `playlistName` is the playlist they go in (made, or
  * topped up if one has that name), or null for none; `includeOwned` puts the list's songs already in the library in
- * that playlist too.
+ * that playlist too. `download: false` downloads nothing: the songs go in the playlist as streams (a playlist name
+ * is then needed).
  */
 export interface PlaylistSaveOptions {
   playlistName: string | null;
   includeOwned: boolean;
+  download?: boolean;
 }
 let pendingSaveOptions: PlaylistSaveOptions | null = null;
 /** What the Save dialog starts once answered (see askToSavePlaylist). */
@@ -639,6 +646,17 @@ export function streamSong(id: string): StreamSong | null {
     video: source.saveVideo ? true : source.video ? undefined : false,
   };
 }
+
+/** The platform a result is listed under. */
+export function resultPlatform(c: Candidate): Provider {
+  if (c.searchProvider) return c.searchProvider;
+  if (c.importMetadata?.provider === "spotify") return "spotify";
+  if (c.importMetadata?.provider === "soundcloud" || c.sourceProvider === "soundcloud") return "soundcloud";
+  return "youtube";
+}
+/** A stable song key for a result, so playing it again resumes the same streamed track. A video is its own track. */
+export const resultStreamKey = (c: Candidate, kind: MediaKind = "audio") =>
+  `search:${resultPlatform(c)}:${c.sourceProvider}:${c.videoID || c.providerID || c.sourceURL}${kind === "video" ? ":video" : ""}`;
 
 /** Where a streamed song's audio comes from, for sharing it (Listen Along). */
 export const streamLink = (id: string) => streamSources.get(id)?.candidate.sourceURL ?? null;
@@ -1397,7 +1415,7 @@ function showTransfer() {
   const ratio = stage === "downloading" && progress?.total ? progress.completed / progress.total : -1;
   const batch = batchProgress;
   const overall = batch ? (batch.index + Math.max(0, ratio)) / batch.total : ratio;
-  const title = stageLabel(stage) || "Importing";
+  const title = state.batch?.streaming ? "Making playlist" : stageLabel(stage) || "Importing";
   const key = `${title}|${transferName}|${Math.round(overall * 100)}`;
   if (key === lastToastKey) return;
   lastToastKey = key;
@@ -1652,7 +1670,9 @@ async function confirmPlaylist(resolution: Resolution) {
   const sourceTitle = resolution.playlist?.title || resolution.track.title || "Imported Playlist";
   const options = pendingSaveOptions ?? { playlistName: sourceTitle, includeOwned: true };
   pendingSaveOptions = null;
-  const makePlaylist = options.playlistName !== null;
+  // Not downloading: the found songs go in the playlist as streams.
+  const download = options.download !== false;
+  const makePlaylist = options.playlistName !== null || !download;
   /**
    * Songs already in the library aren't saved again, but still take their place in the imported playlist (when
    * there is one, and they're wanted in it).
@@ -1681,6 +1701,8 @@ async function confirmPlaylist(resolution: Resolution) {
   }
   const playlistTitle = options.playlistName?.trim() || sourceTitle;
   const providerName = resolution.kind === "spotify_playlist" ? "Spotify" : resolution.kind === "soundcloud_playlist" ? "SoundCloud" : "YouTube";
+  // Each kept song by its place in the queue, so ones settled later (below) still land where they were.
+  const slots: string[] = [];
   /**
    * Puts songs in the playlist named after the source, each at its place there (`at`, its row in the source).
    * Importing again tops it up: songs saved in a later batch (or a later import) go where the source has them, not at
@@ -1698,11 +1720,30 @@ async function confirmPlaylist(resolution: Resolution) {
       if (id && !position.has(id)) position.set(id, at);
     });
     for (const { at, id } of sorted) if (!position.has(id)) position.set(id, at);
-    const existing = getState().playlists.find((p) => !p.system && p.name === playlistTitle);
+    // Songs this save already put in (a streamed playlist is filled as songs are found).
+    slots.forEach((id, index) => {
+      if (id && !position.has(id)) position.set(id, queue[index].at);
+    });
+    let existing = getState().playlists.find((p) => !p.system && p.name === playlistTitle);
     let playlistId: string;
     if (existing) {
+      // Songs it streams (made earlier without downloading) that are saved now, by this save or before: the saved
+      // copy takes the stream's place rather than joining beside it.
+      const swap = new Map<string, string>();
+      for (const { at, id } of sorted) {
+        const c = source.candidates[at];
+        if (!c || !canStream(c) || getState().tracks[id]?.stream) continue;
+        swap.set(streamTrackId(resultStreamKey(c, kind)), id);
+      }
+      if (existing.trackIds.some((id) => swap.has(id))) {
+        const swapped = existing.trackIds.map((id) => swap.get(id) ?? id);
+        const trackIds = swapped.filter((id, i) => swapped.indexOf(id) === i);
+        const target = existing.id;
+        setState((s) => ({ playlists: s.playlists.map((p) => (p.id === target ? { ...p, trackIds } : p)) }));
+        existing = getState().playlists.find((p) => p.id === target)!;
+      }
       const had = new Set(existing.trackIds);
-      addToPlaylist(existing.id, ids, { silent: true });
+      addToPlaylist(existing.id, ids, { silent: true, keepStreams: !download });
       playlistId = existing.id;
       for (const id of ids) {
         if (had.has(id)) continue;
@@ -1711,12 +1752,12 @@ async function confirmPlaylist(resolution: Resolution) {
         const before = current.find((other) => other !== id && (position.get(other) ?? -1) > at) ?? null;
         if (before) moveInPlaylist(playlistId, id, before);
       }
-    } else playlistId = createPlaylist(playlistTitle, ids, `Imported from ${providerName}.`);
+    } else playlistId = createPlaylist(playlistTitle, ids, `Imported from ${providerName}.`, { keepStreams: !download });
     return { label: "Open", run: () => navigate({ name: "playlist", id: playlistId }), playlistId };
   };
   /** Records how the save ended, for the playlist's Search page (see ImportState.saved). */
   const settle = (outcome: Omit<PlaylistSaved, "source" | "playlistTitle">) =>
-    set({ saved: { source: state.source, playlistTitle: makePlaylist ? playlistTitle : "", ...outcome } });
+    set({ saved: { source: state.source, playlistTitle: makePlaylist ? playlistTitle : "", ...outcome, ...(download ? {} : { streamed: true }) } });
   if (!queue.length && !follow) {
     // Every song is already saved: only the playlist is made.
     const open = place(owned);
@@ -1727,13 +1768,32 @@ async function confirmPlaylist(resolution: Resolution) {
   }
   const first = queue[0] ? queue[0].candidate.importMetadata?.title || queue[0].candidate.title || "Playlist item 1" : "Waiting for songs to be found…";
   batchProgress = { index: 0, total: Math.max(1, queue.length) };
-  set({ saved: null, batch: { index: 0, total: queue.length, following: Boolean(follow) } });
+  const streaming = download ? {} : { streaming: true };
+  set({ saved: null, batch: { index: 0, total: queue.length, following: Boolean(follow), ...streaming } });
   const controller = begin(queue.length ? `1 of ${queue.length} • ${first}` : first);
   /** "3 of 12", or "3 of 12 so far" while more may still be found. */
   let following = Boolean(follow);
   const of = (index: number) => `${index + 1} of ${queue.length}${following ? " so far" : ""}`;
-  // Each kept song by its place in the queue, so ones settled later (below) still land where they were.
-  const slots: string[] = [];
+  /**
+   * A found song as a stream in the playlist (nothing downloaded): its track id, or null for a source that can't be
+   * streamed. Its other matched sources stay with it, to play from if this one goes.
+   */
+  const streamOf = (candidate: Candidate) => {
+    if (!canStream(candidate)) return null;
+    const meta = candidate.importMetadata || candidate;
+    const key = resultStreamKey(candidate, kind);
+    registerStreams([{
+      key,
+      candidate,
+      title: meta.title || candidate.title || "Untitled",
+      artist: meta.artist || candidate.artist || "Unknown artist",
+      artwork: candidate.importMetadata?.artworkURL || candidate.thumbnailURL || undefined,
+      kind: "discover-search",
+      ...(kind === "video" ? { video: resultPlatform(candidate) === "youtube" } : {}),
+    }]);
+    return streamTrackId(key);
+  };
+  let streamedOpen: ReturnType<typeof place>;
   const failures: { line: string; title: string; artist: string }[] = [];
   const failed = (title: string, artist?: string | null) => failures.push({ line: `${title}${artist ? ` — ${artist}` : ""}`, title, artist: artist || "" });
   // Songs that sound like ones already saved: asked about together once the rest are in, then put in their place.
@@ -1749,7 +1809,7 @@ async function confirmPlaylist(resolution: Resolution) {
       }
       // Out of songs: while the playlist is still being matched, wait for the next ones found.
       while (index >= queue.length && follow && following) {
-        set({ transferName: `Waiting for the next song to be found (${queue.length} saved or saving)`, stage: "searching_candidates", progress: null, batch: { index, total: queue.length, following: true } });
+        set({ transferName: `Waiting for the next song to be found (${queue.length} ${download ? "saved or saving" : "in the playlist"})`, stage: "searching_candidates", progress: null, batch: { index, total: queue.length, following: true, ...streaming } });
         showTransfer();
         let more: { at: number; candidate: Candidate }[] | null = null;
         try {
@@ -1769,8 +1829,20 @@ async function confirmPlaylist(resolution: Resolution) {
       const candidate = queue[index].candidate;
       const meta = candidate.importMetadata || candidate;
       batchProgress = { index, total: queue.length };
-      set({ transferName: `${of(index)} • ${meta.title || candidate.title || `Playlist item ${index + 1}`}`, stage: "inspecting_source", progress: null, batch: { index, total: queue.length, following } });
+      set({ transferName: `${of(index)} • ${meta.title || candidate.title || `Playlist item ${index + 1}`}`, stage: "inspecting_source", progress: null, batch: { index, total: queue.length, following, ...streaming } });
       showTransfer();
+      if (!download) {
+        const id = streamOf(candidate);
+        if (!id) {
+          failed(meta.title || "Untitled", meta.artist);
+          continue;
+        }
+        slots[index] = id;
+        created++;
+        // Into the playlist at once, so it plays while the rest are found (the songs already saved join with the first).
+        streamedOpen = place([{ at: queue[index].at, id }, ...(streamedOpen ? [] : owned)], follow?.latest() ?? resolution) ?? streamedOpen;
+        continue;
+      }
       const options = [candidate, ...(candidate.fallbackCandidates ?? []).filter(isDownloadable)];
       let result: ApiResult<StartResult> | null = null;
       let used = candidate;
@@ -1858,8 +1930,15 @@ async function confirmPlaylist(resolution: Resolution) {
     const open = place(placed, final);
     const plural = (n: number) => `${n} ${noun}${n === 1 ? "" : "s"}`;
     settle({ playlistId: open?.playlistId ?? null, kept, total: queue.length, failed: failures.length, cancelled });
-    if (cancelled) {
-      finishTransfer("Playlist download cancelled", { detail: `Kept ${kept} of ${plural(queue.length)}.`, action: open }, { quietInline: true });
+    if (!download && !cancelled) {
+      finishTransfer(`Added ${plural(kept)} to “${playlistTitle}”`, {
+        tone: failures.length ? "error" : "success",
+        detail: failures.length ? `${plural(failures.length)} couldn't be streamed.` : "They stream from YouTube and SoundCloud: nothing was downloaded.",
+        action: open,
+      }, { quietInline: true });
+      set({ stage: "complete" });
+    } else if (cancelled) {
+      finishTransfer(download ? "Playlist download cancelled" : "Stopped adding songs", { detail: `${download ? "Kept" : "Added"} ${kept} of ${plural(queue.length)}.`, action: open }, { quietInline: true });
       set({ stage: "cancelled" });
     } else if (failures.length) {
       finishTransfer(`Kept ${kept} of ${plural(queue.length)}`, { tone: "error", detail: `Failed after retrying: ${failures.slice(0, 3).map((f) => f.line).join("; ")}${failures.length > 3 ? ` and ${failures.length - 3} more` : ""}.`, action: open, duration: 9000 }, { quietInline: true });
@@ -1874,7 +1953,7 @@ async function confirmPlaylist(resolution: Resolution) {
       set({ stage: "complete" });
     }
     end(controller);
-    if (!cancelled) showSaveSummary(final, kept, open?.playlistId ?? null, makePlaylist ? playlistTitle : null, failures);
+    if (!cancelled) showSaveSummary(final, kept, open?.playlistId ?? null, makePlaylist ? playlistTitle : null, failures, !download);
   }
 }
 
@@ -1882,15 +1961,15 @@ async function confirmPlaylist(resolution: Resolution) {
  * Once a playlist's songs are saved, the ones that weren't, in the list's order: never matched to an upload (or
  * never read from Spotify), then those that couldn't be downloaded. Nothing to show, no dialog; nor over another one.
  */
-function showSaveSummary(final: Resolution, saved: number, playlistId: string | null, playlistName: string | null, failures: { title: string; artist: string }[]) {
+function showSaveSummary(final: Resolution, saved: number, playlistId: string | null, playlistName: string | null, failures: { title: string; artist: string }[], streamed = false) {
   const missing: ImportMissing[] = final.candidates.flatMap((c) => {
     if (!c.unmatched) return [];
     const meta = c.importMetadata;
     return [{ title: meta?.title || `Song ${c.playlistIndex ?? ""}`.trim(), artist: meta?.artist || "", reason: c.unmatched }];
   });
-  missing.push(...failures.map((f) => ({ title: f.title, artist: f.artist, reason: "failed" as const })));
+  missing.push(...failures.map((f) => ({ title: f.title, artist: f.artist, reason: streamed ? "unstreamable" as const : "failed" as const })));
   if (!missing.length || getState().modal) return;
-  openModal({ type: "importSummary", saved, playlistId, playlistName, missing });
+  openModal({ type: "importSummary", saved, playlistId, playlistName, missing, streamed });
 }
 
 export function cancelImport() {
@@ -2026,6 +2105,10 @@ subscribeApp(() => {
   if (volume !== lastVolume && previewAudio) previewAudio.volume = s.muted ? 0 : s.volume;
   lastVolume = volume;
 });
+
+// Playlists made without downloading keep their streamed songs (store.ts): they're playable songs again from the start.
+keepStreamsWith(streamSong);
+registerStreams(Object.values(savedPlaylistStreams()));
 
 // Live audio and app state cannot be swapped in place: when this module (or anything it imports) changes, reload the page.
 if (import.meta.hot) import.meta.hot.accept(() => location.reload());

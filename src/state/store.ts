@@ -3,6 +3,7 @@ import { hashString, likedPlaylist, paletteFromSeed } from "../data/library";
 import type { HeaderInfo } from "../components/Hero";
 import type { Album, Artist, ClipRange, Playlist, Track } from "../data/types";
 import { restoreTaste, type ReasonKind, type TasteState } from "../recommend/taste";
+import type { StreamSong } from "./importer";
 
 export type Route =
   | { name: "home" }
@@ -39,13 +40,13 @@ export type Modal =
   /** The desktop app's waiting update: what's changed in it (UpdateBanner.tsx). */
   | { type: "whatsNew" }
   | { type: "savePlaylist"; count: number; owned: number; name: string; matching: boolean }
-  | { type: "importSummary"; saved: number; playlistId: string | null; playlistName: string | null; missing: ImportMissing[] };
+  | { type: "importSummary"; saved: number; playlistId: string | null; playlistName: string | null; missing: ImportMissing[]; streamed?: boolean };
 
 /** A playlist song a save left out: never matched to an upload, or matched but not downloadable. */
 export interface ImportMissing {
   title: string;
   artist: string;
-  reason: "not_found" | "search_failed" | "not_on_spotify" | "unread" | "failed";
+  reason: "not_found" | "search_failed" | "not_on_spotify" | "unread" | "failed" | "unstreamable";
 }
 
 export interface RoomMember { userId: string; name: string; avatarUrl: string | null; host: boolean }
@@ -264,7 +265,26 @@ interface CatalogPatch {
   albums: Record<string, Album>;
 }
 
-type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "smartShuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listenElsewhere" | "listens" | "taste">> & { catalog?: CatalogPatch; librarySync?: unknown };
+type Persisted = Partial<Pick<AppState, "playlists" | "settings" | "clips" | "volume" | "muted" | "shuffle" | "smartShuffle" | "repeat" | "speed" | "sidebarCollapsed" | "panel" | "listenLog" | "listenElsewhere" | "listens" | "taste">> & {
+  catalog?: CatalogPatch;
+  librarySync?: unknown;
+  /** Streamed songs kept in playlists (made without downloading): how to stream each again, by its track id. */
+  streams?: Record<string, StreamSong>;
+};
+
+/**
+ * Streamed songs a playlist holds (a playlist made without downloading its songs) are kept with it, as what's needed
+ * to stream them again; importer.ts makes them playable songs again on load. Other streamed songs (suggestions,
+ * search results) are never saved.
+ */
+let keptStreams: Record<string, StreamSong> = {};
+let describeStream: ((id: string) => StreamSong | null) | null = null;
+/** The streamed songs saved with playlists, as loaded. */
+export const savedPlaylistStreams = () => keptStreams;
+/** Set by importer.ts, which knows how each streamed song is streamed. */
+export function keepStreamsWith(describe: (id: string) => StreamSong | null) {
+  describeStream = describe;
+}
 /*
  * The library sync base (see sync.ts) is saved in the same record as the app
  * data it describes. Tabs share this storage, so whichever tab saves last
@@ -330,8 +350,9 @@ function initialState(): AppState {
       albums[t.albumId] = patch.albums[t.albumId] ?? { id: t.albumId, title: t.title, artistId: t.artistId, palette: paletteFromSeed(hashString(t.albumId)), glyph: 0 };
     }
   }
+  keptStreams = saved.streams && typeof saved.streams === "object" ? saved.streams : {};
   const playlists = (saved.playlists ?? [])
-    .map((p) => ({ ...(p.id === "liked" ? likedPlaylist(p) : p), trackIds: p.trackIds.filter((id) => tracks[id]) }))
+    .map((p) => ({ ...(p.id === "liked" ? likedPlaylist(p) : p), trackIds: p.trackIds.filter((id) => tracks[id] || keptStreams[id]) }))
     .filter((p) => p.system || p.trackIds.length || !STARTER_PLAYLISTS.has(p.id));
   if (!playlists.some((p) => p.id === "liked")) playlists.unshift(likedPlaylist());
   return {
@@ -430,9 +451,24 @@ export function flushPersist() {
   persistTimer = 0;
   if (persistenceStopped) return;
   const s = state;
+  // Streamed songs stay in a playlist only with what's needed to stream them again (see keptStreams).
+  const streams: Record<string, StreamSong> = {};
+  const keeps = (id: string) => {
+    const t = s.tracks[id];
+    if (t && !t.stream) return true;
+    const song = streams[id] ?? (t ? describeStream?.(id) : null) ?? keptStreams[id];
+    if (song) streams[id] = song;
+    // An id this session doesn't know (not yet synced, or a stream not made playable again) stays as it was.
+    return !t || Boolean(song);
+  };
+  const playlists = s.playlists.map((p) => {
+    const trackIds = p.trackIds.filter(keeps);
+    return trackIds.length === p.trackIds.length ? p : { ...p, trackIds };
+  });
+  keptStreams = streams;
   const data: Persisted = {
-    // Streamed recommendations are never saved, so they never belong in a saved playlist.
-    playlists: s.playlists.map((p) => (p.trackIds.some((id) => s.tracks[id]?.stream) ? { ...p, trackIds: p.trackIds.filter((id) => !s.tracks[id]?.stream) } : p)),
+    playlists,
+    ...(Object.keys(streams).length ? { streams } : {}),
     settings: s.settings,
     clips: s.clips,
     volume: s.volume,

@@ -114,7 +114,6 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
   const tracks = ids.map((id) => s.tracks[id]).filter(Boolean);
   const single = tracks.length === 1 ? tracks[0] : null;
   const mixHide = single ? mixItems(single, opts.context?.route) : [];
-  if (single?.stream) return grouped(streamMenu(single, opts.stream), mixHide);
   const playlist = opts.playlistId ? s.playlists.find((p) => p.id === opts.playlistId) : undefined;
   const anyPlayable = tracks.some((t) => isPlayable(t, s));
   const singlePlayable = single ? isPlayable(single, s) : false;
@@ -125,6 +124,8 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
     playlist && !playlist.system ? [{ label: "Remove from this playlist", icon: "close", run: () => removeFromPlaylist(playlist.id, ids) }]
     : playlist?.id === "liked" ? [{ label: "Remove from Liked Songs", icon: "close", run: () => removeFromPlaylist("liked", ids) }]
     : [];
+  // A streamed song in a playlist (one made without downloading) can still be taken out of it.
+  if (single?.stream) return grouped(streamMenu(single, opts.stream), mixHide, removeFromPlaylistItem);
   return grouped(
     [
       { label: "Play next", icon: "queue", quick: true, disabled: !anyPlayable, run: () => playNext(ids) },
