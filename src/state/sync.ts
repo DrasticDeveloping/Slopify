@@ -330,7 +330,9 @@ function localData(s: AppState, base: LibraryData | null): LibraryData {
   const streams: Record<string, StreamSong> = {};
   const streamHere = (id: string) => {
     if (!streamed(id)) return false;
-    const song = s.tracks[id]?.stream ? syncedStream(id) : base?.streams?.[id];
+    // A record once agreed stays as it was: devices whose own copies differ (one matched another upload since)
+    // would otherwise keep writing theirs over each other's. A stream id names its upload, so nothing is lost.
+    const song = base?.streams?.[id] ?? (s.tracks[id]?.stream ? syncedStream(id) : undefined);
     if (song) streams[id] = song;
     return Boolean(song);
   };
@@ -339,6 +341,7 @@ function localData(s: AppState, base: LibraryData | null): LibraryData {
     const kept = base?.playlists[p.id]?.trackIds.filter(unknown) ?? [];
     playlists[p.id] = { ...canonical(p), trackIds: [...p.trackIds.filter((id) => synced(id) || streamHere(id)), ...kept] };
   }
+  fitStreams(streams);
   const counts = byId({ ...tallies.peers, [device]: ownCounts(s) });
   // Totals, for older versions (this one reads `counts`), worked out as merge() does.
   const totals = allTotal(counts, s.taste.resetAt);
@@ -364,6 +367,23 @@ function localData(s: AppState, base: LibraryData | null): LibraryData {
     reasonsResetAt: s.taste.resetAt,
     streams,
   };
+}
+
+/**
+ * The account's copy of the library has a size limit (cloud/src/library.ts, 900 KB), past which nothing syncs, so
+ * playlists' streamed songs keep to a share of it: past that, their records leave out their other copies' links,
+ * then their artwork (shown as a generated cover instead). A record without them still streams.
+ */
+const STREAMS_BUDGET = 400 * 1024;
+function fitStreams(streams: Record<string, StreamSong>) {
+  const size = () => new TextEncoder().encode(JSON.stringify(streams)).length;
+  if (size() <= STREAMS_BUDGET) return;
+  for (const [id, song] of Object.entries(streams)) {
+    const { fallbackCandidates: _fallbacks, ...candidate } = song.candidate;
+    streams[id] = { ...song, candidate };
+  }
+  if (size() <= STREAMS_BUDGET) return;
+  for (const [id, { artwork: _artwork, ...song }] of Object.entries(streams)) streams[id] = song;
 }
 
 /** Slip-ins as synced: with every device's counts added up, and nothing kept only for this one. */
@@ -459,6 +479,8 @@ function mergePlaylist(b: Playlist, m: Playlist, t: Playlist): Playlist {
  * version always writes one, empty or not) left them out without removing them: they're put back where the agreed
  * copy had them, so they aren't taken as deleted.
  */
+// (While such a version stays in use, it leaves them out again at each of its syncs and this one puts them back: the
+// two re-save the library until it updates, without losing anything.)
 function withStreamsKept(base: LibraryData | null, theirs: LibraryData): LibraryData {
   if (theirs.streams || !base?.streams) return theirs;
   const playlists: Record<string, Playlist> = {};
@@ -541,7 +563,10 @@ function apply(data: LibraryData) {
   if (data.streams) registerStreams(Object.entries(data.streams).filter(([id]) => !getState().tracks[id]).map(([, song]) => fromSyncedStream(song)));
   setState((s) => {
     // (A playlist's streamed songs are synced like server songs, so one removed elsewhere goes here too.)
-    const local = (id: string) => !synced(id) && !(data.streams && streamed(id)) && Boolean(s.tracks[id]);
+    // This device's own songs: kept as they are. A playlist's streamed songs are synced (so one removed elsewhere goes
+    // here too), but likes and the like for streamed songs stay this device's own, as before.
+    const own = (id: string) => !synced(id) && Boolean(s.tracks[id]);
+    const local = (id: string) => own(id) && !(data.streams && streamed(id));
     const known = (id: string) => Boolean(s.tracks[id]);
     const ownPlaylists = new Map(s.playlists.map((p) => [p.id, p]));
     const playlists = data.playlistOrder.map((id) => {
@@ -554,9 +579,9 @@ function apply(data: LibraryData) {
       taste: {
         ...s.taste,
         rev: s.taste.rev + 1,
-        likes: { ...pick(s.taste.likes, local), ...data.likes },
-        saves: { ...pick(s.taste.saves, local), ...data.saves },
-        hidden: { ...pick(s.taste.hidden, local), ...data.hidden },
+        likes: { ...pick(s.taste.likes, own), ...data.likes },
+        saves: { ...pick(s.taste.saves, own), ...data.saves },
+        hidden: { ...pick(s.taste.hidden, own), ...data.hidden },
         hiddenDiscoveries: data.hiddenDiscoveries,
         listens: [...Object.values(data.listens), ...ownListens].sort((a, b) => b.at - a.at).slice(0, MAX_LISTENS),
       },
