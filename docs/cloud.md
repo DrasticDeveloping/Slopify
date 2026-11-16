@@ -61,14 +61,21 @@ npx wrangler pages deploy <repo>/cloud/share-site --project-name slopify-app --b
 
 ### Deploying with releases, and previews
 
-Each published release, nightly or stable (`.github/workflows/release.yml`), first deploys the service from the same source: `npm run db:migrate`, the Worker, then the shared-playlist link site. If that fails, the release isn't published. Deploy by hand only to fix production between releases.
+Each published release, nightly or stable (`.github/workflows/release.yml`), first deploys the service from the same commit: `npm run db:migrate`, the Worker, then the shared-playlist link site. If that fails, the release isn't published. Deploy by hand only to fix production between releases.
+
+Every version of the app, on either channel, uses this one service, so a nightly's deploy reaches Stable's users too. That's why the service must keep answering the versions people have, and why:
+- only a release from master deploys it. Publishing from another branch fails before anything is deployed;
+- the Worker is deployed only when `cloud/` (outside `share-site/`) changed since the commit that's live, which its deployment message names. Each deploy restarts Listen Along rooms (the app reconnects within seconds), so app-only releases leave them alone;
+- after deploying, the workflow checks the Worker is on production's database and answers `/v1/health`. If not, it rolls back to the version that was live and doesn't publish. A migration isn't undone, so migrations must keep working with the version before them.
+
+A release published from a PC (`npm run release:stable`) deploys nothing: deploy the service first if it needs a change.
 
 A pull request that changes `cloud/` gets its own Preview (`.github/workflows/cloud-preview.yml`, Cloudflare's Worker Previews): the branch's Worker at `https://pr-<number>-slopify-cloud.gavdie01.workers.dev`, posted as a comment, and deleted when the pull request closes. Previews use the `previews` settings in `wrangler.jsonc`:
 - a separate database, `slopify-preview`, with no real accounts;
 - their own call limits and Listen Along rooms;
 - no daily cron.
 
-Sign-in is the same Clerk app, so any account signs in there with an empty library. Renewing sign-ins needs `CLERK_SECRET_KEY` as a Preview secret (`npx wrangler preview secret put`); without it, previews answer that staying signed in isn't set up. Try one by hand with `npx wrangler preview --name <name>` in `cloud/`. `npm run db:migrate:preview` applies migrations to the previews' database; the workflow runs it before each Preview.
+Sign-in is the same Clerk app, so any account signs in there with an empty library. Renewing sign-ins needs `CLERK_SECRET_KEY` as a Preview secret (`npx wrangler preview secret put`); without it, previews answer that staying signed in isn't set up. Try one by hand with `npx wrangler preview --name <name>` in `cloud/`. `npm run db:migrate:preview` applies migrations to the previews' database; the workflow runs it before each Preview. That database is only named in the `previews` settings and in `wrangler.preview-db.jsonc`, never in production's settings.
 
 Both workflows need two repository secrets:
 - `CLOUDFLARE_ACCOUNT_ID`;

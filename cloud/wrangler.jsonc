@@ -5,8 +5,8 @@
   "compatibility_date": "2026-10-01",
   "d1_databases": [
     // Create it with `npx wrangler d1 create slopify`, then put its id here.
-    // preview_database_id: the previews' database (see "previews" below), for `npm run db:migrate:preview`.
-    { "binding": "DB", "database_name": "slopify", "database_id": "d0512d09-5cff-4dd4-8ec0-1b157cf27f20", "preview_database_id": "005ff493-513d-41ec-9285-667f44e68c13", "migrations_dir": "migrations" }
+    // (The previews' database is only in "previews" below, and in wrangler.preview-db.jsonc for its migrations.)
+    { "binding": "DB", "database_name": "slopify", "database_id": "d0512d09-5cff-4dd4-8ec0-1b157cf27f20", "migrations_dir": "migrations" }
   ],
   "durable_objects": {
     "bindings": [{ "name": "ROOMS", "class_name": "ListenAlongRoom" }]

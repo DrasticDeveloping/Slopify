@@ -44,6 +44,8 @@ jobs:
     timeout-minutes: 45
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
+      # The commit built, so the online service is deployed from the same one.
+      source: ${{ steps.source.outputs.sha }}
     env:
       SLOPIFY_UPDATE_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -52,6 +54,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
+
+      - name: Note the commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Skip if master hasn't changed since the last Nightly
         id: changes
@@ -117,8 +124,11 @@ jobs:
             release/*/
           retention-days: 1
 
-  # The online service, deployed before the app that uses it is published. It keeps
-  # answering older versions of the app (see "Old versions of the app" in docs/cloud.md).
+  # The online service, deployed before the app that uses it is published. Every version of the app, Stable and
+  # Nightly, uses this one service, so it keeps answering older versions (see "Old versions of the app" in
+  # docs/cloud.md), and only master is deployed. The Worker is only deployed when cloud/ changed since the
+  # source that's live, so a release of the app alone doesn't restart Listen Along rooms. A deployed Worker that
+  # isn't on production's database, or doesn't answer, is rolled back, and the release isn't published.
   cloud:
     needs: windows
     if: needs.windows.outputs.publish == 'true'
@@ -128,6 +138,10 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CHANNEL: ${{ github.event.inputs.channel || 'nightly' }}
+      SOURCE: ${{ needs.windows.outputs.source }}
+      # Production's database (wrangler.jsonc): a deployed Worker bound to any other is rolled back.
+      PRODUCTION_DB: d0512d09-5cff-4dd4-8ec0-1b157cf27f20
+      HEALTH_URL: https://slopify-cloud.gavdie01.workers.dev/v1/health
     defaults:
       run:
         working-directory: cloud
@@ -146,10 +160,26 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Another branch's online service would go live for everyone, so a release from it isn't published.
+      - name: Only master goes to production
+        if: steps.creds.outputs.ok == 'true'
+        shell: bash
+        working-directory: .
+        env:
+          REF: ${{ github.ref }}
+          SCHEDULED: ${{ github.event_name == 'schedule' }}
+        run: |
+          if [[ "$SCHEDULED" != "true" && "$REF" != "refs/heads/master" ]]; then
+            echo "::error::Only a release from master deploys the online service, which every version of the app uses. Publish from master, or build with publish off."
+            exit 1
+          fi
+
+      # The commit the app was built from, with the history to compare it with what's live.
       - uses: actions/checkout@v7
         if: steps.creds.outputs.ok == 'true'
         with:
-          ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
+          ref: ${{ env.SOURCE }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         if: steps.creds.outputs.ok == 'true'
@@ -162,23 +192,84 @@ jobs:
         if: steps.creds.outputs.ok == 'true'
         run: npm ci
 
-      - name: Typecheck
+      # The live version (to roll back to), and the source it was deployed from (in its message, set below).
+      - name: Compare with what's live
+        id: live
         if: steps.creds.outputs.ok == 'true'
+        shell: bash
+        run: |
+          npx wrangler deployments list --json > "$RUNNER_TEMP/deployments.json"
+          read -r version from < <(node -e '
+            const last = require(process.argv[1]).at(-1);
+            const version = last?.versions?.length === 1 ? last.versions[0].version_id : "-";
+            const from = /release from ([0-9a-f]{40})\b/.exec(last?.annotations?.["workers/message"] ?? "")?.[1] ?? "-";
+            console.log(version, from);
+          ' "$RUNNER_TEMP/deployments.json")
+          [[ "$version" == "-" ]] && version=""
+          [[ "$from" == "-" ]] && from=""
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ -n "$from" ]] && git cat-file -e "$from^{commit}" 2>/dev/null && git diff --quiet "$from" HEAD -- . ':(exclude)share-site'; then
+            echo "The live Worker is from $from, and cloud/ hasn't changed since, so it isn't deployed again."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Live: ${version:-unknown version}, from ${from:-an unknown source}. Deploying."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Typecheck
+        if: steps.live.outputs.deploy == 'true'
         run: npm run typecheck
 
       - name: Migrate the database
-        if: steps.creds.outputs.ok == 'true'
+        if: steps.live.outputs.deploy == 'true'
         run: npm run db:migrate
 
       - name: Deploy the Worker
-        if: steps.creds.outputs.ok == 'true'
-        run: npx wrangler deploy --message "$CHANNEL release from ${GITHUB_SHA::7}"
+        id: deploy
+        if: steps.live.outputs.deploy == 'true'
+        run: npx wrangler deploy --message "$CHANNEL release from $SOURCE"
 
-      # From the repository's root: in cloud/, wrangler would take the Worker's config for the site's.
+      - name: Check the deployed Worker
+        if: steps.live.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          npx wrangler deployments list --json > "$RUNNER_TEMP/deployed.json"
+          version=$(node -p 'require(process.argv[1]).at(-1).versions[0].version_id' "$RUNNER_TEMP/deployed.json")
+          npx wrangler versions view "$version" --json > "$RUNNER_TEMP/version.json"
+          node -e '
+            const db = require(process.argv[1]).resources.bindings.find((b) => b.name === "DB");
+            if (db?.database_id !== process.env.PRODUCTION_DB) {
+              console.log(`::error::The deployed Worker is on database ${db?.database_id}, not production's.`);
+              process.exit(1);
+            }
+          ' "$RUNNER_TEMP/version.json"
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 10 "$HEALTH_URL" | grep -q '"ok":true'; then echo "It answers."; exit 0; fi
+            sleep 5
+          done
+          echo "::error::The deployed Worker doesn't answer $HEALTH_URL."
+          exit 1
+
+      - name: Roll the Worker back
+        if: failure() && steps.deploy.outcome == 'success' && steps.live.outputs.version != ''
+        env:
+          VERSION: ${{ steps.live.outputs.version }}
+        run: npx wrangler rollback "$VERSION" --message "The $CHANNEL release's checks failed" --yes
+
+      # From outside the repository, as it was first deployed: next to a wrangler.jsonc, wrangler would take the
+      # Worker's config for the site's.
       - name: Deploy the shared-playlist link site
         if: steps.creds.outputs.ok == 'true'
-        working-directory: .
-        run: npx --prefix cloud wrangler pages deploy cloud/share-site --project-name slopify-app --branch master --commit-hash "$GITHUB_SHA"
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          npx --prefix "$GITHUB_WORKSPACE/cloud" wrangler pages deploy "$GITHUB_WORKSPACE/cloud/share-site" --project-name slopify-app --branch master --commit-hash "$SOURCE"
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 10 https://slopify-app.pages.dev/p/aaaaaaaaaaaaaaaa | grep -q "slopify://p/"; then echo "It answers."; exit 0; fi
+            sleep 5
+          done
+          echo "::error::https://slopify-app.pages.dev doesn't show the playlist page."
+          exit 1
 
   publish:
     needs: [windows, cloud]
