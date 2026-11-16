@@ -239,22 +239,33 @@ jobs:
           node -e '
             const db = require(process.argv[1]).resources.bindings.find((b) => b.name === "DB");
             if (db?.database_id !== process.env.PRODUCTION_DB) {
-              console.log(`::error::The deployed Worker is on database ${db?.database_id}, not production's.`);
+              console.log(`::error::The deployed Worker is on database ${db?.database_id}, not the production database.`);
               process.exit(1);
             }
           ' "$RUNNER_TEMP/version.json"
           for attempt in 1 2 3 4 5 6; do
-            if curl -fsS --max-time 10 "$HEALTH_URL" | grep -q '"ok":true'; then echo "It answers."; exit 0; fi
+            # (The reply is read first: with pipefail, grep -q stopping early could fail curl, and the check.)
+            if reply=$(curl -fsS --max-time 10 "$HEALTH_URL") && grep -q '"ok":true' <<< "$reply"; then echo "It answers."; exit 0; fi
             sleep 5
           done
           echo "::error::The deployed Worker doesn't answer $HEALTH_URL."
           exit 1
 
+      # After a failed check, or a deploy that failed partway (wrangler may have switched versions before failing):
+      # whatever is live now, if it isn't the version from before, goes back to it.
       - name: Roll the Worker back
-        if: failure() && steps.deploy.outcome == 'success' && steps.live.outputs.version != ''
+        if: failure() && steps.deploy.outcome != 'skipped' && steps.live.outputs.version != ''
+        shell: bash
         env:
           VERSION: ${{ steps.live.outputs.version }}
-        run: npx wrangler rollback "$VERSION" --message "The $CHANNEL release's checks failed" --yes
+        run: |
+          npx wrangler deployments list --json > "$RUNNER_TEMP/now.json"
+          now=$(node -p 'const v = require(process.argv[1]).at(-1).versions; v.length === 1 ? v[0].version_id : "mixed"' "$RUNNER_TEMP/now.json")
+          if [[ "$now" == "$VERSION" ]]; then
+            echo "Production is still on $VERSION: nothing to roll back."
+          else
+            npx wrangler rollback "$VERSION" --message "The $CHANNEL release's checks failed" --yes
+          fi
 
       # From outside the repository, as it was first deployed: next to a wrangler.jsonc, wrangler would take the
       # Worker's config for the site's.
@@ -265,7 +276,7 @@ jobs:
         run: |
           npx --prefix "$GITHUB_WORKSPACE/cloud" wrangler pages deploy "$GITHUB_WORKSPACE/cloud/share-site" --project-name slopify-app --branch master --commit-hash "$SOURCE"
           for attempt in 1 2 3 4 5 6; do
-            if curl -fsS --max-time 10 https://slopify-app.pages.dev/p/aaaaaaaaaaaaaaaa | grep -q "slopify://p/"; then echo "It answers."; exit 0; fi
+            if page=$(curl -fsS --max-time 10 https://slopify-app.pages.dev/p/aaaaaaaaaaaaaaaa) && grep -q "slopify://p/" <<< "$page"; then echo "It answers."; exit 0; fi
             sleep 5
           done
           echo "::error::https://slopify-app.pages.dev doesn't show the playlist page."
