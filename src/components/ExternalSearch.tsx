@@ -324,6 +324,8 @@ export function ExternalSearch({ query }: { query: string }) {
   const ownedIds = useMemo(() => (playlist && r ? r.candidates.map((c) => playlistOwnedTrack(c, r.mediaKind, { tracks, artists })) : []), [playlist, r, tracks, artists]);
   const ownedAt = (index: number) => ownedIds[index];
   const tickedFirst = (i: number) => (ticks.mode === "default" ? !unsure(r!.candidates[i]) : ticks.mode === "all");
+  /** Whether a row is ticked now; a song still being found shows the tick it'll be saved with. */
+  const tickedNow = (i: number) => tickedFirst(i) !== ticks.except.includes(i);
   const selected = playlist && r ? downloadable(r).filter((i) => !ownedAt(i) && tickedFirst(i) !== ticks.except.includes(i)) : [];
   // Whether a song found later should be saved by a save that's following the matching: as ticked now.
   const wanted = useRef<(at: number) => boolean>(() => false);
@@ -352,14 +354,17 @@ export function ExternalSearch({ query }: { query: string }) {
    * How far a playlist's matching has got: songs found, found but worth a listen first (`check`: matched by artist
    * and length only, so left unticked), already saved, not found, and still being read or searched for.
    */
-  const stats = { total: 0, found: 0, check: 0, owned: 0, missing: 0, waiting: 0, local: 0, toCheck: [] as number[] };
+  const stats = { total: 0, found: 0, check: 0, owned: 0, missing: 0, waiting: 0, waitingTicked: 0, local: 0, toCheck: [] as number[] };
   if (playlist && r) {
     r.candidates.forEach((c, i) => {
       stats.total += 1;
       if (c.importMetadata?.localFile) stats.local += 1;
       if (ownedAt(i)) stats.owned += 1;
       else if (c.unmatched) stats.missing += 1;
-      else if (c.reading || c.pending) stats.waiting += 1;
+      else if (c.reading || c.pending) {
+        stats.waiting += 1;
+        if (tickedNow(i)) stats.waitingTicked += 1;
+      }
       else if (unsure(c)) {
         stats.check += 1;
         stats.toCheck.push(i);
@@ -371,7 +376,7 @@ export function ExternalSearch({ query }: { query: string }) {
    * still being read or matched (a save while matching takes them as they're found). Songs already in the library and
    * ones not found aren't counted.
    */
-  const toSave = selected.length + (matching ? stats.waiting : 0);
+  const toSave = selected.length + (matching ? stats.waitingTicked : 0);
   // The playlist a save of these songs goes into (named after the source), once it exists.
   const playlistTitle = r?.playlist?.title || r?.track?.title || "Imported Playlist";
   const outcomeEarly = transfer.saved?.source === query ? transfer.saved : null;
@@ -473,7 +478,7 @@ export function ExternalSearch({ query }: { query: string }) {
       featured={!playlist && index === results[0]?.index}
       busy={busy}
       owned={ownedAt(index)}
-      selected={selected.includes(index)}
+      selected={c.pending || c.reading ? tickedNow(index) : selected.includes(index)}
       onSelect={() => setTicks((t) => ({ ...t, except: t.except.includes(index) ? t.except.filter((n) => n !== index) : [...t.except, index] }))}
       onPlay={() => play(c, index)}
       onMenu={(e) => menu(e, c, index)}
@@ -560,8 +565,8 @@ export function ExternalSearch({ query }: { query: string }) {
                     {stats.waiting ? <li className="waiting"><b>{stats.waiting}</b> to go</li> : null}
                   </ul>
                   <div className="import-actions">
-                    <button type="button" className="text-btn" disabled={fixedSelection || selected.length === downloadable(r).filter((i) => !ownedAt(i)).length} onClick={() => setTicks({ mode: "all", except: [] })}>Select all</button>
-                    <button type="button" className="text-btn" disabled={fixedSelection || !selected.length} onClick={() => setTicks({ mode: "none", except: [] })}>Clear</button>
+                    <button type="button" className="text-btn" disabled={fixedSelection || (selected.length === downloadable(r).filter((i) => !ownedAt(i)).length && stats.waitingTicked === stats.waiting)} onClick={() => setTicks({ mode: "all", except: [] })}>Select all</button>
+                    <button type="button" className="text-btn" disabled={fixedSelection || (!selected.length && !stats.waitingTicked)} onClick={() => setTicks({ mode: "none", except: [] })}>Clear</button>
                     {savingHere ? (
                       <>
                         <button type="button" className="btn" disabled>
@@ -575,7 +580,7 @@ export function ExternalSearch({ query }: { query: string }) {
                       <button
                         type="button"
                         className="btn primary"
-                        disabled={busy || (!selected.length && !matching)}
+                        disabled={busy || !toSave}
                         onClick={save}
                         title={matching ? "Saves the songs found so far, then each one as it's found, even if you leave this page." : undefined}
                       >
@@ -834,7 +839,7 @@ function OnlineResult({ candidate: c, kind, playlist, owned, featured, busy, sel
       <article id={rowId} className={`playlist-row${active ? " current" : ""}${waiting ? " waiting" : ""}${c.unmatched ? " unmatched" : ""}`} onContextMenu={onMenu}>
         {/* The whole cell ticks the box: a bigger target than the box itself. */}
         <label className="pl-check">
-          {!owned && !c.unmatched ? <input type="checkbox" className="pl-tick" aria-label={`Select ${title}`} checked={selected} disabled={!isDownloadable(c)} onChange={onSelect} /> : null}
+          {!owned && !c.unmatched ? <input type="checkbox" className="pl-tick" aria-label={`Select ${title}`} checked={selected} disabled={!isDownloadable(c) && !waiting} onChange={onSelect} /> : null}
         </label>
         <button type="button" className="online-play" aria-label={label} disabled={!playable} onClick={onPlay}>
           {owned ? <TrackArt trackId={owned} className="search-cover" /> : <SearchCover url={cover} />}
