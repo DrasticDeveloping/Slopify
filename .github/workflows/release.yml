@@ -57,6 +57,10 @@ jobs:
     if: github.event_name != 'schedule' || vars.SLOPIFY_PUBLISH_NIGHTLIES == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      # (actions: to read the earlier release runs.)
+      actions: read
+      contents: read
     outputs:
       build: ${{ steps.decide.outputs.build }}
       publish: ${{ steps.decide.outputs.publish }}
@@ -94,6 +98,28 @@ jobs:
             done
             return 1
           }
+          now=$(date -u +%s)
+
+          # Back off after a failed release. A release that fails after its build (a cloud check, then a
+          # rollback; or publishing) would otherwise build and deploy again at every check, restarting Listen
+          # Along rooms each time. Only runs of master that got as far as building count, so a check that
+          # failed or skipped before building can't hold nightlies up. Manual runs always go ahead, so a fix
+          # can be shipped by hand straight away.
+          runs=$(retry gh run list --repo "$REPO" --workflow release.yml --branch master --status completed \
+            --limit 50 --json databaseId,conclusion,updatedAt --jq '.[] | "\(.databaseId) \(.conclusion) \(.updatedAt)"' < /dev/null)
+          while read -r id conclusion finished; do
+            [[ -n "$id" ]] || continue
+            ago=$(( now - $(date -u -d "$finished" +%s) ))
+            (( ago < MINIMUM_GAP_SECONDS )) || continue
+            built=$(retry gh api "repos/$REPO/actions/runs/$id/jobs" \
+              --jq '[.jobs[] | select(.name == "windows" and .conclusion != null and .conclusion != "skipped")] | length' < /dev/null)
+            (( built > 0 )) || continue
+            if [[ "$conclusion" == "failure" || "$conclusion" == "timed_out" ]]; then
+              echo "::warning::The last release, https://github.com/$REPO/actions/runs/$id, failed $((ago / 60)) minutes ago. Scheduled nightlies wait $(( (MINIMUM_GAP_SECONDS - ago) / 60 )) more minutes before trying again; run the workflow by hand to release a fix sooner."
+              decide false false
+            fi
+            break
+          done <<< "$runs"
 
           # The newest published nightly, by when it was published.
           last=$(retry gh release list --repo "$REPO" --limit 100 --exclude-drafts \
@@ -105,7 +131,7 @@ jobs:
           fi
           read -r tag published <<< "$last"
 
-          age=$(( $(date -u +%s) - $(date -u -d "$published" +%s) ))
+          age=$(( now - $(date -u -d "$published" +%s) ))
           if (( age < MINIMUM_GAP_SECONDS )); then
             echo "$tag was published $((age / 60)) minutes ago; the next nightly is due $(( (MINIMUM_GAP_SECONDS - age) / 60 )) minutes from now."
             decide false false
@@ -272,9 +298,8 @@ jobs:
           [[ "$from" == "-" ]] && from=""
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [[ -n "$from" && "$from" != "$(git rev-parse HEAD)" ]] && git cat-file -e "$from^{commit}" 2>/dev/null && git merge-base --is-ancestor HEAD "$from"; then
-            echo "The live Worker is from $from, which is newer than $SOURCE and includes it, so neither the Worker nor the link site goes back to this one."
+            echo "The live Worker is from $from, which is newer than $SOURCE and includes it, so it doesn't go back to this one."
             echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "newer=true" >> "$GITHUB_OUTPUT"
           elif [[ -n "$from" ]] && git cat-file -e "$from^{commit}" 2>/dev/null && git diff --quiet "$from" HEAD -- . ':(exclude)share-site'; then
             echo "The live Worker is from $from, and cloud/ hasn't changed since, so it isn't deployed again."
             echo "deploy=false" >> "$GITHUB_OUTPUT"
@@ -335,12 +360,23 @@ jobs:
           fi
 
       # From outside the repository, as it was first deployed: next to a wrangler.jsonc, wrangler would take the
-      # Worker's config for the site's.
+      # Worker's config for the site's. Like the Worker, a site that's live from a newer source (which includes
+      # this one) is left alone. The site has its own live source, since a release can change it without the Worker.
       - name: Deploy the shared-playlist link site
-        if: steps.creds.outputs.ok == 'true' && steps.live.outputs.newer != 'true'
+        if: steps.creds.outputs.ok == 'true'
         working-directory: ${{ runner.temp }}
         shell: bash
         run: |
+          live=$(curl -fsS --max-time 20 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/slopify-app" |
+            node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () =>
+              console.log(JSON.parse(s).result?.canonical_deployment?.deployment_trigger?.metadata?.commit_hash ?? ""))' 2> /dev/null) ||
+            { echo "::warning::Couldn't read which source the live link site is from, so it's deployed."; live=""; }
+          if [[ -n "$live" && "$live" != "$SOURCE" ]] && git -C "$GITHUB_WORKSPACE" cat-file -e "$live^{commit}" 2>/dev/null &&
+            git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$SOURCE" "$live"; then
+            echo "The live link site is from $live, which is newer than $SOURCE and includes it, so it doesn't go back to this one."
+            exit 0
+          fi
           npx --prefix "$GITHUB_WORKSPACE/cloud" wrangler pages deploy "$GITHUB_WORKSPACE/cloud/share-site" --project-name slopify-app --branch master --commit-hash "$SOURCE"
           for attempt in 1 2 3 4 5 6; do
             if page=$(curl -fsS --max-time 10 https://slopify-app.pages.dev/p/aaaaaaaaaaaaaaaa) && grep -q "slopify://p/" <<< "$page"; then echo "It answers."; exit 0; fi
