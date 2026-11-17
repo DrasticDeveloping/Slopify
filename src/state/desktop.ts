@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { engine } from "../audio/engine";
 import { setWindowShown } from "../lib/live";
-import { navigate, next as nextSong, previous, toast, togglePlay } from "./actions";
+import { navigate, next as nextSong, openModal, previous, toast, togglePlay } from "./actions";
 import { flushPersist, getState, subscribe as subscribeApp } from "./store";
 
 /*
@@ -81,6 +81,8 @@ interface Bridge {
 
 const bridge = (window as Window & { slopifyDesktop?: Bridge }).slopifyDesktop ?? null;
 export const isDesktopApp = Boolean(bridge);
+/** The desktop app on a Mac (its menu bar instead of a system tray, ⌘ instead of Ctrl). */
+export const isMacDesktop = bridge?.platform === "darwin";
 
 let state: DesktopUpdates | null = null;
 const listeners = new Set<() => void>();
@@ -124,13 +126,14 @@ export function setDesktopSetting(patch: Partial<Pick<DesktopSettings, "closeToT
   void bridge?.settings.set(patch).then(setSettings);
 }
 
-/** Tells the desktop app what's playing (for the tray and Discord), and takes its play/pause, next and previous. */
+/** Tells the desktop app what's playing (for the tray and Discord), and takes its play/pause, next and previous (and Settings… from the Mac menu bar). */
 function startNowPlaying(b: Bridge) {
   b.onWindowShown?.(setWindowShown);
   b.onCommand((name) => {
     if (name === "toggle") togglePlay();
     else if (name === "next") nextSong();
     else if (name === "previous") previous();
+    else if (name === "settings") openModal({ type: "settings" });
   });
   let sent = "";
   let sentAt = 0;

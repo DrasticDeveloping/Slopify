@@ -5,7 +5,7 @@ const { createDiscordPresence } = require("./discord.cjs");
 
 /*
  * What the desktop app does beyond its window, like Discord: closing the window
- * keeps Slopify playing in the system tray (until Quit), and what's playing can
+ * keeps Slopify playing in the system tray (the menu bar on a Mac) until Quit, and what's playing can
  * show on your Discord profile. Both are switched in Settings → General and kept
  * in userData/desktop-settings.json.
  */
@@ -51,7 +51,10 @@ function startBackground({ getWindow, show, log }) {
   function buildTray() {
     if (closed) return;
     if (!tray) {
-      const icon = nativeImage.createFromPath(path.join(app.getAppPath(), "dist/icons/icon-512.png")).resize({ width: 16, height: 16, quality: "best" });
+      // On a Mac, the menu bar icon: a template image (with its @2x), which macOS tints to match the menu bar.
+      const icon = process.platform === "darwin"
+        ? nativeImage.createFromPath(path.join(__dirname, "icons/trayTemplate.png"))
+        : nativeImage.createFromPath(path.join(app.getAppPath(), "dist/icons/icon-512.png")).resize({ width: 16, height: 16, quality: "best" });
       tray = new Tray(icon);
       tray.on("click", show);
     }

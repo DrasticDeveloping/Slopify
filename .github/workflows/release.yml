@@ -1,13 +1,15 @@
-# Builds Slopify for Windows, like T3 Code's nightly releases:
+# Builds Slopify for Windows and macOS, like T3 Code's nightly releases:
 # - a nightly build of master at most every 6 hours, whenever master has changed since the
 #   last one. The schedule checks twice an hour, because GitHub often drops or delays
 #   scheduled runs: after a missed check there's another chance 30 minutes later, instead of
-#   6 hours later. The check runs on a small Linux machine; the Windows build only starts
-#   when a nightly is due.
+#   6 hours later. The check runs on a small Linux machine; the Windows and Mac builds only
+#   start when a nightly is due.
 #   Scheduled builds only run once nightlies are switched on: set the repository
 #   variable SLOPIFY_PUBLISH_NIGHTLIES to "true" (see docs/windows-releases.md);
 # - on demand (Actions → Release → Run workflow), a nightly or stable build.
 #
+# Each release has both: the Windows EXEs and the Mac DMGs and update zips (Apple silicon
+# and Intel), built from one commit with one version. It isn't published unless both build.
 # Releases live in this public source repository. Publishing uses GITHUB_TOKEN, and
 # only the publish job can write to the repository. Manual builds default to
 # downloadable artifacts only.
@@ -64,6 +66,7 @@ jobs:
     outputs:
       build: ${{ steps.decide.outputs.build }}
       publish: ${{ steps.decide.outputs.publish }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Decide
         id: decide
@@ -114,7 +117,7 @@ jobs:
             ago=$(( now - $(date -u -d "$finished" +%s) ))
             (( ago < MINIMUM_GAP_SECONDS )) || continue
             built=$(retry gh api "repos/$REPO/actions/runs/$id/jobs" \
-              --jq '[.jobs[] | select(.name == "windows" and .conclusion != null and .conclusion != "skipped")] | length' < /dev/null)
+              --jq '[.jobs[] | select((.name == "windows" or .name == "macos") and .conclusion != null and .conclusion != "skipped")] | length' < /dev/null)
             (( built > 0 )) || continue
             if [[ "$conclusion" == "failure" || "$conclusion" == "timed_out" ]]; then
               echo "::warning::The last release, https://github.com/$REPO/actions/runs/$id, failed $((ago / 60)) minutes ago. Scheduled nightlies wait $(( (MINIMUM_GAP_SECONDS - ago) / 60 )) more minutes before trying again; run the workflow by hand to release a fix sooner."
@@ -151,6 +154,27 @@ jobs:
           echo "master ($SHA) has $newer commits that $tag doesn't, published $((age / 3600)) hours ago. Building a nightly."
           decide true true
 
+      # The version every platform's build gets (scripts/release-build.mjs, which needs nothing installed), so the
+      # Windows and Mac files of a release match.
+      - uses: actions/checkout@v7
+        if: steps.decide.outputs.build == 'true'
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            package.json
+            scripts/release-build.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Choose the version
+        id: version
+        if: steps.decide.outputs.build == 'true'
+        env:
+          CHANNEL: ${{ github.event.inputs.channel || 'nightly' }}
+        run: |
+          version=$(node scripts/release-build.mjs version --channel "$CHANNEL")
+          echo "Building $version."
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   windows:
     needs: gate
     if: needs.gate.outputs.build == 'true'
@@ -163,6 +187,7 @@ jobs:
       SLOPIFY_UPDATE_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CHANNEL: ${{ github.event.inputs.channel || 'nightly' }}
+      VERSION: ${{ needs.gate.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -184,7 +209,7 @@ jobs:
       - name: Build
         run: |
           npm run build
-          node scripts/package-windows.mjs --channel $env:CHANNEL
+          node scripts/package-windows.mjs --channel $env:CHANNEL --version $env:VERSION
 
       - name: Keep the build
         uses: actions/upload-artifact@v7
@@ -195,15 +220,60 @@ jobs:
             !release/*/*.blockmap
           retention-days: 14
 
-      # Everything the publish job needs: the build record and every file it lists.
+      # Everything the publish job needs: the build record (build-windows.json) and every file it lists.
       - name: Hand the build to the publish job
         if: needs.gate.outputs.publish == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: slopify-publish
+          name: slopify-publish-windows
+          path: release/${{ env.VERSION }}/
+          retention-days: 1
+
+  # The Mac app, for Apple silicon and Intel Macs, on GitHub's (Apple silicon) Mac machines. Signed ad hoc, as
+  # there's no Apple Developer ID; it updates itself all the same (desktop/mac-update.cjs).
+  macos:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      SLOPIFY_UPDATE_REPO: ${{ github.repository }}
+      CHANNEL: ${{ github.event.inputs.channel || 'nightly' }}
+      VERSION: ${{ needs.gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: |
+          npm run build
+          node scripts/package-mac.mjs --channel "$CHANNEL" --version "$VERSION"
+
+      - name: Keep the build
+        uses: actions/upload-artifact@v7
+        with:
+          name: slopify-mac-${{ env.CHANNEL }}
           path: |
-            release/last-build.json
             release/*/
+            !release/*/*.blockmap
+          retention-days: 14
+
+      # Everything the publish job needs: the build record (build-mac.json) and every file it lists.
+      - name: Hand the build to the publish job
+        if: needs.gate.outputs.publish == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: slopify-publish-mac
+          path: release/${{ env.VERSION }}/
           retention-days: 1
 
   # The online service, deployed before the app that uses it is published. Every version of the app, Stable and
@@ -212,7 +282,7 @@ jobs:
   # source that's live, so a release of the app alone doesn't restart Listen Along rooms. A deployed Worker that
   # isn't on production's database, or doesn't answer, is rolled back, and the release isn't published.
   cloud:
-    needs: [gate, windows]
+    needs: [gate, windows, macos]
     if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -388,7 +458,7 @@ jobs:
           exit 1
 
   publish:
-    needs: [gate, windows, cloud]
+    needs: [gate, windows, macos, cloud]
     if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -413,10 +483,12 @@ jobs:
       - name: Install
         run: npm ci --ignore-scripts
 
+      # The Windows and Mac builds, together in release/<version>/.
       - uses: actions/download-artifact@v7
         with:
-          name: slopify-publish
-          path: release
+          pattern: slopify-publish-*
+          merge-multiple: true
+          path: release/${{ needs.gate.outputs.version }}
 
       - name: Publish
-        run: node scripts/publish-release.mjs
+        run: node scripts/publish-release.mjs --version "${{ needs.gate.outputs.version }}" --require windows,mac

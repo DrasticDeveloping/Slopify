@@ -1,10 +1,11 @@
 import { useEffect, useId, useState, type CSSProperties, type ReactNode, useRef } from "react";
 import { isNativeApp, ThisDevice, thisDevice } from "../../lib/native";
 import { plural } from "../../lib/format";
+import { keyLabel } from "../../lib/keys";
 import { rovingKey } from "../../lib/roving";
 import { qualified, reasonWeight, type ReasonKind, type TasteState } from "../../recommend/taste";
 import { resetAppData, resetRecommendations, showHiddenRecommendations, updateSettings, ask } from "../../state/actions";
-import { checkForUpdates, installUpdate, isDesktopApp, setDesktopSetting, setUpdateChannel, useDesktopSettings, useDesktopUpdates, type DesktopUpdates, type UpdateChannel } from "../../state/desktop";
+import { checkForUpdates, installUpdate, isDesktopApp, isMacDesktop, setDesktopSetting, setUpdateChannel, useDesktopSettings, useDesktopUpdates, type DesktopUpdates, type UpdateChannel } from "../../state/desktop";
 import { checkUsername, cloudEnabled, manageAccount, saveProfile, signIn, signOut, useAccount } from "../../state/cloud";
 import { toast } from "../../state/actions";
 import { connect, disconnect } from "../../state/server";
@@ -235,7 +236,11 @@ function updateStatus(u: DesktopUpdates) {
     case "unsupported": return "This copy of Slopify doesn't check for updates. Builds made with an update source do.";
     case "checking": return "Checking for updates…";
     case "none": return "You're up to date.";
-    case "available": return u.portable ? `Slopify ${u.available} is out. This portable copy updates by downloading the new one.` : `Slopify ${u.available} is out.`;
+    case "available":
+      if (!u.portable) return `Slopify ${u.available} is out.`;
+      return isMacDesktop
+        ? `Slopify ${u.available} is out. This copy can't replace itself where it is, so download the new one (in Applications, Slopify updates itself).`
+        : `Slopify ${u.available} is out. This portable copy updates by downloading the new one.`;
     case "downloading": return `Downloading Slopify ${u.available ?? ""}… ${u.progress}%`;
     case "ready": return `Slopify ${u.available} is ready. Restart to finish updating, or it installs next time Slopify starts; your music and playlists stay.`;
     case "installing": return `Installing Slopify ${u.available}. Slopify will reopen in a moment.`;
@@ -276,7 +281,9 @@ function DesktopBehaviourRows() {
   if (!d) return null;
   return (
     <>
-      <Row icon="collapse" title="Keep playing when closed" desc="Closing the window keeps Slopify playing in the system tray, like Discord. Quit from the tray icon.">
+      <Row icon="collapse" title="Keep playing when closed" desc={isMacDesktop
+        ? "Closing the window keeps Slopify playing, with its icon in the menu bar. Quit from that icon or with ⌘Q."
+        : "Closing the window keeps Slopify playing in the system tray, like Discord. Quit from the tray icon."}>
         <Toggle checked={d.closeToTray} onChange={(v) => setDesktopSetting({ closeToTray: v })} label="Keep playing when closed" />
       </Row>
       <Row icon="discord" title="Show what you're playing on Discord" desc={d.discordAvailable ? "Your Discord profile shows the song as \"Listening to\" while the Discord app is open." : "This copy of Slopify wasn't built with a Discord application, so it can't show your status."}>
@@ -707,7 +714,7 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                 {shortcuts.map(([keys, label]) => (
                   <div key={label} className="shortcut">
                     <span>{label}</span>
-                    <span className="keys">{keys.split("  /  ").map((k) => <kbd key={k} className="kbd">{k}</kbd>)}</span>
+                    <span className="keys">{keyLabel(keys).split("  /  ").map((k) => <kbd key={k} className="kbd">{k}</kbd>)}</span>
                   </div>
                 ))}
               </div>
