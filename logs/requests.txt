@@ -1,0 +1,115 @@
+=============== master (006f28c), before this PR — http://127.0.0.1:8791 ===============
+
+> OPTIONS /v1/me   (browser preflight from a build that sends X-Slopify-Features)
+>   Origin: http://localhost:5197
+>   Access-Control-Request-Method: GET
+>   Access-Control-Request-Headers: authorization,x-slopify-client,x-slopify-features
+< 204
+<   Access-Control-Allow-Headers: Authorization, Content-Type, X-Slopify-Client
+
+> GET /v1/me   (a build from before X-Slopify-Client: no client number)
+< 426
+<   {"ok":false,"error":{"code":"UPDATE_REQUIRED","message":"This version of Slopify is too old for your account. Update Slopify to keep syncing."}}
+
+> GET /v1/me   (client 1)
+>   Authorization: Bearer <test token>
+>   X-Slopify-Client: 1
+< 426
+<   {"ok":false,"error":{"code":"UPDATE_REQUIRED","message":"This version of Slopify is too old for your account. Update Slopify to keep syncing."}}
+
+> GET /v1/me   (today's builds: client 2, no names)
+>   Authorization: Bearer <test token>
+>   X-Slopify-Client: 2
+< 200
+<   {"ok":true,"result":null}
+
+> GET /v1/me   (a build naming proof-probe)
+>   Authorization: Bearer <test token>
+>   X-Slopify-Client: 2
+>   X-Slopify-Features: proof-probe
+< 200
+<   {"ok":true,"result":null}
+
+=============== this PR (a9b7e97) — http://127.0.0.1:8792 ===============
+
+> OPTIONS /v1/me   (browser preflight from a build that sends X-Slopify-Features)
+>   Origin: http://localhost:5197
+>   Access-Control-Request-Method: GET
+>   Access-Control-Request-Headers: authorization,x-slopify-client,x-slopify-features
+< 204
+<   Access-Control-Allow-Headers: Authorization, Content-Type, X-Slopify-Client, X-Slopify-Features
+
+> GET /v1/me   (a build from before X-Slopify-Client: no client number)
+< 426
+<   {"ok":false,"error":{"code":"UPDATE_REQUIRED","message":"This version of Slopify is too old for your account. Update Slopify to keep syncing."}}
+
+> GET /v1/me   (client 1)
+>   Authorization: Bearer <test token>
+>   X-Slopify-Client: 1
+< 426
+<   {"ok":false,"error":{"code":"UPDATE_REQUIRED","message":"This version of Slopify is too old for your account. Update Slopify to keep syncing."}}
+
+> GET /v1/me   (today's builds: client 2, no names)
+>   Authorization: Bearer <test token>
+>   X-Slopify-Client: 2
+< 200
+<   {"ok":true,"result":null}
+
+> GET /v1/me   (a build naming proof-probe)
+>   Authorization: Bearer <test token>
+>   X-Slopify-Client: 2
+>   X-Slopify-Features: proof-probe
+< 200
+<   {"ok":true,"result":null}
+
+=============== this PR + temporary proof-probe check (harness only) — http://127.0.0.1:8793 ===============
+
+> GET /v1/health   (no names)
+< 200
+<   {"ok":true,"result":{"service":"slopify-cloud","behaviour":"old"}}
+
+> GET /v1/health   (naming proof-probe)
+>   X-Slopify-Features: proof-probe
+< 200
+<   {"ok":true,"result":{"service":"slopify-cloud","behaviour":"new"}}
+
+> GET /v1/health   (naming other things too)
+>   X-Slopify-Features: something-else, proof-probe
+< 200
+<   {"ok":true,"result":{"service":"slopify-cloud","behaviour":"new"}}
+
+> GET /v1/health   (a different name only)
+>   X-Slopify-Features: proof-probe-2
+< 200
+<   {"ok":true,"result":{"service":"slopify-cloud","behaviour":"old"}}
+
+> GET /v1/me   (old build, signed in)
+>   Authorization: Bearer <test token>
+>   X-Slopify-Client: 2
+< 200
+<   {"ok":true,"result":null}
+
+> GET /v1/me   (new build, signed in)
+>   Authorization: Bearer <test token>
+>   X-Slopify-Client: 2
+>   X-Slopify-Features: proof-probe
+< 200
+<   {"ok":true,"result":null}
+
+> GET /v1/me   (old client 1 naming proof-probe: the 426 gate still comes first)
+>   Authorization: Bearer <test token>
+>   X-Slopify-Client: 1
+>   X-Slopify-Features: proof-probe
+< 426
+<   {"ok":false,"error":{"code":"UPDATE_REQUIRED","message":"This version of Slopify is too old for your account. Update Slopify to keep syncing."}}
+
+> PUT /v1/me   (give the test account a display name, so it can start a room)
+
+> POST /v1/rooms   (start a Listen Along room) → room started
+
+> WebSocket /v1/rooms/<code>/socket?token=<test token>&client=2   (old build)
+< open
+
+> WebSocket /v1/rooms/<code>/socket?token=<test token>&client=2&features=proof-probe   (new build)
+< open
+

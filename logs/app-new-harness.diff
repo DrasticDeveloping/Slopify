@@ -1,0 +1,13 @@
+diff --git a/src/state/cloud.ts b/src/state/cloud.ts
+index f0cbe63..37c948b 100644
+--- a/src/state/cloud.ts
++++ b/src/state/cloud.ts
+@@ -307,7 +307,7 @@ export const CLOUD_CLIENT = 2;
+  * and Stable once it's released after the merge. A name is never reused, and goes only once
+  * the service has stopped checking it (docs/cloud.md, "Old versions of the app").
+  */
+-export const CLOUD_FEATURES: readonly string[] = [];
++export const CLOUD_FEATURES: readonly string[] = ["proof-probe"]; // PROOF HARNESS ONLY
+ const features = CLOUD_FEATURES.join(",");
+ /**
+  * Set once the service said this build is too old: no more calls this session

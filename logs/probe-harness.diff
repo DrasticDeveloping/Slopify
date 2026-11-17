@@ -1,0 +1,25 @@
+--- cloud/src/index.ts
++++ cloud/src/index.ts
+@@ -1,3 +1,4 @@
++import { callerHas } from "./features"; // PROOF HARNESS ONLY
+ import { AuthError, verifySession, type AuthEnv } from "./auth";
+ import { checkNotDeleted, deleteAccount, usernameAvailable, deleteSong, getProfile, getState, getStateUnless, HttpError, leftRooms, listSongs, noteLeftRoom, noteRoom, putSong, putState, saveProfile, tidy, type LibraryEnv } from "./library";
+ import { ListenAlongRoom } from "./room";
+@@ -192,7 +193,7 @@
+     if (parts[0] === "p" && parts.length === 2 && request.method === "GET") return sharePage(parts[1]);
+     if (parts[0] !== "v1") return fail(404, "Not found.");
+     try {
+-      if (parts[1] === "health" && parts.length === 2) return ok({ service: "slopify-cloud" });
++      if (parts[1] === "health" && parts.length === 2) return ok({ service: "slopify-cloud", behaviour: callerHas(request, "proof-probe") ? "new" : "old" }); // PROOF HARNESS ONLY
+       // Old builds are turned away first, before they cost a sign-in check or a rate-limit lookup.
+       const client = Number(request.headers.get("X-Slopify-Client") ?? url.searchParams.get("client") ?? 0);
+       if (!(client >= MIN_CLIENT)) {
+@@ -342,7 +343,7 @@
+     // `observability`). Only the route's shape and that one number are logged: never ids, the rest of the query
+     // (WebSocket tokens travel there) or who called.
+     const url = new URL(request.url);
+-    console.log(JSON.stringify({ method: request.method, route: routeOf(request.method, url.pathname), client: callerClient(request, url), status: response.status, ms: Date.now() - started }));
++    console.log(JSON.stringify({ method: request.method, route: routeOf(request.method, url.pathname), client: callerClient(request, url), behaviour: callerHas(request, "proof-probe") ? "new" : "old" /* PROOF HARNESS ONLY */, status: response.status, ms: Date.now() - started }));
+     return response;
+   },
+   scheduled: service.scheduled,

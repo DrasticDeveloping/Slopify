@@ -1,0 +1,17 @@
+This PR's Cloudflare preview Worker (https://pr-62-slopify-cloud.gavdie01.workers.dev), 2026-11-17T21:05Z. No sign-in used.
+
+$ curl -si -X OPTIONS /v1/me  -H "Origin: http://localhost:5173" -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization,x-slopify-client,x-slopify-features"
+HTTP/1.1 204 No Content
+Access-Control-Allow-Headers: Authorization, Content-Type, X-Slopify-Client, X-Slopify-Features
+
+$ curl -s /v1/health
+{"ok":true,"result":{"service":"slopify-cloud"}}  [HTTP 200]
+
+$ curl -s /v1/me   (no client number)
+{"ok":false,"error":{"code":"UPDATE_REQUIRED","message":"This version of Slopify is too old for your account. Update Slopify to keep syncing."}}  [HTTP 426]
+
+$ curl -s /v1/me -H "X-Slopify-Client: 1" -H "X-Slopify-Features: proof-probe"
+{"ok":false,"error":{"code":"UPDATE_REQUIRED","message":"This version of Slopify is too old for your account. Update Slopify to keep syncing."}}  [HTTP 426]
+
+$ curl -s /v1/me -H "X-Slopify-Client: 2" -H "X-Slopify-Features: proof-probe"   (no sign-in)
+{"ok":false,"error":{"message":"Sign in to use this."}}  [HTTP 401]

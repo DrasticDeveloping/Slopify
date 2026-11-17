@@ -1,0 +1,5 @@
+{"method":"OPTIONS","route":"/v1/me","client":null,"status":204,"ms":0}
+{"method":"GET","route":"/v1/me","client":null,"status":426,"ms":1}
+{"method":"GET","route":"/v1/me","client":1,"status":426,"ms":0}
+{"method":"GET","route":"/v1/me","client":2,"status":200,"ms":25}
+{"method":"GET","route":"/v1/me","client":2,"status":200,"ms":10}

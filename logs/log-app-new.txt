@@ -1,0 +1,8 @@
+{"method":"GET","route":"/v1/me","client":2,"behaviour":"new","status":200,"ms":170}
+{"method":"PUT","route":"/v1/me","client":2,"behaviour":"new","status":200,"ms":115}
+{"method":"GET","route":"/v1/social","client":2,"behaviour":"new","status":200,"ms":29}
+{"method":"GET","route":"/v1/sync","client":2,"behaviour":"new","status":200,"ms":9}
+{"method":"PUT","route":"/v1/library/state","client":2,"behaviour":"new","status":200,"ms":34}
+{"method":"PUT","route":"/v1/me","client":2,"behaviour":"new","status":200,"ms":176}
+{"method":"POST","route":"/v1/rooms","client":2,"behaviour":"new","status":200,"ms":98}
+{"method":"GET","route":"/v1/rooms/:id/socket","client":2,"behaviour":"new","status":101,"ms":50}

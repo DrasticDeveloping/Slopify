@@ -1,0 +1,87 @@
+=============== old build: this PR's app as it is: CLOUD_FEATURES = [] (sends what every build sends today) ===============
+app at http://127.0.0.1:5197, signed in with a test token, online service = local Worker http://127.0.0.1:8793 (this PR + proof-probe check)
+
+> GET /api/cloud/v1/me  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> PUT /api/cloud/v1/me  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> GET /api/cloud/v1/social  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> GET /api/cloud/v1/sync?since=0  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> PUT /api/cloud/v1/library/state  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> PUT /api/cloud/v1/me  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> POST /api/cloud/v1/rooms  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> WebSocket /v1/rooms/<code>/socket?token=<test token>&client=2  → 101
+
+roomSocketUrl() built by the app: ws://127.0.0.1:8793/v1/rooms/<code>/socket?token=<test token>&client=2
+socket: open
+
+Direct fetch from this page with X-Slopify-Features (the browser's CORS check):
+  master Worker (8791): TypeError: Failed to fetch
+  this PR's Worker (8792): HTTP 200
+
+=============== new build: this PR's app with CLOUD_FEATURES = ["proof-probe"] (harness only) ===============
+app at http://127.0.0.1:5199, signed in with a test token, online service = local Worker http://127.0.0.1:8793 (this PR + proof-probe check)
+
+> GET /api/cloud/v1/me  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Features: proof-probe
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> PUT /api/cloud/v1/me  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Features: proof-probe
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> GET /api/cloud/v1/social  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Features: proof-probe
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> GET /api/cloud/v1/sync?since=0  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Features: proof-probe
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> PUT /api/cloud/v1/library/state  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Features: proof-probe
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> PUT /api/cloud/v1/me  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Features: proof-probe
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> POST /api/cloud/v1/rooms  → 200
+>   X-Slopify-Client: 2
+>   Authorization: Bearer <test token>
+>   X-Slopify-Features: proof-probe
+>   X-Slopify-Cloud: http://127.0.0.1:8793
+> WebSocket /v1/rooms/<code>/socket?token=<test token>&client=2&features=proof-probe  → 101
+
+roomSocketUrl() built by the app: ws://127.0.0.1:8793/v1/rooms/<code>/socket?token=<test token>&client=2&features=proof-probe
+socket: open
+
+Direct fetch from this page with X-Slopify-Features (the browser's CORS check):
+  master Worker (8791): TypeError: Failed to fetch
+  this PR's Worker (8792): HTTP 200
+
