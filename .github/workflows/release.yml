@@ -1,5 +1,9 @@
 # Builds Slopify for Windows, like T3 Code's nightly releases:
-# - every 6 hours, a nightly build of master, skipped when nothing changed since the last one.
+# - a nightly build of master at most every 6 hours, whenever master has changed since the
+#   last one. The schedule checks twice an hour, because GitHub often drops or delays
+#   scheduled runs: after a missed check there's another chance 30 minutes later, instead of
+#   6 hours later. The check runs on a small Linux machine; the Windows build only starts
+#   when a nightly is due.
 #   Scheduled builds only run once nightlies are switched on: set the repository
 #   variable SLOPIFY_PUBLISH_NIGHTLIES to "true" (see docs/windows-releases.md);
 # - on demand (Actions → Release → Run workflow), a nightly or stable build.
@@ -16,8 +20,8 @@ name: Release
 
 on:
   schedule:
-    # 00:17, 06:17, 12:17 and 18:17 UTC. Off the hour, when GitHub delays scheduled runs the most.
-    - cron: "17 */6 * * *"
+    # Twice an hour, off the hour, when GitHub delays and drops scheduled runs the most.
+    - cron: "8,38 * * * *"
   workflow_dispatch:
     inputs:
       channel:
@@ -33,18 +37,99 @@ on:
 permissions:
   contents: read
 
+# Nightlies (scheduled and manual) run one at a time, so two can't build or publish at once;
+# each queued run checks again whether a nightly is due once it starts. Stable releases have
+# their own queue, so a nightly never holds one up. queue: max keeps every waiting run, where
+# GitHub otherwise keeps only the newest and cancels the rest, so a manual run can't be
+# dropped behind a scheduled one. Production deploys, from either queue, take turns in the
+# cloud job's own group.
 concurrency:
-  group: release
+  group: release-${{ (github.event_name == 'schedule' || inputs.channel == 'nightly') && 'nightly' || 'stable' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
-  windows:
+  # Decides whether this run builds and publishes. Every later job builds, deploys and
+  # publishes github.sha, the commit checked here: for a scheduled run, master as it was when
+  # the run started, so a merge during the build can't slip into a release it wasn't checked for.
+  gate:
+    name: Decide what to build
     if: github.event_name != 'schedule' || vars.SLOPIFY_PUBLISH_NIGHTLIES == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      publish: ${{ steps.decide.outputs.publish }}
+    steps:
+      - name: Decide
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          REQUESTED: ${{ github.event.inputs.publish == 'true' }}
+          # The shortest time between two scheduled nightlies.
+          MINIMUM_GAP_SECONDS: 21600
+        run: |
+          set -euo pipefail
+          decide() {
+            echo "build=$1" >> "$GITHUB_OUTPUT"
+            echo "publish=$2" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if [[ "$EVENT" != "schedule" ]]; then
+            decide true "$REQUESTED"
+          fi
+
+          # Only reads; a brief GitHub hiccup gets two more tries before this check gives up
+          # (and the next check, 30 minutes later, tries again).
+          retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              sleep $((attempt * 10))
+            done
+            return 1
+          }
+
+          # The newest published nightly, by when it was published.
+          last=$(retry gh release list --repo "$REPO" --limit 100 --exclude-drafts \
+            --json tagName,isPrerelease,publishedAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | contains("-nightly.")))] | sort_by(.publishedAt) | last // empty | "\(.tagName) \(.publishedAt)"')
+          if [[ -z "$last" ]]; then
+            echo "No nightly published yet. Building one of $SHA."
+            decide true true
+          fi
+          read -r tag published <<< "$last"
+
+          age=$(( $(date -u +%s) - $(date -u -d "$published" +%s) ))
+          if (( age < MINIMUM_GAP_SECONDS )); then
+            echo "$tag was published $((age / 60)) minutes ago; the next nightly is due $(( (MINIMUM_GAP_SECONDS - age) / 60 )) minutes from now."
+            decide false false
+          fi
+
+          # Commits master has that the last nightly doesn't. Also counts when that nightly was
+          # a manual build of another branch (master has then diverged from it), so a branch
+          # nightly can't hold up the next nightly of master.
+          newer=$(retry gh api "repos/$REPO/compare/$tag...$SHA" --jq .ahead_by)
+          if (( newer == 0 )); then
+            echo "master ($SHA) has no commits that $tag doesn't. Nothing new to build."
+            decide false false
+          fi
+
+          echo "master ($SHA) has $newer commits that $tag doesn't, published $((age / 3600)) hours ago. Building a nightly."
+          decide true true
+
+  windows:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     outputs:
-      publish: ${{ steps.plan.outputs.publish }}
-      # The commit built, so the online service is deployed from the same one.
+      # The commit built, so the online service is deployed, and the release published, from the same one.
       source: ${{ steps.source.outputs.sha }}
     env:
       SLOPIFY_UPDATE_REPO: ${{ github.repository }}
@@ -53,58 +138,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
+          ref: ${{ github.sha }}
 
       - name: Note the commit
         id: source
         shell: bash
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Skip if master hasn't changed since the last Nightly
-        id: changes
-        if: github.event_name == 'schedule'
-        shell: bash
-        run: |
-          source=$(git rev-parse HEAD)
-          last=$(gh release list --repo "$SLOPIFY_UPDATE_REPO" --limit 30 --json tagName,isPrerelease \
-            --jq '[.[] | select(.isPrerelease and (.tagName | contains("-nightly.")))][0].tagName // ""')
-          if [[ -n "$last" ]] && gh release view "$last" --repo "$SLOPIFY_UPDATE_REPO" --json body --jq .body | grep -Fxq "Source: $source"; then
-            echo "Nothing new since $last."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Decide whether to publish
-        id: plan
-        shell: bash
-        env:
-          SKIP: ${{ steps.changes.outputs.skip }}
-          SCHEDULED: ${{ github.event_name == 'schedule' }}
-          REQUESTED: ${{ github.event.inputs.publish == 'true' }}
-        run: |
-          if [[ "$SKIP" != "true" && ( "$SCHEDULED" == "true" || "$REQUESTED" == "true" ) ]]; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-node@v7
-        if: steps.changes.outputs.skip != 'true'
         with:
           node-version: 22
           cache: npm
 
       - name: Install
-        if: steps.changes.outputs.skip != 'true'
         run: npm ci
 
       - name: Build
-        if: steps.changes.outputs.skip != 'true'
         run: |
           npm run build
           node scripts/package-windows.mjs --channel $env:CHANNEL
 
       - name: Keep the build
-        if: steps.changes.outputs.skip != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: slopify-windows-${{ env.CHANNEL }}
@@ -115,7 +169,7 @@ jobs:
 
       # Everything the publish job needs: the build record and every file it lists.
       - name: Hand the build to the publish job
-        if: steps.plan.outputs.publish == 'true'
+        if: needs.gate.outputs.publish == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: slopify-publish
@@ -130,10 +184,17 @@ jobs:
   # source that's live, so a release of the app alone doesn't restart Listen Along rooms. A deployed Worker that
   # isn't on production's database, or doesn't answer, is rolled back, and the release isn't published.
   cloud:
-    needs: windows
-    if: needs.windows.outputs.publish == 'true'
+    needs: [gate, windows]
+    if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # One production deploy at a time, from nightly and stable runs alike: two at once could each roll back the
+    # other's Worker. queue: max keeps every waiting deploy (by default GitHub cancels all but the newest, which
+    # would fail its release).
+    concurrency:
+      group: cloud-production
+      cancel-in-progress: false
+      queue: max
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -193,6 +254,8 @@ jobs:
         run: npm ci
 
       # The live version (to roll back to), and the source it was deployed from (in its message, set below).
+      # Nightly and stable runs build side by side and then take turns here, so an older commit's run can reach
+      # this step after a newer one has deployed: then what's live already includes this source and is left alone.
       - name: Compare with what's live
         id: live
         if: steps.creds.outputs.ok == 'true'
@@ -208,7 +271,11 @@ jobs:
           [[ "$version" == "-" ]] && version=""
           [[ "$from" == "-" ]] && from=""
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [[ -n "$from" ]] && git cat-file -e "$from^{commit}" 2>/dev/null && git diff --quiet "$from" HEAD -- . ':(exclude)share-site'; then
+          if [[ -n "$from" && "$from" != "$(git rev-parse HEAD)" ]] && git cat-file -e "$from^{commit}" 2>/dev/null && git merge-base --is-ancestor HEAD "$from"; then
+            echo "The live Worker is from $from, which is newer than $SOURCE and includes it, so neither the Worker nor the link site goes back to this one."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "newer=true" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$from" ]] && git cat-file -e "$from^{commit}" 2>/dev/null && git diff --quiet "$from" HEAD -- . ':(exclude)share-site'; then
             echo "The live Worker is from $from, and cloud/ hasn't changed since, so it isn't deployed again."
             echo "deploy=false" >> "$GITHUB_OUTPUT"
           else
@@ -270,7 +337,7 @@ jobs:
       # From outside the repository, as it was first deployed: next to a wrangler.jsonc, wrangler would take the
       # Worker's config for the site's.
       - name: Deploy the shared-playlist link site
-        if: steps.creds.outputs.ok == 'true'
+        if: steps.creds.outputs.ok == 'true' && steps.live.outputs.newer != 'true'
         working-directory: ${{ runner.temp }}
         shell: bash
         run: |
@@ -283,8 +350,8 @@ jobs:
           exit 1
 
   publish:
-    needs: [windows, cloud]
-    if: needs.windows.outputs.publish == 'true'
+    needs: [gate, windows, cloud]
+    if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
