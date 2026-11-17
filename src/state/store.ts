@@ -1,4 +1,5 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import { PeekContext } from "../lib/peek";
+import { useContext, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { hashString, likedPlaylist, paletteFromSeed } from "../data/library";
 import type { HeaderInfo } from "../components/Hero";
 import type { Album, Artist, ClipRange, Playlist, Track } from "../data/types";
@@ -512,6 +513,12 @@ const PERSISTED_FROM = new Set<keyof AppState>([
 /** `saveLater`: playback's frequent bookkeeping, saved within a minute rather than at once (see schedulePersist). */
 export function setState(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>), { saveLater = false } = {}) {
   const next = typeof patch === "function" ? patch(state) : patch;
+  // Nothing actually changed: no new state, so no component re-runs its selector or re-renders.
+  let changed = false;
+  for (const key in next) {
+    if (next[key as keyof AppState] !== state[key as keyof AppState]) { changed = true; break; }
+  }
+  if (!changed) return;
   const prev = state;
   state = { ...state, ...next };
   // A save serializes the library twice (with its sync base), so menus, toasts and buffering don't cause one.
@@ -531,8 +538,12 @@ export function subscribe(listener: () => void) {
   };
 }
 
+const doNotSubscribe = () => () => {};
 export function useStore<T>(selector: (s: AppState) => T): T {
-  return useSyncExternalStore(subscribe, () => selector(state));
+  const behind = useContext(PeekContext);
+  const kept = useRef(state);
+  if (!behind) kept.current = state;
+  return useSyncExternalStore(behind ? doNotSubscribe : subscribe, () => selector(behind ? kept.current : state));
 }
 
 // Live audio and app state cannot be swapped in place: when this module (or anything it imports) changes, reload the page.

@@ -1,4 +1,5 @@
-import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { useContext, useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { PeekContext } from "../lib/peek";
 import { setState, type Route } from "../state/store";
 
 export interface HeaderInfo {
@@ -31,10 +32,12 @@ export function Hero({ art, kind, title, description, meta, tint, actions, play,
   const sentinel = useRef<HTMLDivElement>(null);
   const playRef = useRef(play);
   playRef.current = play;
+  // The copy of a page under a back swipe doesn't drive the top bar's header (the page on screen does).
+  const peek = useContext(PeekContext);
 
   useEffect(() => {
     const el = sentinel.current;
-    if (!el) return;
+    if (!el || peek) return;
     const root = el.closest(".main-scroll");
     const io = new IntersectionObserver(
       ([entry]) => setState({ header: { title, tint, visible: !entry.isIntersecting, play: playRef.current } }),
@@ -45,13 +48,14 @@ export function Hero({ art, kind, title, description, meta, tint, actions, play,
       io.disconnect();
       setState({ header: null });
     };
-  }, [title, tint]);
+  }, [title, tint, peek]);
 
   // Keep the top bar's play button pointing at the current song list.
   const ids = play?.ids;
   useEffect(() => {
+    if (peek) return;
     setState((s) => (s.header && s.header.title === title && s.header.play?.ids !== ids && playRef.current ? { header: { ...s.header, play: playRef.current } } : {}));
-  }, [ids, title]);
+  }, [ids, title, peek]);
 
   const size = title.length > 34 ? "xs" : title.length > 22 ? "sm" : title.length > 12 ? "md" : "lg";
 

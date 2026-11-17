@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { applyNavigationFocus } from "./lib/navigation-focus";
+import { memo, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent, type UIEvent } from "react";
+import { flushSync } from "react-dom";
 import { ContextMenu } from "./components/ContextMenu";
 import { FullPlayer } from "./components/FullPlayer";
 import { Icon } from "./components/Icon";
@@ -10,10 +12,10 @@ import { Sidebar, useLibraryRail } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { TopBar } from "./components/TopBar";
-import { activeCustomTheme, builtinThemes, onAccent } from "./state/themes";
+import { activeCustomTheme, builtinThemes, onAccent, readableBackground } from "./state/themes";
 import { backdropTint, useCoverPalette } from "./lib/art-colors";
 import {
-  answerConfirm, closeMenu, closeModal, cycleRepeat, findMusic, openMenu, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume, takeScrollRestore, trackScroll,
+  backPageEntry, currentPageEntry, navigationRevision, backScrollTop, goBackBySwipe, lastNavigation, mobileTabIsActive, selectMobileTab, answerConfirm, closeMenu, closeModal, cycleRepeat, goBack, goForward, importFiles, navigate, next, openModal, positionOf, previous, seek, setVolume, takeScrollRestore, trackScroll,
   toggleLike, toggleMute, togglePlay, cycleShuffle, wireEngine,
 } from "./state/actions";
 import { prepareMixes } from "./recommend/mixes";
@@ -40,8 +42,14 @@ import { ServerView } from "./views/Server";
 import { FriendsView, SharedView } from "./views/Friends";
 import { watchSocial } from "./state/social";
 import { StorageView } from "./views/Storage";
+import { dismissKeyboard, useEdgeBack, useMobileViewport, useNativeFeedback, useNoStickyHover } from "./lib/mobile";
+import { useMediaQuery } from "./lib/hooks";
+import { PeekContext } from "./lib/peek";
+import { PageStateContext, type PageEntry } from "./lib/page-state";
+import { pageTitle } from "./lib/page-title";
 
-function View({ route }: { route: Route }) {
+/** Memoized: App re-renders for its own reasons (the top bar crossing its scroll threshold), and a page needn't. */
+const View = memo(function View({ route }: { route: Route }) {
   switch (route.name) {
     case "home":
       return <HomeView />;
@@ -79,6 +87,67 @@ function View({ route }: { route: Route }) {
     case "shared":
       return <SharedView id={route.id} />;
   }
+});
+
+/**
+ * A page of the main area: the one showing, or (on phones) the one Back returns to, kept built underneath it as iOS
+ * keeps its navigation stack. A back swipe uncovers it as it was left, and going back makes it the page showing as it
+ * is: nothing is built again and no image loads again. Behind, nothing in it can be used, and it doesn't drive the top
+ * bar (PeekContext). One component for both, so React keeps the same page when it changes places.
+ */
+function Page({ route, entry, viewKey, behind, navigation, scrolled, scrollRef, top, onScroll, onTouchMove }: {
+  route: Route;
+  entry: PageEntry;
+  viewKey: string;
+  behind: boolean;
+  navigation: string | null;
+  scrolled: boolean;
+  scrollRef?: { current: HTMLDivElement | null };
+  /** Where a page built underneath was scrolled when it was left. */
+  top: number;
+  onScroll?: (e: UIEvent<HTMLDivElement>) => void;
+  onTouchMove?: (e: TouchEvent<HTMLDivElement>) => void;
+}) {
+  const own = useRef<HTMLDivElement>(null);
+  const bar = useRef<HTMLDivElement>(null);
+  const title = useStore((s) => pageTitle(route, s));
+  // Restored entries can be built underneath after another tab used the same route.
+  useLayoutEffect(() => {
+    const el = own.current;
+    const content = el?.lastElementChild;
+    if (!behind || !el || !content) return;
+    const apply = () => {
+      el.scrollTop = top;
+      // The top bar's place has the scrolled look when the page was left scrolled.
+      bar.current?.toggleAttribute("data-scrolled", el.scrollTop > 8);
+    };
+    apply();
+    const resized = new ResizeObserver(apply);
+    resized.observe(content);
+    return () => resized.disconnect();
+  }, [behind, top]);
+  useLayoutEffect(() => {
+    if (!scrollRef) return;
+    scrollRef.current = own.current;
+    return () => {
+      if (scrollRef.current === own.current) scrollRef.current = null;
+    };
+  }, [scrollRef]);
+  useLayoutEffect(() => {
+    if (!behind && own.current) return applyNavigationFocus(own.current);
+  }, [behind, viewKey]);
+  return (
+    <div ref={own} className={`main-scroll${behind ? " back-page" : ""}`} onScroll={onScroll} onTouchMove={onTouchMove} aria-hidden={behind || undefined} inert={behind}>
+      <PeekContext.Provider value={behind}>
+        {behind ? <div className="back-page-bar" ref={bar}><strong>{title}</strong></div> : <TopBar scrolled={scrolled} />}
+        <PageStateContext.Provider value={entry}>
+          <div className={`view-wrap${navigation ? ` nav-${navigation}` : ""}`} key={viewKey}>
+            <View route={route} />
+          </div>
+        </PageStateContext.Provider>
+      </PeekContext.Provider>
+    </div>
+  );
 }
 
 /** Route identity for transitions; typing in search shouldn't re-animate the page. */
@@ -113,7 +182,7 @@ function useTheme() {
       // The panels and third glow are mixed from these in CSS.
       root.style.setProperty("--accent", custom.accent);
       root.style.setProperty("--accent-2", custom.accent2);
-      root.style.setProperty("--bg", custom.background);
+      root.style.setProperty("--bg", readableBackground(custom.background));
       root.style.setProperty("--on-accent", onAccent(custom.accent));
     } else if (shown === "dynamic") {
       const p = palette ?? { a: "#a78bfa", b: "#f472b6", c: "#1e1b4b" };
@@ -123,7 +192,7 @@ function useTheme() {
     }
     const meta = document.querySelector('meta[name="theme-color"]');
     const dynamicBg = shown === "dynamic" ? backdropTint(palette?.c ?? "#1e1b4b", DYNAMIC_TINT) : undefined;
-    meta?.setAttribute("content", custom?.background ?? dynamicBg ?? builtinThemes.find((t) => t.id === shown)?.swatch[2] ?? "#08080c");
+    meta?.setAttribute("content", custom ? readableBackground(custom.background) : dynamicBg ?? builtinThemes.find((t) => t.id === shown)?.swatch[2] ?? "#08080c");
   }, [theme, custom, reduce, compact, palette]);
 }
 
@@ -301,17 +370,24 @@ function useInertBackground() {
   const modal = useStore((s) => Boolean(s.modal));
   const confirm = useStore((s) => Boolean(s.confirm));
   const panel = useStore((s) => s.panel);
+  const menu = useStore((s) => Boolean(s.menu));
+  const phoneLayout = useMediaQuery("(max-width: 680px)");
   useEffect(() => {
-    const blocked = full || modal || confirm;
+    const menuSheet = menu && phoneLayout;
+    const blocked = full || modal || confirm || menuSheet;
     document.querySelectorAll(".sidebar, .main, .right-panel, .playerbar, .mobile-nav").forEach((el) => el.toggleAttribute("inert", blocked));
-    document.querySelector(".full-player")?.toggleAttribute("inert", modal || confirm);
+    document.querySelector(".full-player")?.toggleAttribute("inert", modal || confirm || menuSheet);
     // A question asked from inside a dialog sits above it.
-    document.querySelector(".modal-layer:not(.confirm-layer)")?.toggleAttribute("inert", confirm);
-  }, [full, modal, confirm, panel]);
+    document.querySelector(".modal-layer:not(.confirm-layer)")?.toggleAttribute("inert", confirm || menuSheet);
+  }, [full, modal, confirm, panel, menu, phoneLayout]);
 }
 
 export function App() {
   const route = useStore((s) => s.route);
+  // A tab can replace an entry while keeping the exact same route object.
+  useStore(() => navigationRevision);
+  // Phones never show the sidebar, so it isn't built (it re-lists the whole library on every page change).
+  const phone = useMediaQuery("(max-width: 680px)");
   const panel = usePanel();
   const collapsed = useLibraryRail().rail;
   const scroller = useRef<HTMLDivElement>(null);
@@ -320,22 +396,50 @@ export function App() {
   useTheme();
   useShortcuts();
   useInertBackground();
+  useMobileViewport();
+  useNativeFeedback();
+  useNoStickyHover();
+  const mainRef = useRef<HTMLElement>(null);
+  useEdgeBack(mainRef, () => {
+    const s = getState();
+    return s.back.length > 0 && !s.modal && !s.menu && !s.fullPlayer && !s.panel;
+  }, () => flushSync(goBackBySwipe), () => navigationRevision);
 
   useEffect(() => {
     wireEngine();
     watchLibraryData();
     watchPlaybackSpot();
     watchSocial();
-    // Once the library is known: the song you were playing is put back, and today's mixes are made (then kept up to date each minute).
+    // Device songs can be restored offline; sync can later restore songs only available on the server.
     void startMusicServer(() => syncLibraryData().catch(() => undefined).then(() => {
       restorePlaybackSpot();
       return prepareMixes();
-    }));
+    }), restorePlaybackSpot);
     const mixTimer = window.setInterval(() => void prepareMixes(), 60_000);
     return () => clearInterval(mixTimer);
   }, []);
 
   const key = routeKey(route);
+  const entry = currentPageEntry();
+  const backEntry = backPageEntry();
+  // Query changes reset results' scroll while leaving the search input mounted.
+  const scrollKey = route.name === "search" ? route.q.trim().toLowerCase() : key;
+  // How this page arrived (pushed, popped, or a tab), fixed for the page so later renders don't restart its entrance.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const navigation = useMemo(() => lastNavigation, [key, entry]);
+
+  // Phones keep the page Back returns to built underneath (see Page). The page just left is already built, so it stays;
+  // one that isn't (after going back, the page before) is built at low priority, after the page change shows.
+  const backRoute = useStore((s) => (s.back.length ? s.back[s.back.length - 1] : null));
+  const laterBack = useDeferredValue(backRoute);
+  const built = useRef<{ showing: string; under: string | null }>({ showing: "", under: null });
+  const showingKey = phone ? String(entry.id) : "page";
+  const underKey = backRoute && backEntry ? String(backEntry.id) : null;
+  const underBuilt = underKey !== null && (underKey === built.current.showing || underKey === built.current.under);
+  const under = phone && backRoute && backEntry && underKey !== showingKey && (underBuilt || laterBack === backRoute) ? backRoute : null;
+  useEffect(() => {
+    built.current = { showing: showingKey, under: under ? underKey : null };
+  });
   useEffect(() => trackScroll(() => scroller.current?.scrollTop ?? 0), []);
   useEffect(() => {
     const el = scroller.current;
@@ -363,7 +467,7 @@ export function App() {
       cancelAnimationFrame(frame);
       inputs.forEach((type) => el.removeEventListener(type, stop));
     };
-  }, [key]);
+  }, [entry, scrollKey]);
 
   return (
     <div className={`app${panel ? " has-panel" : ""}${collapsed ? " side-collapsed" : ""}`}>
@@ -372,50 +476,39 @@ export function App() {
         <i />
         <i />
       </div>
-      <Sidebar />
-      <main className="main" aria-label="Content" tabIndex={-1}>
-        <div className="main-scroll" ref={scroller} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 8)}>
-          <TopBar scrolled={scrolled} />
-          <div className="view-wrap" key={key}>
-            <View route={route} />
-          </div>
-        </div>
+      {phone ? null : <Sidebar />}
+      <main className="main" aria-label="Content" tabIndex={-1} ref={mainRef}>
+        {/* One keyed list, so a page keeps its place in React (and stays built) as it moves between showing and under. */}
+        {[
+          under ? <Page key={underKey!} route={under} entry={backEntry!} viewKey={routeKey(under)} behind navigation={null} scrolled={false} top={backScrollTop()} /> : null,
+          <Page
+            key={showingKey}
+            route={route}
+            entry={entry}
+            viewKey={key}
+            behind={false}
+            navigation={navigation}
+            scrolled={scrolled}
+            scrollRef={scroller}
+            top={0}
+            onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 8)}
+            onTouchMove={(e) => {
+              if (!(e.target as Element).closest("input, textarea, [contenteditable=true]")) dismissKeyboard();
+            }}
+          />,
+        ]}
+        {/* The shade over the page underneath while a back swipe uncovers it. */}
+        {phone ? <div className="back-shade" aria-hidden="true" /> : null}
       </main>
       <RightPanel />
       <PlayerBar />
       <nav className="mobile-nav" aria-label="Primary">
         {mobileTabs.map((t) => (
-          <button key={t.label} type="button" className={route.name === t.route.name ? "on" : ""} aria-current={route.name === t.route.name ? "page" : undefined} onClick={() => navigate(t.route)}>
+          <button key={t.label} type="button" className={mobileTabIsActive(t.route.name) ? "on" : ""} aria-current={mobileTabIsActive(t.route.name) ? "page" : undefined} onClick={() => selectMobileTab(t.route)}>
             <Icon name={t.icon} size={22} />
             <span>{t.label}</span>
           </button>
         ))}
-        <button
-          type="button"
-          className={["storage", "server", "history", "friends", "shared"].includes(route.name) ? "on" : ""}
-          aria-haspopup="menu"
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            openMenu({
-              x: r.right - 240,
-              y: r.top - 8,
-              title: "More",
-              items: [
-                { label: "Song storage", icon: "storage", run: () => navigate({ name: "storage" }) },
-                { label: "Music server", icon: "server", run: () => navigate({ name: "server" }) },
-                { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
-                { separator: true },
-                { label: "Find music", icon: "search", run: () => findMusic() },
-                { label: "Friends", icon: "users", run: () => navigate({ name: "friends" }) },
-                { label: "Listen along", icon: "radio", run: () => openModal({ type: "listenAlong" }) },
-                { label: "Settings", icon: "settings", run: () => openModal({ type: "settings" }) },
-              ],
-            });
-          }}
-        >
-          <Icon name="more" size={22} />
-          <span>More</span>
-        </button>
       </nav>
       <FullPlayer />
       <ModalHost />

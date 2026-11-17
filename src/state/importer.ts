@@ -14,7 +14,7 @@ import { dropFromDevice } from "./device";
 import { keepPicture, prunePictures } from "./pictures";
 import { downloadTracks, keepLibraryOnDevice } from "./server";
 import { listSongs, pendingSongChanges, updateSong, type ServerSong } from "./song-api";
-import { getState, keepStreamsWith, savedPlaylistStreams, setState, subscribe as subscribeApp, type AppState, type ImportMissing } from "./store";
+import { getState, keepStreamsWith, savedPlaylistStreams, savingLater, setState, subscribe as subscribeApp, type AppState, type ImportMissing } from "./store";
 
 /*
  * Saving music from the web, ported from Resonance's local import flow: search
@@ -97,6 +97,8 @@ export interface Candidate {
   reading?: boolean;
   /** A match made by artist and length alone, being compared with Deezer's preview of the song right now. */
   listening?: boolean;
+  /** Audio verification is queued or running; this upload may still be rejected or replaced. */
+  verificationPending?: boolean;
 }
 
 export interface Resolution {
@@ -293,6 +295,7 @@ export function providerForSource(value: string): Provider | null {
 
 /** Spotify and SoundCloud links can only be imported as audio. */
 export function isAudioOnlySource(value: string) {
+  if (spotifySongLinks(value).length > 1) return true;
   try {
     const host = new URL(value.trim()).hostname.toLowerCase();
     return ["open.spotify.com", "www.open.spotify.com", "spotify.link", "www.spotify.link", "soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"].includes(host);
@@ -610,7 +613,8 @@ export function registerStreams(songs: StreamSong[]) {
     const duration = meta?.durationSeconds ?? song.candidate.durationSeconds ?? 0;
     tracks[id] = { id, title: credit.title, artistId: artist.id, ...featuring, albumId, duration, addedAt: Date.now(), kind: video ? "video" : "audio", storage: "files", size: 0, plays: 0, seed, stream: true };
   }
-  if (tracks !== s.tracks) setState({ tracks, artists, albums });
+  // Streamed songs aren't saved with the library, so adding them needn't save it right away (just after a page opens).
+  if (tracks !== s.tracks) savingLater(() => setState({ tracks, artists, albums }));
 }
 
 /** The platform a song was found on (YouTube, Spotify or SoundCloud), from its source link or the search that found it. */
@@ -1111,13 +1115,15 @@ function clipChange(clips: Record<string, ClipRange>, id: string, p: ServerSong)
  * Songs the server still holds old stored audio for are fetched onto this device,
  * after which the server deletes its copy.
  */
-export async function syncServerLibrary() {
+export async function syncServerLibrary(stillCurrent = () => true) {
   let list: ServerSong[];
   const asked = Date.now();
   try {
     list = await listSongs();
+    if (!stillCurrent()) return;
     set({ available: true });
   } catch {
+    if (!stillCurrent()) return;
     // Without the server (e.g. a static build) saved songs stay listed; ones kept on this device still play.
     set({ available: false });
     return;
@@ -1843,14 +1849,14 @@ async function confirmPlaylist(resolution: Resolution) {
     let existing = getState().playlists.find((p) => !p.system && p.name === playlistTitle);
     let playlistId: string;
     if (existing) {
-      // Songs it streams (made earlier without downloading) that are saved now, by this save or before: the saved
-      // copy takes the stream's place rather than joining beside it.
+      // Songs it streams (made earlier without downloading) that are saved or matched to another upload now:
+      // the incoming copy takes the stream's place rather than joining beside it.
       // Matched by the playlist song each stands for (listening may have settled on another upload since), or, for a
       // playlist whose songs are uploads themselves (a YouTube playlist), by the upload.
       const savedFor = new Map<string, string>();
       for (const { at, id } of sorted) {
         const c = source.candidates[at];
-        if (!c || getState().tracks[id]?.stream) continue;
+        if (!c) continue;
         const song = sourceSongKey(c.importMetadata);
         if (song) savedFor.set(song, id);
         if (canStream(c)) savedFor.set(streamTrackId(resultStreamKey(c, kind)), id);
@@ -1953,7 +1959,9 @@ async function confirmPlaylist(resolution: Resolution) {
         break;
       }
       if (index >= queue.length) break;
-      const candidate = queue[index].candidate;
+      // Matching can replace or reject an upload while an earlier row is saving.
+      const candidate = (follow?.latest() ?? resolution).candidates[queue[index].at];
+      if (!candidate || !isDownloadable(candidate) || candidate.verificationPending || candidate.listening) continue;
       const meta = candidate.importMetadata || candidate;
       batchProgress = { index, total: queue.length };
       set({ transferName: `${of(index)} • ${meta.title || candidate.title || `Playlist item ${index + 1}`}`, stage: "inspecting_source", progress: null, batch: { index, total: queue.length, following, ...streaming } });

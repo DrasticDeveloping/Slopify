@@ -1,9 +1,9 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, isPlayable, navigate,
+  addToPlaylist, addToQueue, closeMenu, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, hideRecommendation, isPlayable, navigate,
   isLiked, openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, shufflePlay, startRadio, switchToAfterCurrent, toast, toggleLike,
 } from "../state/actions";
-import { streamLink } from "../state/importer";
+import { streamLink, streamSong } from "../state/importer";
 import { shareOf } from "../state/social";
 import type { Track } from "../data/types";
 import type { ReasonKind } from "../recommend/taste";
@@ -71,6 +71,16 @@ function grouped(...groups: MenuItem[][]): MenuItem[] {
   return groups.filter((g) => g.length).flatMap((g, i) => (i ? [{ separator: true }, ...g] : g));
 }
 
+/** Touch rows play on tap; their artist and album pages remain reachable from the song menu. */
+function songPages(t: Track): MenuItem[] {
+  const s = getState();
+  const go = (route: Route) => { closeMenu(); navigate(route); };
+  return [
+    ...(s.artists[t.artistId] ? [{ label: "Go to artist", icon: "artist", run: () => go({ name: "artist", id: t.artistId }) } satisfies MenuItem] : []),
+    ...(s.albums[t.albumId] ? [{ label: "Go to album", icon: "album", run: () => go({ name: "album", id: t.albumId }) } satisfies MenuItem] : []),
+  ];
+}
+
 export interface StreamMenuOptions {
   /** Saves the song to the library its own way (a search result saves as found, video or audio); null when it can't be saved now. */
   save?: (() => void) | null;
@@ -78,25 +88,30 @@ export interface StreamMenuOptions {
   source?: string;
   /** A search result rather than a recommendation, so there's nothing to be "not interested" in. */
   searchResult?: boolean;
+  /** Opened from a recommendation, where "Not interested" is the point, so it's offered first rather than under More. */
+  recommended?: boolean;
 }
 
 /** A streamed song: it plays like any song, and can be added to the library (playlists add it there first). */
 function streamMenu(t: Track, opts: StreamMenuOptions = {}): MenuItem[] {
+  const notInterested: MenuItem[] = opts.searchResult ? [] : [{ label: "Not interested", icon: "close", run: () => dismissStream(t.id) }];
   return grouped(
     [
       { label: "Play next", icon: "queue", quick: true, run: () => playNext([t.id]) },
       { label: "Add to queue", short: "Queue", icon: "list", quick: true, run: () => addToQueue([t.id]) },
       likeItem(t),
     ],
+    opts.recommended ? notInterested : [],
     [
       { label: "Add to library", icon: "download", disabled: opts.save === null, run: opts.save ?? (() => saveStream(t.id)) },
       { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu([t.id]) },
     ],
     [{ label: "Start song radio", icon: "radio", run: () => startRadio(t.id) }],
+    songPages(t),
     linkItems(songLink(t, opts.source)),
     [moreItem([
       slipItem([t.id]),
-      ...(opts.searchResult ? [] : [{ label: "Not interested", icon: "close", run: () => dismissStream(t.id) }]),
+      ...(opts.recommended ? [] : notInterested),
     ])],
   );
 }
@@ -104,7 +119,7 @@ function streamMenu(t: Track, opts: StreamMenuOptions = {}): MenuItem[] {
 /** In a mix, a song can be hidden from that mix alone. New songs are hidden by song key, library songs by id. */
 function mixItems(track: Track, route: Route | undefined): MenuItem[] {
   if (route?.name !== "mix") return [];
-  const key = track.stream ? trackKey(getState(), track.id) : track.id;
+  const key = track.stream ? streamSong(track.id)?.key ?? trackKey(getState(), track.id) : track.id;
   return [{ label: "Hide from this mix", icon: "close", run: () => hideFromMix(route.id, key) }];
 }
 
@@ -127,6 +142,7 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
   // A streamed song in a playlist (one made without downloading) can still be taken out of it.
   if (single?.stream) return grouped(streamMenu(single, opts.stream), mixHide, removeFromPlaylistItem);
   return grouped(
+    single && opts.why ? [{ label: "Not interested", icon: "close", run: () => hideRecommendation(single.id, opts.why) }] : [],
     [
       { label: "Play next", icon: "queue", quick: true, disabled: !anyPlayable, run: () => playNext(ids) },
       { label: "Add to queue", short: "Queue", icon: "list", quick: true, disabled: !anyPlayable, run: () => addToQueue(ids) },
@@ -141,6 +157,7 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
       ...mixHide,
     ],
     single ? linkItems(songLink(single)) : [],
+    single ? songPages(single) : [],
     [
       ...(single ? [{ label: "Edit clip…", icon: "scissors", disabled: !singlePlayable, run: () => openModal({ type: "clipEditor", trackId: single.id }) }] : []),
       ...(serverOnly.length ? [{ label: serverOnly.length === 1 ? "Download to device" : `Download ${serverOnly.length} songs`, icon: "download", run: () => downloadTracks(serverOnly.map((t) => t.id)) }] : []),

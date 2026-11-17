@@ -1,17 +1,21 @@
-import { memo, useMemo, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import type { Track } from "../data/types";
+import { memo, startTransition, useCallback, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { usePageState } from "../lib/page-state";
+import type { Album, Track } from "../data/types";
 import { formatAdded, formatTime } from "../lib/format";
 import { announce } from "../lib/announce";
 import { openTrackMenu } from "../lib/menus";
-import { isPlayable, moveInPlaylist, navigate, playList, toggleLike, togglePlay } from "../state/actions";
+import { hasScrollRestore, moveInPlaylist, navigate, playList, toggleLike, togglePlay } from "../state/actions";
 import { PROVIDERS, trackPlatform } from "../state/importer";
-import { getState, setState, snoozedUntil, useStore, type AppState, type Route } from "../state/store";
+import { getState, setState, useStore, type AppState, type Route } from "../state/store";
 import { snoozeEnds } from "../state/snooze";
 import { ArtistLinks } from "./ArtistLinks";
-import { TrackArt } from "./Artwork";
+import { Art } from "./Artwork";
 import { Bars, Icon } from "./Icon";
+import { useLongPress } from "../lib/mobile";
 
 export const DRAG_MIME = "application/x-resonance-tracks";
+/** Rows built with the page; the rest follow straight after (see TrackList). */
+const FIRST_ROWS = 24;
 
 type SortKey = "title" | "album" | "added" | "duration";
 
@@ -32,7 +36,20 @@ interface TrackListProps {
 export function TrackList({ ids, context, playlistId, showAlbum = true, showAdded = true, sortable = true, reorderable = true, showPlays, empty }: TrackListProps) {
   const tracks = useStore((s) => s.tracks);
   const albums = useStore((s) => s.albums);
-  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
+  const artists = useStore((s) => s.artists);
+  const currentId = useStore((s) => s.currentId);
+  const isPlaying = useStore((s) => s.isPlaying);
+  const selection = useStore((s) => s.selection);
+  const selectedIds = useMemo(() => new Set(selection), [selection]);
+  const playlists = useStore((s) => s.playlists);
+  const likes = likedIds(playlists);
+  const downloads = useStore((s) => s.server.downloads);
+  const connected = useStore((s) => s.server.status === "connected");
+  const clips = useStore((s) => s.clips);
+  const snoozes = useStore((s) => s.settings.snoozed);
+  // Search has both a fixed relevance preview and a sortable full list in the same entry.
+  const [savedSort, setSort] = usePageState<{ key: SortKey; dir: 1 | -1 } | null>(`track-sort:${JSON.stringify(context.route?.name ?? context.label)}`, null);
+  const sort = sortable ? savedSort : null;
   const [dropAt, setDropAt] = useState<number | null>(null);
   const editable = Boolean(playlistId && !sort && reorderable);
 
@@ -55,6 +72,17 @@ export function TrackList({ ids, context, playlistId, showAlbum = true, showAdde
 
   const ctx = useMemo(() => ({ ...context, ids: sorted }), [context, sorted]);
 
+  // A long list is built in two goes: the first screenful with the page, the rest just after as a low-priority
+  // update React spreads across frames, so opening the page (and its slide in) isn't held up building every row.
+  // A page going back to where it was scrolled needs every row at once, or it would land short and then jump.
+  const [shown, setShown] = useState(() => (hasScrollRestore() ? Infinity : FIRST_ROWS));
+  useEffect(() => {
+    if (shown >= sorted.length) return;
+    const frame = requestAnimationFrame(() => startTransition(() => setShown(Infinity)));
+    return () => cancelAnimationFrame(frame);
+  }, [shown, sorted.length]);
+  const rows = shown >= sorted.length ? sorted : sorted.slice(0, shown);
+
   const cycleSort = (key: SortKey) => {
     if (!sortable) return;
     setSort((cur) => (!cur || cur.key !== key ? { key, dir: key === "added" ? -1 : 1 } : cur.dir === (key === "added" ? -1 : 1) ? { key, dir: cur.dir === 1 ? -1 : 1 } : null));
@@ -69,8 +97,6 @@ export function TrackList({ ids, context, playlistId, showAlbum = true, showAdde
     </span>
   );
 
-  if (!ids.length) return <>{empty}</>;
-
   const onDrop = (e: DragEvent, index: number) => {
     setDropAt(null);
     // Files dropped from the desktop carry no index (getData gives "", which Number reads as 0).
@@ -81,6 +107,11 @@ export function TrackList({ ids, context, playlistId, showAlbum = true, showAdde
     // Resolve by id so the move is correct against the full playlist.
     moveInPlaylist(playlistId, sorted[from], sorted[index] ?? null);
   };
+
+  const overRow = useCallback((index: number, after: boolean) => editable && setDropAt(after ? index + 1 : index), [editable]);
+  const dropRow = useCallback((e: DragEvent, index: number, after: boolean) => onDrop(e, after ? index + 1 : index), [editable, playlistId, sorted]);
+
+  if (!ids.length) return <>{empty}</>;
 
   return (
     <div className={`tracklist${showAlbum ? "" : " no-album"}${showAdded ? "" : " no-added"}`} role="table" aria-label={`${context.label} songs`}>
@@ -94,11 +125,22 @@ export function TrackList({ ids, context, playlistId, showAlbum = true, showAdde
         <span className="th more" role="columnheader"><span className="sr-only">More</span></span>
       </div>
       <div className="tl-body" role="rowgroup" onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setDropAt(null)}>
-        {sorted.map((id, i) => (
+        {rows.map((id, i) => (
           <Row
             key={id}
             id={id}
             index={i}
+            track={tracks[id]}
+            album={albums[tracks[id]?.albumId]}
+            artists={artists}
+            current={currentId === id}
+            playing={currentId === id && isPlaying}
+            selected={selectedIds.has(id)}
+            liked={likes.has(id)}
+            downloading={downloads[id]}
+            playable={Boolean(tracks[id] && (tracks[id].storage !== "server" || connected))}
+            hasClip={Boolean(clips[id])}
+            snoozed={snoozes?.[id] && snoozes[id] > Date.now() ? snoozes[id] : 0}
             ctxIds={sorted}
             ctx={ctx}
             playlistId={playlistId}
@@ -108,8 +150,8 @@ export function TrackList({ ids, context, playlistId, showAlbum = true, showAdde
             draggableReorder={editable}
             dropBefore={dropAt === i}
             dropAfter={dropAt === sorted.length && i === sorted.length - 1}
-            onDragOverRow={(after) => editable && setDropAt(after ? i + 1 : i)}
-            onDropRow={(e, after) => onDrop(e, after ? i + 1 : i)}
+            onDragOverRow={overRow}
+            onDropRow={dropRow}
           />
         ))}
       </div>
@@ -129,8 +171,19 @@ interface RowProps {
   draggableReorder: boolean;
   dropBefore: boolean;
   dropAfter: boolean;
-  onDragOverRow: (after: boolean) => void;
-  onDropRow: (e: DragEvent, after: boolean) => void;
+  track: Track | undefined;
+  album: Album | undefined;
+  artists: AppState["artists"];
+  current: boolean;
+  playing: boolean;
+  selected: boolean;
+  liked: boolean;
+  downloading: number | undefined;
+  playable: boolean;
+  hasClip: boolean;
+  snoozed: number;
+  onDragOverRow: (index: number, after: boolean) => void;
+  onDropRow: (e: DragEvent, index: number, after: boolean) => void;
 }
 
 const PLATFORM_NAMES = Object.fromEntries(PROVIDERS) as Record<(typeof PROVIDERS)[number][0], string>;
@@ -157,20 +210,14 @@ function likedIds(playlists: AppState["playlists"]) {
 /** Rows past this one appear without sliding in: they start off screen, and every row animating at once made a long list slow to open. */
 const ENTERING = 18;
 
-const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, showAdded, showPlays, draggableReorder, dropBefore, dropAfter, onDragOverRow, onDropRow }: RowProps) {
-  const track = useStore((s) => s.tracks[id]);
-  const album = useStore((s) => (track ? s.albums[track.albumId] : undefined));
-  const current = useStore((s) => s.currentId === id);
-  const playing = useStore((s) => s.currentId === id && s.isPlaying);
-  const selected = useStore((s) => s.selection.includes(id));
-  const liked = useStore((s) => likedIds(s.playlists).has(id));
-  const downloading = useStore((s) => s.server.downloads[id]);
-  const playable = useStore((s) => isPlayable(s.tracks[id], s));
-  const hasClip = useStore((s) => Boolean(s.clips[id]));
-  const snoozed = useStore((s) => snoozedUntil(s, id));
+const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, showAdded, showPlays, draggableReorder, dropBefore, dropAfter, onDragOverRow, onDropRow, track, album, artists, current, playing, selected, liked, downloading, playable, hasClip, snoozed }: RowProps) {
   // Settled once its entrance is over (or if it starts too far down for one). Sorting moves rows in the page,
   // and a moved element would otherwise play its entrance again.
   const [settled, setSettled] = useState(index > ENTERING);
+  const longPress = useLongPress((element) => {
+    setState({ selection: [id] });
+    openTrackMenu(element, [id], { playlistId, context: ctx });
+  });
   if (!track) return null;
 
   const play = () => {
@@ -271,12 +318,12 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
     if (!draggableReorder || !e.dataTransfer.types.includes("text/x-resonance-index")) return;
     e.preventDefault();
     const r = e.currentTarget.getBoundingClientRect();
-    onDragOverRow(e.clientY > r.top + r.height / 2);
+    onDragOverRow(index, e.clientY > r.top + r.height / 2);
   };
 
   const drop = (e: DragEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
-    onDropRow(e, e.clientY > r.top + r.height / 2);
+    onDropRow(e, index, e.clientY > r.top + r.height / 2);
   };
 
   return (
@@ -288,10 +335,11 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
       aria-keyshortcuts={draggableReorder ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
       aria-selected={selected}
       onClick={select}
-      onDoubleClick={play}
+      {...longPress}
+      onDoubleClick={() => { if (!touchOnly()) play(); }}
       onContextMenu={menu}
       onKeyDown={key}
-      draggable
+      draggable={!touchOnly()}
       onDragStart={dragStart}
       onDragOver={dragOver}
       onDrop={drop}
@@ -307,7 +355,7 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
         </button>
       </span>
       <span className="td title" role="cell">
-        <TrackArt trackId={id} className="row-art" />
+        {album ? <Art palette={album.palette} glyph={album.glyph} image={album.artworkUrl} className="row-art" /> : <div className="art row-art" />}
         <span className="title-text">
           <span className="t-name">
             {track.title}
@@ -319,7 +367,7 @@ const Row = memo(function Row({ id, index, ctxIds, ctx, playlistId, showAlbum, s
           <span className="t-sub">
             {track.storage === "downloads" ? <Icon name="downloaded" size={13} className="ok" title="Downloaded" /> : null}
             {track.storage === "server" ? (downloading !== undefined ? <span className="ring" style={{ "--p": downloading } as CSSProperties} title="Downloading" /> : <Icon name="globe" size={13} title="Streams from server" />) : null}
-            <span className="t-artists"><ArtistLinks track={track} inRow /></span>
+            <span className="t-artists"><ArtistLinks track={track} artists={artists} inRow /></span>
           </span>
         </span>
       </span>

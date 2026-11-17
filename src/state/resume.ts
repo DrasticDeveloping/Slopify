@@ -1,5 +1,5 @@
 import { cueSong, positionOf, toast } from "./actions";
-import { getState, subscribe, type Route } from "./store";
+import { flushPersist, getState, subscribe, type Route } from "./store";
 
 /*
  * Picking up where you left off: the song you were playing, how far in, and the
@@ -20,12 +20,16 @@ export interface PlaybackSpot {
   ids: string[];
   /** The list plays from its top after this song (a playlist switched to while it played). */
   fromTop?: boolean;
+  /** The actual play order and manually queued songs, when noted by a newer app. */
+  order?: string[];
+  index?: number;
+  upNext?: string[];
 }
 
 const STORAGE_KEY = "slopify.playback-spot.v1";
 const DEVICE_KEY = "slopify.device.v1";
 /** While playing, the position is noted this often. */
-const NOTE_EVERY = 60_000;
+const NOTE_EVERY = 10_000;
 /** Enough of the list for a queue to carry on, without growing the synced data much. */
 const MAX_IDS = 200;
 
@@ -46,7 +50,11 @@ function deviceId() {
 export const device = deviceId();
 
 const isSpot = (x: PlaybackSpot | null | undefined): x is PlaybackSpot =>
-  Boolean(x) && typeof x!.id === "string" && Number.isFinite(x!.position) && Number.isFinite(x!.at) && typeof x!.device === "string" && Array.isArray(x!.ids);
+  Boolean(x) && typeof x!.id === "string" && Number.isFinite(x!.position) && Number.isFinite(x!.at) && typeof x!.device === "string"
+  && Array.isArray(x!.ids) && x!.ids.every((id) => typeof id === "string")
+  && (x!.order === undefined || (Array.isArray(x!.order) && x!.order.every((id) => typeof id === "string")))
+  && (x!.upNext === undefined || (Array.isArray(x!.upNext) && x!.upNext.every((id) => typeof id === "string")))
+  && (x!.index === undefined || (Number.isInteger(x!.index) && x!.index >= -1));
 
 function load(): PlaybackSpot | null {
   try {
@@ -78,11 +86,29 @@ export const onPlaybackSpot = (listener: () => void) => {
 
 /** Whether the song showing was put there from a spot, and hasn't been played here since. */
 let following = false;
+let followedState: string | null = null;
+
+function spotState() {
+  const s = getState();
+  return JSON.stringify([s.currentId, s.currentId ? positionOf(s.currentId) : 0, s.order, s.index, s.upNext, s.context]);
+}
 
 function note() {
   const s = getState();
   const id = s.currentId;
-  if (!id || !synced(id) || following || s.listen.mode === "guest") return;
+  if (!id || !synced(id) || s.listen.mode === "guest") return;
+  if (following) {
+    // An untouched restore should keep its timestamp/device. Queue edits and
+    // scrubbing are new local intent even before the listener presses Play.
+    if (followedState === null || followedState === spotState()) return;
+    following = false;
+  }
+  const order = s.order.filter(synced);
+  const index = s.order.slice(0, s.index + 1).filter(synced).length - 1;
+  // Keep the current entry and enough of what follows, even in a long playlist.
+  const from = Math.max(0, index - 20);
+  const savedOrder = order.slice(from, from + MAX_IDS);
+  const savedIds = new Set([id, ...savedOrder]);
   publish({
     id,
     position: Math.round(positionOf(id)),
@@ -90,17 +116,26 @@ function note() {
     device,
     label: s.context?.label,
     route: s.context?.route,
-    ids: (s.context?.ids ?? [id]).filter(synced).slice(0, MAX_IDS),
+    ids: (s.context?.ids ?? [id]).filter((entry) => synced(entry) && savedIds.has(entry)).slice(0, MAX_IDS),
     ...(s.index < 0 ? { fromTop: true } : {}),
+    order: savedOrder,
+    index: index - from,
+    upNext: s.upNext.filter(synced).slice(0, MAX_IDS),
   });
 }
 
 function cue(next: PlaybackSpot) {
   // Set first: cueing changes the song showing, which mustn't be noted as played here.
   const was = following;
+  const previousState = followedState;
   following = true;
-  if (cueSong(next.id, next.position, { label: next.label ?? "Library", route: next.route, ids: next.ids, fromTop: next.fromTop === true })) return true;
+  followedState = null;
+  if (cueSong(next.id, next.position, { label: next.label ?? "Library", route: next.route, ids: next.ids, fromTop: next.fromTop === true, order: next.order, index: next.index, upNext: next.upNext })) {
+    followedState = spotState();
+    return true;
+  }
   following = was;
+  followedState = previousState;
   return false;
 }
 
@@ -148,10 +183,17 @@ export function watchPlaybackSpot() {
     const prev = last;
     last = s;
     if (s.isPlaying && !prev.isPlaying) following = false;
-    if (s.currentId !== prev.currentId || s.isPlaying !== prev.isPlaying) note();
+    if (s.currentId !== prev.currentId || s.isPlaying !== prev.isPlaying || s.order !== prev.order || s.index !== prev.index || s.upNext !== prev.upNext || s.context !== prev.context) note();
   });
   window.setInterval(() => {
     if (getState().isPlaying) note();
   }, NOTE_EVERY);
-  window.addEventListener("pagehide", note);
+  const saveBeforeLeaving = () => {
+    note();
+    flushPersist();
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") saveBeforeLeaving();
+  });
+  window.addEventListener("pagehide", saveBeforeLeaving);
 }

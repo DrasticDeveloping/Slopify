@@ -647,6 +647,8 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchMusic
     const heard = toVerify(row) ? row.match.listened : row.listened;
     if (heard && (heard.verdict !== "unsure" || (heard.v ?? 1) >= LISTEN_VERSION)) return;
     queuedToListen.add(at);
+    // Publish the wait before the match itself, so a following save cannot take an unverified upload.
+    row.verificationPending = true;
     toListen.push(at);
   };
   rows.forEach((_, at) => queueListen(at));
@@ -655,7 +657,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchMusic
   /** Remembers a song's row for next time (search failures aren't: see matchCache). */
   const remember = (row) => {
     try {
-      const { importMetadata: _metadata, playlistIndex: _index, listening: _listening, ...known } = row;
+      const { importMetadata: _metadata, playlistIndex: _index, listening: _listening, verificationPending: _verificationPending, ...known } = row;
       matchCache?.set(row.importMetadata, { ...known, searchedV: LISTEN_VERSION });
     } catch {
       // Remembering is only a shortcut for next time.
@@ -1057,7 +1059,7 @@ async function matchPlaylistRows(entries, { signal, onStage, search, searchMusic
       }
       listenedCount += 1;
       // Couldn't listen (Deezer or the upload didn't answer): as it was, and asked again next time.
-      rows[at] = heard ? heardRow(row, heard, uploads) : row;
+      rows[at] = { ...(heard ? heardRow(row, heard, uploads) : row), verificationPending: false };
       if (heard) remember(rows[at]);
       onStage(status({ row: { at, candidate: rows[at] } }));
     }

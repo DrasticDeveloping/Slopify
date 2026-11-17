@@ -1,4 +1,5 @@
 import { creditLine } from "../lib/credits";
+import { usePageState } from "../lib/page-state";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Art, BlurredTrackArt, PlaylistArt } from "../components/Artwork";
 import { ChooseFiles } from "../components/ChooseFiles";
@@ -75,7 +76,7 @@ export function PlaylistView({ id }: { id: string }) {
   const libraryCount = useStore((s) => libraryIds(s).length);
   const profileName = useStore((s) => s.settings.profileName);
   const social = useSocial();
-  const [q, setQ] = useState("");
+  const [q, setQ] = usePageState("collection-filter", "");
   const ids = useMemo(() => playlist?.trackIds.filter((t) => tracks[t]) ?? [], [playlist, tracks]);
   const shown = useFiltered(ids, q);
   if (!playlist) return <Missing what="playlist" />;

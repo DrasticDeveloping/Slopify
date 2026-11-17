@@ -1,16 +1,17 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, type MouseEvent } from "react";
 import { hashString, paletteFromSeed } from "../data/library";
-import { openTrackMenu } from "../lib/menus";
+import { menuPosition, openTrackMenu } from "../lib/menus";
 import { artistName, discoveryKey, type DiscoveredSong, type DiscoveryQuery } from "../recommend/discover";
 import type { Seeds } from "../recommend/service";
 import { useDiscovery } from "../recommend/useDiscovery";
-import { hideDiscovery, navigate, playList, songRoute, togglePlay } from "../state/actions";
+import { hideDiscovery, navigate, openMenu, playList, songRoute, togglePlay } from "../state/actions";
 import { addDiscoveredSong, canStream, registerStreams, streamTrackId } from "../state/importer";
 import { getState, useStore, type Route } from "../state/store";
 import type { ReasonKind } from "../recommend/taste";
 import { Art, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 import { Shelf, SkeletonCards } from "./Shelf";
+import { RecommendationCard } from "./RecommendationCard";
 
 const SUBTITLE = "Songs outside your library, picked from what you play. Play any of them in full, or add it to your library.";
 
@@ -69,7 +70,8 @@ export function DiscoveryShelf({ title = "Discover new music", subtitle = SUBTIT
     else void addDiscoveredSong(song.candidate, song.kind);
   };
 
-  if (hideWhenEmpty && !loading && !songs.length) return null;
+  // A dismissed or saved last result still leaves Find more within reach, including after a cached reload.
+  if (hideWhenEmpty && !loading && !songs.length && !found.hasResults) return null;
   return (
     <section className="discovery" aria-label={title}>
       <Shelf
@@ -109,8 +111,16 @@ function DiscoveryCard({ song, onPlay, menuContext, showReason, openSong }: { so
   const current = useStore((s) => s.currentId === id);
   const playing = useStore((s) => s.isPlaying) && current;
   const buffering = useStore((s) => s.buffering === id);
+  // On a touch screen, holding the card opens its menu (Not interested, Save, the artist...), as iOS apps do, in place
+  // of a dismiss button over the art. Its play button keeps its own tap.
+  const menu = (element: MouseEvent | HTMLElement) => {
+    if (!(element instanceof HTMLElement)) element.preventDefault();
+    if (track) openTrackMenu(element, [id], { context: menuContext, why: song.kind, stream: { recommended: !song.owned } });
+    // A suggestion that can't be played here has no song menu, but can still be turned down.
+    else openMenu({ ...menuPosition(element), title: song.title, subtitle: artistName(song.artist), items: [{ label: "Not interested", icon: "close", run: () => hideDiscovery(song.key, song.kind) }] });
+  };
   return (
-    <div className={`card rec-card${current ? " current" : ""}`} onContextMenu={track ? (e) => openTrackMenu(e, [id], { context: menuContext }) : undefined}>
+    <RecommendationCard title={song.title} className={`card rec-card${current ? " current" : ""}`} onMenu={menu}>
       <div className="card-art">
         {track ? <TrackArt trackId={id} /> : <Art palette={paletteFromSeed(hashString(song.key))} glyph={3} image={song.artwork} />}
         <button type="button" className={`play-fab md card-fab${playing ? " is-playing" : ""}${buffering ? " loading" : ""}`} aria-label={`${playing ? "Pause" : "Play"} ${song.title}`} onClick={onPlay}>
@@ -133,6 +143,6 @@ function DiscoveryCard({ song, onPlay, menuContext, showReason, openSong }: { so
       </button>
       {showReason ? <p className="rec-reason">{song.reason}</p> : null}
       {song.owned ? <span className="small muted rec-save"><Icon name="check" size={14} />In your library</span> : null}
-    </div>
+    </RecommendationCard>
   );
 }

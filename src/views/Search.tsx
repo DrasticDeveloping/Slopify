@@ -1,5 +1,6 @@
 import { creditsArtist } from "../lib/credits";
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
+import { usePageState } from "../lib/page-state";
 import { ExternalSearch } from "../components/ExternalSearch";
 import { ExternalArtists } from "../components/ExternalArtists";
 import { inputIsLink } from "../state/importer";
@@ -31,7 +32,7 @@ const CATEGORIES: Array<[Category, string]> = [["all", "All"], ["music", "Music"
 const searchLabel = (q: string) => (inputIsLink(q) ? "Pasted link" : `Search “${q}”`);
 
 export function SearchView({ q }: { q: string }) {
-  const [mode, setMode] = useState<Category>("all");
+  const [mode, setMode] = usePageState<Category>("search-category", "all");
   const tracks = useStore((s) => s.tracks);
   const trackIds = useStore((s) => s.trackIds);
   const artists = useStore((s) => s.artists);

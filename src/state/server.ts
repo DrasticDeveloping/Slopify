@@ -1,4 +1,4 @@
-import { dismissToast, toast, updateToast } from "./actions";
+import { cancelDeviceRemoval, dismissToast, toast, updateToast } from "./actions";
 import { keepOnDevice, restoreDeviceFiles } from "./device";
 import { releaseSong, songFileUrl } from "./song-api";
 import { getState, setState } from "./store";
@@ -77,12 +77,16 @@ export function disconnect() {
  * Starts the music server connection once: brings back this device's kept song
  * files, then connects, running `whenConnected` (library sync) on every connect.
  */
-export async function startMusicServer(whenConnected: () => unknown) {
+export async function startMusicServer(whenConnected: () => unknown, whenDeviceRestored: () => unknown = () => undefined) {
   if (started) return;
   started = true;
   onConnected = whenConnected;
   await restoreDeviceCopies();
+  whenDeviceRestored();
   window.addEventListener("online", () => !chosenOffline && void connect());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !chosenOffline) void connect();
+  });
   void connect();
 }
 
@@ -90,9 +94,8 @@ export async function startMusicServer(whenConnected: () => unknown) {
 async function restoreDeviceCopies() {
   const s = getState();
   const ids = s.trackIds.filter((id) => s.tracks[id]?.storage === "downloads");
-  const kept = await restoreDeviceFiles(ids);
-  const lost = ids.filter((id) => !kept.has(id));
-  if (!lost.length) return;
+  const { missing: lost } = await restoreDeviceFiles(ids);
+  if (!lost.size) return;
   setState((st) => {
     const tracks = { ...st.tracks };
     for (const id of lost) if (tracks[id]?.storage === "downloads") tracks[id] = { ...tracks[id], storage: "server" };
@@ -217,6 +220,7 @@ export function downloadTracks(ids: string[], { quiet = false } = {}) {
   }
   const targets = ids.filter((id) => s.tracks[id]?.storage === "server" && s.tracks[id].serverId && !transfers.has(id) && !queue.includes(id));
   if (!targets.length) return;
+  for (const id of targets) cancelDeviceRemoval(id);
   if (!quiet) {
     // Asked for: these are kept on the device from now on.
     if (targets.some((id) => s.tracks[id].onlyStream)) {

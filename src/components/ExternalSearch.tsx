@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { PeekContext } from "../lib/peek";
 import { openSearchResultMenu, openTrackMenu } from "../lib/menus";
 import { formatTime } from "../lib/format";
+import { scrollBehavior } from "../lib/motion";
 import { navigate, playList, togglePlay } from "../state/actions";
 import { getState, useStore } from "../state/store";
 import {
@@ -24,8 +26,9 @@ const keyFor = resultStreamKey;
 const sameResult = (c: Candidate) => `${platformFor(c)}:${c.videoID || c.providerID || c.sourceURL}`;
 const downloadable = (r: Resolution) => r.candidates.flatMap((c, i) => (isDownloadable(c) ? [i] : []));
 const countSongs = (n: number) => `${n} song${n === 1 ? "" : "s"}`;
-/** A playlist song matched only as its artist's upload of the same length (its title in another language): left unticked. */
-const unsure = (c: Candidate | undefined) => Boolean(c?.match?.byArtistAndLength);
+/** Weak matches stay unticked until their audio confirms them; queued verification must finish before saving. */
+const unsure = (c: Candidate | undefined) => Boolean(c?.verificationPending || c?.listening || c?.match?.byArtistAndLength ||
+  (typeof c?.match?.title === "number" && c.match.title < 0.75 && (c.match.listened as { verdict?: string } | undefined)?.verdict !== "same"));
 const describe = (c: Candidate) => {
   const meta = c.importMetadata || c;
   return { meta, title: meta.title || c.title || "Untitled", artist: meta.artist || c.artist || "Unknown artist" };
@@ -158,14 +161,17 @@ function followLookup(lookup: LinkLookup, wanted: { current: (at: number) => boo
           const changed = () => {
             lookup.listeners.delete(changed);
             signal.removeEventListener("abort", stop);
+            lookup.controller.signal.removeEventListener("abort", changed);
             resolve();
           };
           const stop = () => {
             lookup.listeners.delete(changed);
+            lookup.controller.signal.removeEventListener("abort", changed);
             reject(signal.reason);
           };
           lookup.listeners.add(changed);
           signal.addEventListener("abort", stop, { once: true });
+          lookup.controller.signal.addEventListener("abort", changed, { once: true });
         });
       }
     },
@@ -299,6 +305,7 @@ function useNearView(onVisible: () => void, active: boolean) {
 
 /** Songs, videos and playlists from YouTube, Spotify and SoundCloud: play them in full, or save them to the library. */
 export function ExternalSearch({ query }: { query: string }) {
+  const peek = useContext(PeekContext);
   const transfer = useImport((s) => s);
   const [kind, setKind] = useState<MediaKind>("audio");
   const [attempt, setAttempt] = useState(0);
@@ -328,12 +335,13 @@ export function ExternalSearch({ query }: { query: string }) {
   const tickedFor = (i: number, c: Candidate | undefined) => ticks.chosen[i] ?? (ticks.mode === "default" ? !unsure(c) : ticks.mode === "all");
   /** Whether a row is ticked now; a song still being found shows the tick it'll be saved with. */
   const tickedNow = (i: number) => tickedFor(i, r!.candidates[i]);
-  const selected = playlist && r ? downloadable(r).filter((i) => !ownedAt(i) && tickedNow(i)) : [];
+  const selected = playlist && r ? downloadable(r).filter((i) => !r.candidates[i].verificationPending && !r.candidates[i].listening && !ownedAt(i) && tickedNow(i)) : [];
   // Whether a song found later should be saved by a save that's following the matching: as ticked now.
-  const wanted = useRef<(at: number) => boolean>(() => false);
+  // A save keeps its own lookup and selection when Search moves to another query.
+  const wanted = useMemo<{ current: (at: number) => boolean }>(() => ({ current: () => false }), [query, kind, lookup]);
   wanted.current = (at) => {
     const c = lookup?.resolution?.candidates[at];
-    if (!c || !isDownloadable(c) || playlistOwnedTrack(c, kind)) return false;
+    if (!c || c.verificationPending || c.listening || !isDownloadable(c) || playlistOwnedTrack(c, kind)) return false;
     return tickedFor(at, c);
   };
   /** Saves the ticked songs (as asked: in a playlist or not); while matching, keeps saving the songs found after them too. */
@@ -393,17 +401,18 @@ export function ExternalSearch({ query }: { query: string }) {
   const savingHere = busy && transfer.source === query && playlist;
   // A save under way has its songs; only one that's following the matching still takes ticks into account.
   const fixedSelection = savingHere && !transfer.batch?.following;
-  const inline = playlist ? query : null;
+  const inline = playlist && !peek ? query : null;
   useEffect(() => {
+    if (peek) return;
     showTransferInline(inline);
     return () => showTransferInline(null);
-  }, [inline]);
+  }, [inline, peek]);
   // The not-found and in-the-library groups, opened (and scrolled to) from their counts in the panel.
   const [openGroups, setOpenGroups] = useState<{ missing: boolean | null; owned: boolean }>({ missing: null, owned: false });
   const groupRefs = { missing: useRef<HTMLDetailsElement>(null), owned: useRef<HTMLDetailsElement>(null) };
   const showGroup = (group: "missing" | "owned") => {
     setOpenGroups((g) => ({ ...g, [group]: true }));
-    requestAnimationFrame(() => groupRefs[group].current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    requestAnimationFrame(() => groupRefs[group].current?.scrollIntoView({ behavior: scrollBehavior(), block: "start" }));
   };
   // Each press goes on to the next song to check, then round again.
   const lastChecked = useRef(-1);
@@ -412,7 +421,7 @@ export function ExternalSearch({ query }: { query: string }) {
     if (at === undefined) return;
     lastChecked.current = at;
     const row = document.getElementById(`playlist-row-${at}`);
-    row?.scrollIntoView({ behavior: "smooth", block: "center" });
+    row?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     row?.querySelector<HTMLElement>("input, button")?.focus({ preventScroll: true });
   };
   // How far down the page the stuck import bar reaches, so a song or group scrolled to lands below it, not under it.
@@ -421,7 +430,7 @@ export function ExternalSearch({ query }: { query: string }) {
   useEffect(() => {
     const el = bar.current;
     if (!el) return;
-    const observer = new ResizeObserver(() => section.current?.style.setProperty("--import-bar-bottom", `${64 + el.offsetHeight}px`));
+    const observer = new ResizeObserver(() => section.current?.style.setProperty("--import-bar-bottom", `calc(var(--header-height) + ${el.offsetHeight}px)`));
     observer.observe(el);
     return () => observer.disconnect();
   }, [playlist]);

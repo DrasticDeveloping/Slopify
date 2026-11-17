@@ -57,19 +57,21 @@ function useAnalysis(id: string | undefined, video: boolean) {
       return;
     }
     let live = true;
+    const work = new AbortController();
     setResult({ id });
-    waveDetail(url).then(
+    waveDetail(url, work.signal).then(
       (detail) => live && setResult((r) => (r.id === id ? { ...r, detail } : r)),
       () => live && setResult((r) => (r.id === id ? { ...r, failed: true } : r)),
     );
     if (video) {
-      videoFrames(url, FRAMES).then(
+      videoFrames(url, FRAMES, work.signal).then(
         (frames) => live && setResult((r) => (r.id === id ? { ...r, frames } : r)),
         () => undefined,
       );
     }
     return () => {
       live = false;
+      work.abort();
     };
   }, [id, video]);
   return result.id === id ? result : {};
@@ -87,8 +89,9 @@ function parseTime(text: string) {
 }
 
 /** A time field with nudge buttons and, while the song plays here, a button to take the playhead's time. */
-function TimeField({ label, value, onCommit, onNudge, onMark, markLabel, markIcon, canMark }: {
+function TimeField({ label, value, onCommit, onDraft, onNudge, onMark, markLabel, markIcon, canMark }: {
   label: string; value: number; onCommit: (v: number) => void; onNudge: (delta: number) => void;
+  onDraft: (v: number | null) => void;
   onMark: () => void; markLabel: string; markIcon: string; canMark: boolean;
 }) {
   // Typing makes the field yours until Enter or leaving it; until then it follows the clip.
@@ -98,6 +101,7 @@ function TimeField({ label, value, onCommit, onNudge, onMark, markLabel, markIco
     if (text === null) return;
     const v = parseTime(text);
     setText(null);
+    onDraft(null);
     if (v !== null) onCommit(v);
   };
   const nudge = (sign: 1 | -1) => (e: { shiftKey: boolean; altKey: boolean }) => onNudge(sign * (e.shiftKey ? 1 : e.altKey ? 0.01 : 0.1));
@@ -111,12 +115,13 @@ function TimeField({ label, value, onCommit, onNudge, onMark, markLabel, markIco
         <input
           value={shown}
           onBlur={commit}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => { setText(e.target.value); onDraft(parseTime(e.target.value)); }}
           onKeyDown={(e) => {
             if (e.key === "Enter") commit();
             else if (e.key === "Escape" && text !== null) {
               e.stopPropagation();
               setText(null);
+              onDraft(null);
             }
           }}
           inputMode="decimal"
@@ -196,6 +201,7 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
       : { start: 0, end: d, fadeIn: 0, fadeOut: 0, shape: "smooth" };
   };
   const [clip, setClipRaw] = useState<Clip>(() => (id ? fromSaved(id, duration) : { start: 0, end: 0, fadeIn: 0, fadeOut: 0, shape: "smooth" }));
+  const [timeDraft, setTimeDraft] = useState<{ which: "start" | "end"; value: number } | null>(null);
   const clipRef = useRef(clip);
   clipRef.current = clip;
   /** Sets the clip and its ref together, so several changes in one go (key repeat, quick presses) each build on the last. */
@@ -673,6 +679,7 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
 
   const pick = (next: string) => {
     setClipDraft(id, null);
+    setTimeDraft(null);
     setId(next);
     const d = tracks[next].duration;
     setClipState(fromSaved(next, d));
@@ -707,7 +714,9 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
 
   const full = clip.start <= 0.05 && clip.end >= duration - 0.05;
   const plain = full && !clip.fadeIn && !clip.fadeOut;
-  const dirty = !same(fromSaved(id, duration), clip);
+  // Save must be available while a valid time is still being typed, before blur commits it.
+  const saveCandidate = timeDraft ? fit({ ...clip, [timeDraft.which]: timeDraft.value }, timeDraft.which) : clip;
+  const dirty = !same(fromSaved(id, duration), saveCandidate);
   const pct = (t: number) => ((t - view.from) / span) * 100;
   const step = tickStep(span, size.w || 600);
   const ticks: number[] = [];
@@ -738,8 +747,11 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
             className="btn primary"
             disabled={!dirty}
             onClick={() => {
-              saveClip(id, plain ? null : toRange(clip));
-              toast(plain ? "Clip removed" : `Clip saved · ${exact(clip.end - clip.start, 1)}`, { tone: "success", detail: track.title });
+              // A touch may blur the field before click; an accessibility activation may not blur it at all.
+              const next = timeDraft ? fit({ ...clipRef.current, [timeDraft.which]: timeDraft.value }, timeDraft.which) : clipRef.current;
+              const whole = next.start <= 0.05 && next.end >= duration - 0.05 && !next.fadeIn && !next.fadeOut;
+              saveClip(id, whole ? null : toRange(next));
+              toast(whole ? "Clip removed" : `Clip saved · ${exact(next.end - next.start, 1)}`, { tone: "success", detail: track.title });
               closeModal();
             }}
           >
@@ -796,6 +808,7 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
           ) : null}
           <div
             ref={wave}
+            data-no-sheet-drag
             className={`ce-wave${real ? "" : " estimated"}${chipsTight ? " tight" : ""}${startOut ? " start-out" : ""}${endOut ? " end-out" : ""}`}
             onPointerDown={waveDown}
             onPointerMove={waveMove}
@@ -850,7 +863,7 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
               />
             ))}
           </div>
-          <div className="ce-mini" onPointerDown={miniPan} onPointerMove={miniPan} onPointerUp={() => { drag.current = null; }} title="Drag to move along the song" style={{ "--vf": view.from / duration, "--vt": view.to / duration } as CSSProperties}>
+          <div className="ce-mini" data-no-sheet-drag onPointerDown={miniPan} onPointerMove={miniPan} onPointerUp={() => { drag.current = null; }} title="Drag to move along the song" style={{ "--vf": view.from / duration, "--vt": view.to / duration } as CSSProperties}>
             <canvas ref={mini} aria-hidden="true" />
             <span className="ce-viewport" aria-hidden="true" />
             <span ref={miniHead} className="ce-mini-head" aria-hidden="true" />
@@ -858,7 +871,7 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
         </div>
 
         <div className="ce-transport">
-          <TimeField label="Start" value={clip.start} onCommit={(v) => change((c) => ({ ...c, start: v }), "start")} onNudge={(d) => change((c) => ({ ...c, start: c.start + d }), "start")} onMark={() => markStart()} markLabel="Start here" markIcon="markIn" canMark={canMark} />
+          <TimeField key={`${id}-start`} label="Start" value={clip.start} onDraft={(value) => setTimeDraft(value === null ? null : { which: "start", value })} onCommit={(v) => change((c) => ({ ...c, start: v }), "start")} onNudge={(d) => change((c) => ({ ...c, start: c.start + d }), "start")} onMark={() => markStart()} markLabel="Start here" markIcon="markIn" canMark={canMark} />
           <div className="ce-center">
             <div className="ce-play">
               <button type="button" className={`icon-btn ce-loop${loop ? " on" : ""}`} onClick={() => setLoop(!loop)} aria-pressed={loop} aria-label="Loop the clip" title="Loop while previewing (L)">
@@ -885,7 +898,7 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
               {plain || phone ? null : <span className="muted small">of {formatTime(duration)}</span>}
             </div>
           </div>
-          <TimeField label="End" value={clip.end} onCommit={(v) => change((c) => ({ ...c, end: v }), "end")} onNudge={(d) => change((c) => ({ ...c, end: c.end + d }), "end")} onMark={() => markEnd()} markLabel="End here" markIcon="markOut" canMark={canMark} />
+          <TimeField key={`${id}-end`} label="End" value={clip.end} onDraft={(value) => setTimeDraft(value === null ? null : { which: "end", value })} onCommit={(v) => change((c) => ({ ...c, end: v }), "end")} onNudge={(d) => change((c) => ({ ...c, end: c.end + d }), "end")} onMark={() => markEnd()} markLabel="End here" markIcon="markOut" canMark={canMark} />
         </div>
 
         <div className="ce-extras">

@@ -1,18 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
-import { useCurrent, useReducedMotion } from "../lib/hooks";
+import { useCurrent, useMediaQuery, useReducedMotion } from "../lib/hooks";
 import { focusFirstVisible, focusIsVisible } from "../lib/focus";
 import { openTrackMenu } from "../lib/menus";
 import { isLiked, navigate, nextTrackId, playPreviewedNext, toggleLike, togglePlay, trackSongRoute } from "../state/actions";
 import { formatTime } from "../lib/format";
-import { getState, setState, useStore } from "../state/store";
+import { getState, setState, useStore, type Route } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
 import { BlurredTrackArt, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
-import { openSpeedMenu, SeekRow, Transport, VolumeControl } from "./PlayerBar";
+import { openSpeedMenu, SeekRow, Transport, UnmuteButton, VolumeControl } from "./PlayerBar";
 import { LyricsView } from "./Lyrics";
-import { QueueView } from "./RightPanel";
+import { NowPlayingArtist, NowPlayingDetails, QueueView } from "./RightPanel";
 import { toggleFullscreen, useIsFullscreen, VideoSurface } from "./VideoSurface";
 import { Visualizer } from "./Visualizer";
+import { useSheetDrag } from "../lib/mobile";
 
 export function FullPlayer() {
   const open = useStore((s) => s.fullPlayer);
@@ -31,10 +32,11 @@ export function FullPlayer() {
       setClosing(false);
     } else if (mounted) {
       setClosing(true);
+      // As long as the phone's slide down (app.css); the desktop's shorter fade has finished by then.
       const t = window.setTimeout(() => {
         setMounted(false);
         setClosing(false);
-      }, 280);
+      }, 400);
       return () => clearTimeout(t);
     }
   }, [open, mounted]);
@@ -57,9 +59,14 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
   const queue = pane === "queue";
   const pulse = useRef<HTMLDivElement>(null);
   const close = () => setState({ fullPlayer: false });
+  const dialog = useRef<HTMLDivElement>(null);
+  // A swipe off carries on for up to 340ms (the player stays mounted 400ms once closed).
+  useSheetDrag(dialog, () => {
+    const s = getState();
+    if (!s.modal && !s.menu && !s.confirm) close();
+  }, !closing && !menuOpen, 340);
   const closeBtn = useRef<HTMLButtonElement>(null);
 
-  const dialog = useRef<HTMLDivElement>(null);
   const video = Boolean(track && track.kind === "video" && (track.mediaUrl || track.fileUrl));
   const enteredFullscreen = useRef(false);
   const clickTimer = useRef(0);
@@ -71,6 +78,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
    */
   const [watchId, setWatchId] = useState<string | null>(null);
   const watching = video && watchId === id;
+  const phone = useMediaQuery("(max-width: 680px)");
   useEffect(() => setWatchId(null), [id]);
   const watch = () => {
     setPane(null);
@@ -215,11 +223,12 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
     <aside className={`fp-queue${pane === "lyrics" ? " fp-lyrics" : ""}`} aria-label={pane === "queue" ? "Queue" : "Lyrics"}>
       <div className="fp-queue-head">
         <strong>{pane === "queue" ? "Queue" : "Lyrics"}</strong>
+        <UnmuteButton className="fp-pane-unmute" />
         <button type="button" className="icon-btn sm" data-pane-hide onClick={() => showPane(null)} aria-label={pane === "queue" ? "Hide queue" : "Hide lyrics"}>
           <Icon name="close" size={16} />
         </button>
       </div>
-      {pane === "queue" ? <QueueView /> : <LyricsView trackId={track.id} />}
+      {pane === "queue" ? <QueueView go={go} /> : <LyricsView trackId={track.id} />}
       <div className="fp-pane-transport"><Transport /></div>
     </aside>
   ) : null;
@@ -246,10 +255,11 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
           <VideoSurface trackId={track.id} priority={2} label />
           {!playing ? <span className="fp-video-paused" aria-hidden="true"><Icon name="play" size={40} /></span> : null}
         </div>
-      ) : (
-        // Behind the artwork, a video shows blurred, taken a few frames a second from wherever it's playing.
+      ) : phone ? null : (
+        // Wide screens show a blurred backdrop; phones use a flat colour.
         <BlurredTrackArt trackId={track.id} className="fp-backdrop" video={video} />
       )}
+      <div className="sheet-handle fp-handle"><span className="sheet-grip" aria-hidden="true" /></div>
       <header className="fp-head">
         <button
           ref={closeBtn}
@@ -265,6 +275,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
           <span className="eyebrow">Playing from</span>
           <button type="button" className="link strong" onClick={() => context?.route && go(context.route)}>{context?.label ?? "Library"}</button>
         </div>
+        <UnmuteButton />
         <button type="button" className="icon-btn round glass" onClick={(e) => openTrackMenu(e.currentTarget, [track.id])} aria-label="More options">
           <Icon name="more" size={20} />
         </button>
@@ -328,7 +339,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
                   </button>
                 </div>
               </div>
-              <PhoneExtras onQueue={() => togglePane("queue")} />
+              <PhoneExtras onQueue={() => togglePane("queue")} go={go} />
             </div>
             {queuePanel}
           </div>
@@ -344,7 +355,7 @@ function FullPlayerBody({ closing, opener }: { closing: boolean; opener: { curre
  * Hidden on larger screens, where the queue opens beside the art. (No lyrics card: whether a song has
  * lyrics is only known by looking it up, which the Lyrics button does when asked.)
  */
-function PhoneExtras({ onQueue }: { onQueue: () => void }) {
+function PhoneExtras({ onQueue, go }: { onQueue: () => void; go: (route: Route) => void }) {
   const nextId = useStore((s) => (s.currentId ? nextTrackId() : null));
   const nextTrack = useStore((s) => (nextId ? s.tracks[nextId] : null));
   const nextArtist = useStore((s) => (nextTrack ? s.artists[nextTrack.artistId]?.name : ""));
@@ -366,6 +377,9 @@ function PhoneExtras({ onQueue }: { onQueue: () => void }) {
           </button>
         ) : <p className="muted small">End of the queue. Turn on repeat, or add more songs.</p>}
       </div>
+      {/* Who it's by, and the song's details and statistics (the side panel's, which phones don't have). */}
+      <NowPlayingArtist go={go} />
+      <NowPlayingDetails go={go} />
     </div>
   );
 }

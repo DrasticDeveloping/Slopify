@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
+import { usePageState } from "../lib/page-state";
 import { ArtistArt } from "../components/Artwork";
 import { discographyOf, releaseKind, ReleaseCards, useOwnedReleases } from "../components/Discography";
 import { Hero } from "../components/Hero";
@@ -25,8 +26,8 @@ function DiscographyPage({ artist }: { artist: Artist }) {
   const metadata = useArtistMetadata(artist.id, name, artist.musicBrainzId);
   const releases = useMemo(() => discographyOf(metadata.result?.profiles ?? []), [metadata.result]);
   const owned = useOwnedReleases();
-  const [filter, setFilter] = useState<Filter>("all");
-  const [oldestFirst, setOldestFirst] = useState(false);
+  const [filter, setFilter] = usePageState<Filter>("discography-filter", "all");
+  const [oldestFirst, setOldestFirst] = usePageState("discography-oldest", false);
 
   const counts = useMemo(() => {
     const c: Record<Filter, number> = { all: releases.length, album: 0, single: 0, other: 0 };

@@ -8,7 +8,9 @@ import { Art, BlurredTrackArt, PlaylistArt, TrackArt } from "../components/Artwo
 import { Bars, Icon } from "../components/Icon";
 import { ChooseFiles } from "../components/ChooseFiles";
 import { DiscoveryShelf } from "../components/DiscoveryShelf";
+import { RecommendationCard } from "../components/RecommendationCard";
 import { ReleaseShelves } from "../components/ReleaseShelves";
+import { Later } from "../components/Later";
 import { Card, PlayFab, Shelf, useContextPlaying } from "../components/Shelf";
 import { greeting, plural } from "../lib/format";
 import { allTimePlays, topArtistPlays } from "../lib/plays";
@@ -115,7 +117,8 @@ export function HomeView() {
   // Every mix's new songs become tracks the player knows, as on a mix's own page, so the featured card
   // and the mix shortcuts play the whole mix (not just its library songs).
   useEffect(() => {
-    for (const mix of mixes) registerStreams(mixSongs(mix));
+    // One update for all of them: each is a copy of the library's songs, and a check by everything showing them.
+    registerStreams(mixes.flatMap(mixSongs));
   }, [mixes]);
 
   // By default "Recommended for you" is new songs from the web; library songs only when Settings asks for them.
@@ -220,7 +223,7 @@ export function HomeView() {
             const t = tracks[id];
             const context = { label: "Recommended for you", route: { name: "home" } as Route, ids: forYouIds };
             return (
-              <div key={id} className={`card rec-card${currentId === id ? " current" : ""}`} onContextMenu={(e) => openTrackMenu(e, [id], { context, why: kind })}>
+              <RecommendationCard key={id} title={t.title} className={`card rec-card${currentId === id ? " current" : ""}`} onMenu={(e) => openTrackMenu(e, [id], { context, why: kind })}>
                 <div className="card-art">
                   <TrackArt trackId={id} />
                   <button
@@ -240,7 +243,7 @@ export function HomeView() {
                   <span>{creditLine(t, artists)}</span>
                 </button>
                 <p className="rec-reason">{reason}</p>
-              </div>
+              </RecommendationCard>
             );
           })}
           {!forYou.length ? <p className="muted shelf-empty">Nothing to suggest yet. Add songs, or bring back hidden ones in Settings → Recommendations.</p> : null}
@@ -249,78 +252,82 @@ export function HomeView() {
         <DiscoveryShelf title="Recommended for you" subtitle="New songs picked from what you play, none of them in your library yet. Play any of them in full, or add it to your library." hideWhenEmpty />
       )}
 
-      {includeLibrary ? <DiscoveryShelf hideWhenEmpty /> : null}
+      <Later>{() => (
+        <>
+        {includeLibrary ? <DiscoveryShelf hideWhenEmpty /> : null}
 
-      {recent.length ? <ReleaseShelves /> : null}
+        {recent.length ? <ReleaseShelves /> : null}
 
-      <Shelf title="Made for you" subtitle="Daily and weekly editions, kept across visits">
-        {mixes.map((mix) => <MixCard key={mix.id} mix={mix} />)}
-      </Shelf>
+        <Shelf title="Made for you" subtitle="Daily and weekly editions, kept across visits">
+          {mixes.map((mix) => <MixCard key={mix.id} mix={mix} />)}
+        </Shelf>
 
-      {jumpBack.length ? (
-      <Shelf title="Jump back in" subtitle="Albums from your recent listening">
-        {jumpBack.map((albumId) => {
-          const a = albums[albumId];
-          return (
-            <Card
-              key={albumId}
-              art={<Art palette={a.palette} glyph={a.glyph} image={a.artworkUrl} />}
-              title={a.title}
-              subtitle={artists[a.artistId]?.name ?? ""}
-              onOpen={() => navigate({ name: "album", id: albumId })}
-              play={{ ids: albumTracks(albumId), label: a.title, route: { name: "album", id: albumId } }}
-            />
-          );
-        })}
-      </Shelf>
-      ) : null}
+        {jumpBack.length ? (
+        <Shelf title="Jump back in" subtitle="Albums from your recent listening">
+          {jumpBack.map((albumId) => {
+            const a = albums[albumId];
+            return (
+              <Card
+                key={albumId}
+                art={<Art palette={a.palette} glyph={a.glyph} image={a.artworkUrl} />}
+                title={a.title}
+                subtitle={artists[a.artistId]?.name ?? ""}
+                onOpen={() => navigate({ name: "album", id: albumId })}
+                play={{ ids: albumTracks(albumId), label: a.title, route: { name: "album", id: albumId } }}
+              />
+            );
+          })}
+        </Shelf>
+        ) : null}
 
-      {recent.length ? (
-      <Shelf title="Recently added" subtitle="Fresh to your library" action={<button type="button" className="text-btn" onClick={() => navigate({ name: "library" })}>Show all</button>}>
-        {recent.map((id) => {
-          const t = tracks[id];
-          return (
-            <div key={id} className={`card${currentId === id ? " current" : ""}`} onContextMenu={(e) => openTrackMenu(e, [id], { context: { label: "Recently added", route: { name: "library" }, ids: recent } })}>
-              <div className="card-art">
-                <TrackArt trackId={id} />
-                <button
-                  type="button"
-                  className="play-fab md card-fab"
-                  aria-label={currentId === id && isPlaying ? `Pause ${t.title}` : `Play ${t.title}`}
-                  onClick={() => (currentId === id ? togglePlay() : playList(recent, id, { label: "Recently added", route: { name: "library" } }))}
-                >
-                  <Icon name={currentId === id && isPlaying ? "pause" : "play"} size={20} />
+        {recent.length ? (
+        <Shelf title="Recently added" subtitle="Fresh to your library" action={<button type="button" className="text-btn" onClick={() => navigate({ name: "library" })}>Show all</button>}>
+          {recent.map((id) => {
+            const t = tracks[id];
+            return (
+              <div key={id} className={`card${currentId === id ? " current" : ""}`} onContextMenu={(e) => openTrackMenu(e, [id], { context: { label: "Recently added", route: { name: "library" }, ids: recent } })}>
+                <div className="card-art">
+                  <TrackArt trackId={id} />
+                  <button
+                    type="button"
+                    className="play-fab md card-fab"
+                    aria-label={currentId === id && isPlaying ? `Pause ${t.title}` : `Play ${t.title}`}
+                    onClick={() => (currentId === id ? togglePlay() : playList(recent, id, { label: "Recently added", route: { name: "library" } }))}
+                  >
+                    <Icon name={currentId === id && isPlaying ? "pause" : "play"} size={20} />
+                  </button>
+                </div>
+                <button type="button" className="card-link" onClick={() => navigate(trackSongRoute(id))}>
+                  <strong>{t.title}</strong>
+                  <span>{creditLine(t, artists)}</span>
                 </button>
               </div>
-              <button type="button" className="card-link" onClick={() => navigate(trackSongRoute(id))}>
-                <strong>{t.title}</strong>
-                <span>{creditLine(t, artists)}</span>
-              </button>
-            </div>
-          );
-        })}
-      </Shelf>
-      ) : null}
+            );
+          })}
+        </Shelf>
+        ) : null}
 
-      {topArtists.length ? (
-      <Shelf title="Your top artists" subtitle="Based on your plays">
-        {topArtists.map((id) => {
-          const a = artists[id];
-          const ids = Object.values(tracks).filter((t) => creditsArtist(t, id) && isPlayable(t)).sort((x, y) => y.plays - x.plays).map((t) => t.id);
-          return (
-            <Card
-              key={id}
-              round
-              art={<Art palette={a.palette} glyph={4} round label={a.name} image={a.image} />}
-              title={a.name}
-              subtitle={`Artist · ${plural(ids.length, "song")}`}
-              onOpen={() => navigate({ name: "artist", id })}
-              play={{ ids, label: a.name, route: { name: "artist", id } }}
-            />
-          );
-        })}
-      </Shelf>
-      ) : null}
+        {topArtists.length ? (
+        <Shelf title="Your top artists" subtitle="Based on your plays">
+          {topArtists.map((id) => {
+            const a = artists[id];
+            const ids = Object.values(tracks).filter((t) => creditsArtist(t, id) && isPlayable(t)).sort((x, y) => y.plays - x.plays).map((t) => t.id);
+            return (
+              <Card
+                key={id}
+                round
+                art={<Art palette={a.palette} glyph={4} round label={a.name} image={a.image} />}
+                title={a.name}
+                subtitle={`Artist · ${plural(ids.length, "song")}`}
+                onOpen={() => navigate({ name: "artist", id })}
+                play={{ ids, label: a.name, route: { name: "artist", id } }}
+              />
+            );
+          })}
+        </Shelf>
+        ) : null}
+        </>
+      )}</Later>
     </div>
   );
 }

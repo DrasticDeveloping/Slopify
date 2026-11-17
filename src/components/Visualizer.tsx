@@ -58,6 +58,8 @@ export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: 
       const analyser = reduced ? null : engine.analyser;
       const w = el.width;
       const h = el.height;
+      // Not shown (a phone's player has none): nothing to draw, and bars of no width would have a negative radius.
+      if (!w || !h) return false;
       ctx.clearRect(0, 0, w, h);
       if (analyser) {
         if (!data || data.length !== analyser.frequencyBinCount) data = new Uint8Array(analyser.frequencyBinCount);
@@ -67,7 +69,7 @@ export function Visualizer({ pulseTarget, bars = 64, reduced }: { pulseTarget?: 
       ctx.fillStyle = colours(h, now);
       const gap = Math.max(2, w / bars / 4);
       const bw = w / bars - gap;
-      const radius = Math.min(4, bw / 2);
+      const radius = Math.max(0, Math.min(4, bw / 2));
       const shades: number[][] = Array.from({ length: SHADES + 1 }, () => []);
       let bass = 0;
       let moving = false;

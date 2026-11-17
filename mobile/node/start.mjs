@@ -51,4 +51,15 @@ if (!AbortSignal.any) {
   };
 }
 
-await import("./server/main.mjs");
+// The app owns this server's lifetime. WebKit can disconnect while iOS suspends
+// its page; that must never trigger the desktop "last window closed" shutdown.
+process.env.SLOPIFY_KEEP_RUNNING = "1";
+try {
+  await import("./server/main.mjs");
+} catch (error) {
+  // A rejected startup import must not reach Node's fatal exception handler inside the iOS process.
+  const { reportStartup } = await import("./server/embedded.mjs");
+  reportStartup("error", error.message);
+  console.error("[slopify] The embedded server couldn't start:", error.message);
+  setInterval(() => {}, 60_000);
+}

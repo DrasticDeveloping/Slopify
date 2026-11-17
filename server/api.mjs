@@ -18,6 +18,8 @@ import { createStateStore, readLargeJSON } from "./library-state.mjs";
 import { readDurably, removeDurably, writeDurably } from "./durable-file.mjs";
 import { runFolder, sweepOldTemp, sweepRunFolders } from "./run-folders.mjs";
 import { SongFiles } from "./song-files.mjs";
+import { DeviceFiles } from "./device-files.mjs";
+import { authenticated } from "./embedded.mjs";
 import { SongStore } from "./songs.mjs";
 import { lockLibrary } from "./library-lock.mjs";
 import { createDuplicateFinder } from "./duplicates/index.mjs";
@@ -454,12 +456,13 @@ async function proxyCloud(req, res, url, cloudUrl) {
  * so pages keep a connection open to say they're there (see main.mjs).
  * `cloudUrl`: the online service the web app was built for (see proxyCloud), or "".
  */
-export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed = false, cloudUrl = "" }) {
+export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed = false, cloudUrl = "", embeddedSecret }) {
   // Checked again just before each save: a request that started before a takeover mustn't finish it.
   const stillOwned = () => {
     if (!owned()) throw Object.assign(new Error("Another Slopify took over this library. Restart this one to use it again."), { status: 409 });
   };
   const songs = new SongStore(dataDir, stillOwned);
+  const deviceFiles = new DeviceFiles(dataDir);
   const duplicates = createDuplicateFinder({ dataDir, songs, downloadLink, beforeSave: stillOwned });
   const playlistMatches = createPlaylistMatches(dataDir);
   setSpotifyTrackStore(createSpotifyTrackDetails(dataDir));
@@ -698,6 +701,9 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
   return async function handle(req, res, next) {
     const url = new URL(req.url || "/", "http://localhost");
     if (!url.pathname.startsWith("/api/")) return next();
+    if (!authenticated(req, embeddedSecret)) {
+      return sendJSON(res, 401, { ok: false, error: { code: "UNAUTHORIZED", message: "Open Slopify to use this library." } });
+    }
     const parts = url.pathname.split("/").filter(Boolean).slice(1);
     const method = req.method || "GET";
     // Before the library checks below: these calls go to the account, not this library.
@@ -712,7 +718,23 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
     }
     try {
       if (parts[0] === "health" && method === "GET") {
-        return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()), presence: stopsWhenClosed });
+        return sendJSON(res, 200, { ok: true, import: true, ffmpeg: Boolean(ffmpegPath()), presence: stopsWhenClosed || Boolean(embeddedSecret) });
+      }
+      if (parts[0] === "device-files" && parts.length === 2) {
+        const id = decodeURIComponent(parts[1]);
+        if (method === "PUT") {
+          const saved = await deviceFiles.put(id, req, String(req.headers["content-type"] || ""));
+          return sendJSON(res, 200, { ok: true, size: saved.size, sha256: saved.sha256 });
+        }
+        if (method === "DELETE") {
+          await deviceFiles.remove(id);
+          return sendJSON(res, 200, { ok: true });
+        }
+        if (method === "GET" || method === "HEAD") {
+          const saved = await deviceFiles.get(id);
+          if (!saved) return res.writeHead(404).end();
+          return sendFile(req, res, saved.filePath, saved.type, { "X-Content-SHA256": saved.sha256 });
+        }
       }
       if (parts[0] === "metadata" && parts[1] === "artist" && parts.length === 2 && method === "POST") {
         const result = await artists.profile(await readJSON(req));

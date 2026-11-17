@@ -25,6 +25,35 @@ interface Agreed {
 const MASS_LOSS = 5;
 
 const key = (userId: string) => `slopify.cloud-songs.v1.${userId}`;
+const deletedKey = (userId: string) => `slopify.cloud-song-deletions.v1.${userId}`;
+const deletionMemory = new Map<string, Set<string>>();
+function deletions(userId: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(deletedKey(userId));
+    const saved: unknown = raw === null ? null : JSON.parse(raw);
+    if (Array.isArray(saved)) deletionMemory.set(userId, new Set(saved.filter((id): id is string => typeof id === "string")));
+  } catch { /* Keep this session's intent if storage is unavailable. */ }
+  return deletionMemory.get(userId) ?? new Set();
+}
+function writeDeletions(userId: string, ids: Set<string>) {
+  deletionMemory.set(userId, ids);
+  try { localStorage.setItem(deletedKey(userId), JSON.stringify([...ids])); } catch { /* Kept for this session. */ }
+}
+/** Explicit deletions must never be mistaken for a lost local library. Undo and re-import cancel them. */
+export function markCloudSongDeleted(id: string) {
+  const { userId } = getAccount();
+  if (!userId) return;
+  const ids = deletions(userId);
+  ids.add(id);
+  writeDeletions(userId, ids);
+}
+export function cancelCloudSongDeletion(id: string) {
+  const { userId } = getAccount();
+  if (!userId) return;
+  const ids = deletions(userId);
+  ids.delete(id);
+  writeDeletions(userId, ids);
+}
 function readAgreed(userId: string): Agreed {
   try {
     const value = JSON.parse(localStorage.getItem(key(userId)) || "null") as Agreed | null;
@@ -34,8 +63,10 @@ function readAgreed(userId: string): Agreed {
 }
 /** Forgets what was agreed with an account (it was deleted). */
 export function forgetCloudSongs(userId: string) {
+  deletionMemory.delete(userId);
   try {
     localStorage.removeItem(key(userId));
+    localStorage.removeItem(deletedKey(userId));
   } catch { /* Nothing kept. */ }
 }
 function writeAgreed(userId: string, agreed: Agreed) {
@@ -84,15 +115,20 @@ export interface CloudSongChanges { songs: CloudSong[]; until: number }
  * `fetched`: the account's changes since `cloudSongsSince`, when they came with another call (sync.ts), so they aren't asked for again.
  */
 export async function syncCloudSongs(userId: string, fetched?: CloudSongChanges): Promise<boolean> {
-  if (getAccount().status !== "signedIn" || getAccount().userId !== userId) return false;
+  const stillCurrent = () => getAccount().status === "signedIn" && getAccount().userId === userId;
+  if (!stillCurrent()) return false;
   const agreed = readAgreed(userId);
   const localSongs = new Map((await listSongs()).map((s) => [s.id, s as ServerSong & { playableURL?: string | null }]));
+  if (!stillCurrent()) return false;
   const { songs: changes, until } = fetched ?? await cloudCall<CloudSongChanges>(`/v1/library/songs?since=${agreed.cursor}`, { as: userId });
+  if (!stillCurrent()) return false;
   let changedHere = false;
   const deletedThere = new Set<string>();
 
   // 1. The account's changes come here.
   for (const c of changes) {
+    // An explicit local deletion wins over an older live copy arriving from the account.
+    if (!c.deleted && deletions(userId).has(c.id)) continue;
     const mine = localSongs.get(c.id);
     const was = agreed.songs[c.id];
     if (c.deleted) {
@@ -104,6 +140,7 @@ export async function syncCloudSongs(userId: string, fetched?: CloudSongChanges)
         await local(`/api/songs/${encodeURIComponent(c.id)}`, { method: "DELETE" }).catch((error: { status?: number }) => {
           if (error.status !== 404) throw error;
         });
+        if (!stillCurrent()) return changedHere;
         localSongs.delete(c.id);
         changedHere = true;
       }
@@ -113,6 +150,7 @@ export async function syncCloudSongs(userId: string, fetched?: CloudSongChanges)
     if (was?.cloud === c.updatedAt) continue; // Our own change, coming back.
     if (!mine) {
       const created = await local<ServerSong>(`/api/songs/${encodeURIComponent(c.id)}`, { method: "PUT", body: JSON.stringify(c) });
+      if (!stillCurrent()) return changedHere;
       localSongs.set(c.id, created);
       agreed.songs[c.id] = { cloud: c.updatedAt, local: created.updatedAt };
       changedHere = true;
@@ -124,6 +162,7 @@ export async function syncCloudSongs(userId: string, fetched?: CloudSongChanges)
         if (cloudArtwork(c) !== null) changes.artworkUrl = cloudArtwork(c);
         const removed = Object.fromEntries(Object.keys(mine.extra ?? {}).filter((k) => !(k in (c.extra ?? {}))).map((k) => [k, null]));
         const updated = await updateSong(c.id, { ...changes, extra: { ...removed, ...(c.extra ?? {}) } });
+        if (!stillCurrent()) return changedHere;
         localSongs.set(c.id, updated);
         changedHere = true;
       }
@@ -136,16 +175,29 @@ export async function syncCloudSongs(userId: string, fetched?: CloudSongChanges)
 
   // 2. This computer's changes go to the account.
   for (const song of localSongs.values()) {
-    if (!portable(song) || deletedThere.has(song.id)) continue;
+    if (!portable(song) || deletedThere.has(song.id) || deletions(userId).has(song.id)) continue;
     const was = agreed.songs[song.id];
     if (was && song.updatedAt <= was.local) continue;
     const saved = await cloudCall<CloudSong>(`/v1/library/songs/${encodeURIComponent(song.id)}`, { method: "PUT", body: forCloud(song), as: userId });
+    if (!stillCurrent()) return changedHere;
     agreed.songs[song.id] = { cloud: saved.updatedAt, local: song.updatedAt };
     writeAgreed(userId, agreed);
   }
 
   // 3. Songs deleted here are deleted from the account, unless so many vanished at once
   // that this computer's library was lost (then they come back from the account instead).
+  // Send explicit deletions independently of the recovery heuristic. Keep each tombstone until
+  // the account acknowledges it, including songs missing from an interrupted agreement save.
+  for (const id of deletions(userId)) {
+    if (localSongs.has(id)) continue; // Still in its undo window, or waiting for the local server.
+    await cloudCall(`/v1/library/songs/${encodeURIComponent(id)}`, { method: "DELETE", as: userId });
+    if (!stillCurrent()) return changedHere;
+    delete agreed.songs[id];
+    writeAgreed(userId, agreed);
+    const remaining = deletions(userId);
+    remaining.delete(id);
+    writeDeletions(userId, remaining);
+  }
   const missing = Object.keys(agreed.songs).filter((id) => !localSongs.has(id));
   if (missing.length > MASS_LOSS && missing.length > Object.keys(agreed.songs).length / 2) {
     agreed.cursor = 0;
@@ -153,6 +205,7 @@ export async function syncCloudSongs(userId: string, fetched?: CloudSongChanges)
   } else {
     for (const id of missing) {
       await cloudCall(`/v1/library/songs/${encodeURIComponent(id)}`, { method: "DELETE", as: userId });
+      if (!stillCurrent()) return changedHere;
       delete agreed.songs[id];
     }
   }
