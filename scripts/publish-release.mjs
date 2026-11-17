@@ -1,8 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const { revertTarget, withoutReverts } = createRequire(import.meta.url)("../desktop/changelog.cjs");
 
 /*
  * Publishes the last Windows build (release/last-build.json) as a GitHub release
@@ -77,9 +80,10 @@ console.log(`Published ${tag} to https://github.com/${build.updateRepo}/releases
 /*
  * The commits since the previous release on the same channel (the last Nightly for a
  * Nightly, the last Stable for a Stable), as Markdown lines for the release notes.
- * Merge commits are left out; a commit that was a pull request's last commit is
- * marked with that pull request. Asks GitHub rather than local Git, because CI
- * checkouts are shallow. If GitHub can't answer, the notes go out without the list.
+ * Merge commits, reverts and the commits they reverted are left out; a commit that
+ * was a pull request's last commit is marked with that pull request. Asks GitHub
+ * rather than local Git, because CI checkouts are shallow. If GitHub can't answer,
+ * the notes go out without the list.
  */
 function changesSincePreviousRelease() {
   const shown = 100;
@@ -109,7 +113,9 @@ function changesSincePreviousRelease() {
       if (number) pullRequests.set(commit.parents[1].sha, number);
     }
     // Commits past the first 1,000 are newer than those read, so a long gap lists none rather than old ones.
-    const changes = commits.length < first.total_commits ? [] : commits.filter((commit) => commit.parents.length < 2).reverse();
+    const complete = commits.length >= first.total_commits;
+    const kept = complete ? withoutReverts(commits) : { commits: [], outside: [] };
+    const changes = kept.commits.filter((commit) => commit.parents.length < 2).reverse();
     const lines = changes.slice(0, shown).map((commit) => {
       let subject = commit.commit.message.split("\n")[0].trim();
       if (subject.length > longest) subject = `${subject.slice(0, longest - 1)}…`;
@@ -118,12 +124,18 @@ function changesSincePreviousRelease() {
       return `- ${subject}${pullRequest && !alreadyNamed ? ` (#${pullRequest})` : ""} ${commit.sha.slice(0, 7)}`;
     });
     const more = changes.length - lines.length;
+    const { reverted, restored } = undoneEarlier(kept.outside);
     return [
       `### What's changed since ${previous}`,
       "",
-      ...(lines.length ? lines : [`- ${first.total_commits} commits; see the full changelog.`]),
+      // Everything here may have been reverted: then there's nothing to list, but there is a list.
+      ...(lines.length ? lines : complete ? ["Nothing new to list."] : [`- ${first.total_commits} commits; see the full changelog.`]),
       ...(more > 0 ? [`- …and ${more} more (see the full changelog)`] : []),
       "",
+      // Hidden on GitHub; What's new reads them (desktop/changelog.cjs).
+      ...(reverted.size ? [`<!-- Reverted: ${[...reverted].join(" ")} -->`] : []),
+      ...(restored.size ? [`<!-- Restored: ${[...restored].join(" ")} -->`] : []),
+      ...(reverted.size || restored.size ? [""] : []),
       `**Full changelog:** https://github.com/${build.updateRepo}/compare/${previous}...${build.commit.slice(0, 12)}`,
       "",
     ];
@@ -131,6 +143,45 @@ function changesSincePreviousRelease() {
     console.warn("Couldn't list the changes since the previous release; publishing without them.");
     return [];
   }
+}
+
+/*
+ * What this release's reverts undid in earlier releases (`outside`, from withoutReverts):
+ * the short hashes of the commits they took out, or brought back when the reverted commit
+ * was itself a revert. The notes record them so What's new can hide those changes in the
+ * older builds it lists. A commit GitHub can't look up is skipped.
+ */
+function undoneEarlier(outside) {
+  const reverted = new Set();
+  const restored = new Set();
+  const commitAt = (sha) => JSON.parse(gh("api", `repos/${build.updateRepo}/commits/${sha}`));
+  // A merge brought in its branch's commits (up to 1,000 of them); anything else, just itself.
+  const broughtIn = (commit) => {
+    if (commit.parents.length < 2) return [commit.sha];
+    const branch = [];
+    for (let page = 1, total = Infinity; branch.length < total && page <= 10; page++) {
+      const compared = JSON.parse(gh("api",
+        `repos/${build.updateRepo}/compare/${commit.parents[0].sha}...${commit.sha}?per_page=100&page=${page}`));
+      total = compared.total_commits;
+      if (!compared.commits.length) break;
+      branch.push(...compared.commits);
+    }
+    return branch.filter((c) => c.parents.length < 2).map((c) => c.sha);
+  };
+  for (const sha of outside) {
+    try {
+      let target = commitAt(sha);
+      let undo = true;
+      for (let depth = 0, next; depth < 5 && (next = revertTarget(target.commit.message)); depth++) {
+        target = commitAt(next);
+        undo = !undo;
+      }
+      for (const done of broughtIn(target)) (undo ? reverted : restored).add(done.slice(0, 7));
+    } catch {
+      console.warn(`Couldn't look up what ${sha.slice(0, 7)} reverted; older notes still list it.`);
+    }
+  }
+  return { reverted, restored };
 }
 
 function fail(message) {

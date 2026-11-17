@@ -1668,6 +1668,7 @@ button.th:not(:disabled):hover { color: var(--text); }
 .wn-changes li a { padding: 0 2px; border-radius: 4px; color: var(--ub-muted); font-size: 12px; font-weight: 600; text-decoration: none; font-variant-numeric: tabular-nums; }
 .wn-changes li a:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 .wn-changes li.wn-more a { grid-column: 2; padding: 0; font-size: 13px; }
+.wn-changes li.wn-none { color: var(--ub-muted); }
 .wn-older { display: flex; align-items: center; gap: 8px; width: 100%; margin: 6px 0 4px; padding: 9px 12px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); color: var(--text-2); font-size: 13px; font-weight: 600; }
 .wn-older:hover { background: var(--press); color: var(--text); }
 .wn-older .icon { margin-left: auto; }
