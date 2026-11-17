@@ -104,9 +104,11 @@ jobs:
           # rollback; or publishing) would otherwise build and deploy again at every check, restarting Listen
           # Along rooms each time. Only runs of master that got as far as building count, so a check that
           # failed or skipped before building can't hold nightlies up. Manual runs always go ahead, so a fix
-          # can be shipped by hand straight away.
+          # can be shipped by hand straight away. Newest finished first: a re-run of an older run counts from when
+          # it finished. (About 4 days of runs, so a re-run of anything older than that isn't seen.)
           runs=$(retry gh run list --repo "$REPO" --workflow release.yml --branch master --status completed \
-            --limit 50 --json databaseId,conclusion,updatedAt --jq '.[] | "\(.databaseId) \(.conclusion) \(.updatedAt)"' < /dev/null)
+            --limit 200 --json databaseId,conclusion,updatedAt \
+            --jq 'sort_by(.updatedAt) | reverse | .[] | "\(.databaseId) \(.conclusion) \(.updatedAt)"' < /dev/null)
           while read -r id conclusion finished; do
             [[ -n "$id" ]] || continue
             ago=$(( now - $(date -u -d "$finished" +%s) ))
