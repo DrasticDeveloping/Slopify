@@ -8,3 +8,5 @@ Captured on 2026-11-17 from this PR's head (a9b7e97) and master (006f28c), with 
 Files:
 - `logs/`: the raw transcripts and the Worker log lines shown in the images.
 - `scripts/`: the scripts that made the requests, drove the browser and rendered the images. The key and token are not included.
+
+`scripts/app.mjs`'s room-code pattern left a suffix in place (`<code>-5PEU`). `logs/app.txt` was cleaned afterwards with `sed -E 's#<code>-[A-Z0-9]+#<code>#g'`. Nothing else was edited.
