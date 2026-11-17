@@ -2448,7 +2448,8 @@ button.th:not(:disabled):hover { color: var(--text); }
 .now-card:hover .now-play, .now-play:focus-visible { opacity: 1; }
 @media (hover: none) { .now-play { opacity: 1; background: transparent; align-items: end; justify-items: end; padding: 6px; } .now-play .icon { width: 34px; height: 34px; padding: 8px; } }
 .now-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.now-who { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); min-width: 0; margin-bottom: 4px; }
+.now-who { appearance: none; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-align: left; max-width: 100%; display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); min-width: 0; margin-bottom: 4px; }
+.now-who:hover strong, .now-who:focus-visible strong { text-decoration: underline; }
 .now-who strong { font-weight: 650; color: color-mix(in oklab, var(--text) 88%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .now-avatar { width: 22px; box-shadow: 0 0 0 2px rgb(0 0 0 / 0.25); }
 .now-title { font-size: 17px; font-weight: 760; letter-spacing: -0.015em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2463,7 +2464,7 @@ button.th:not(:disabled):hover { color: var(--text); }
 /* Your friends: each row opens to their shared playlists; other actions are in its menu. */
 .friend-list { list-style: none; margin: 0 -10px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .friend { border-radius: var(--r-md); animation: row-in 400ms var(--ease-out) both; animation-delay: calc(var(--i, 0) * 40ms); transition: background 160ms; }
-.friend:hover, .friend.open { background: var(--hover); }
+.friend:hover { background: var(--hover); }
 .friend-main { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 4px; }
 .friend-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px; padding: 6px; border-radius: var(--r-md); text-align: left; color: inherit; }
 .friend-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -2477,16 +2478,11 @@ button.th:not(:disabled):hover { color: var(--text); }
 .friend-copy small.accent { color: var(--accent-ink); }
 .friend-song { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .friend-copy .eq { flex: none; height: 11px; width: 13px; }
-.friend-more-hint { font-size: 12.5px; font-weight: 650; color: var(--text-3); opacity: 0; transition: opacity 160ms; }
-.friend-toggle:hover .friend-more-hint, .friend-toggle:focus-visible .friend-more-hint { opacity: 1; }
 .friend-chevron { color: var(--text-3); flex: none; transition: transform 220ms var(--ease-out), color 160ms; }
-.friend-toggle:hover .friend-chevron { color: var(--text); }
-.friend.open .friend-chevron { transform: rotate(180deg); color: var(--text); }
+.friend-toggle:hover .friend-chevron, .friend-toggle:focus-visible .friend-chevron { color: var(--text); transform: translateX(2px); }
 .friend-action { flex: none; display: flex; justify-content: flex-end; width: 128px; }
 .la-short { display: none; }
 .friends-add-jump { display: none; }
-.friend-playlists { padding: 2px 10px 12px 70px; container-type: inline-size; }
-.friend-playlists > p { margin: 4px 0; display: flex; align-items: center; gap: 8px; }
 
 .friends-empty { display: flex; align-items: center; gap: 22px; padding: 22px; border-radius: var(--r-lg); border: 1px dashed var(--line-strong); background: var(--panel-2); }
 .friends-empty strong { font-size: 17px; font-weight: 750; }
@@ -2524,7 +2520,6 @@ button.th:not(:disabled):hover { color: var(--text); }
   .now-card { grid-template-columns: 72px minmax(0, 1fr); gap: 12px; }
   .now-cover { width: 72px; }
   .now-title { font-size: 15.5px; }
-  .friend-more-hint { display: none; }
   .friend-copy .handle { display: none; }
   .friend-action { width: 76px; }
   .friend-action .la-long { display: none; }
@@ -2532,11 +2527,32 @@ button.th:not(:disabled):hover { color: var(--text); }
   .friend-action .btn.sm { padding: 0 11px; }
   .friend-avatar .person-art { width: 42px; }
   .friend-toggle { gap: 12px; }
-  .friend-playlists { padding-left: 10px; }
   .requests-card .people li { flex-wrap: wrap; }
   .requests-card .person-actions { width: 100%; padding-left: 52px; }
   .friends-empty { flex-direction: column; align-items: flex-start; }
 }
+/* ───────────────────────── Profiles (views/Profile.tsx) ───────────────────────── */
+.profile-avatar { width: 100%; }
+.profile-view .hero { background: linear-gradient(180deg, color-mix(in oklab, var(--tint) 70%, transparent) 0%, color-mix(in oklab, var(--tint) 30%, transparent) 60%, color-mix(in oklab, var(--tint) 18%, transparent) 100%); }
+.profile-view .hero-art.round { box-shadow: 0 0 0 6px color-mix(in oklab, var(--tint) 35%, transparent), 0 24px 60px rgb(0 0 0 / 0.55); }
+.profile-actions { flex-wrap: wrap; }
+.profile-actions .profile-cta { height: 44px; padding: 0 22px; font-size: 14.5px; }
+.profile-section { margin: 6px 0 30px; }
+.profile-section-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
+.profile-section-head .section-title { margin: 0; }
+.profile-section-head p { margin: 0; }
+.profile-now { grid-template-columns: minmax(0, 520px); }
+.profile-quiet { max-width: 640px; display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 16px 18px; border-radius: var(--r-lg); border: 1px solid var(--line); background: color-mix(in oklab, var(--text) 4%, transparent); color: var(--text-2); font-size: 14px; }
+.profile-quiet > .icon { color: var(--text-3); flex: none; margin-top: 2px; }
+.profile-quiet > span { flex: 1; min-width: 0; }
+@container main (max-width: 600px) { .profile-view .hero-meta > .profile-count { display: none; } }
+.profile-note { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin: -6px 0 20px; font-size: 13px; color: var(--text-2); }
+.profile-view .text-btn { min-height: 32px; display: inline-flex; align-items: center; }
+.profile-quiet .text-btn { min-height: 0; display: inline; position: relative; padding: 0 4px; }
+.profile-quiet .text-btn::after { content: ""; position: absolute; inset: -8px -6px; }
+.meta-owner { appearance: none; background: none; border: 0; padding: 0; font: inherit; color: inherit; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; border-radius: 6px; }
+.meta-owner:hover strong, .meta-owner:focus-visible strong { text-decoration: underline; }
+
 .shared-card-wrap { position: relative; scroll-snap-align: start; min-width: 0; }
 .icon-btn.shared-dismiss { position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; z-index: 3; background: rgb(0 0 0 / 0.55); color: #fff; opacity: 0; transition: opacity 160ms; }
 .shared-card-wrap:hover .shared-dismiss, .shared-dismiss:focus-visible { opacity: 1; }

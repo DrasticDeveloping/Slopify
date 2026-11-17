@@ -38,6 +38,8 @@ import { ReleaseView } from "./views/Release";
 import { SearchView } from "./views/Search";
 import { ServerView } from "./views/Server";
 import { FriendsView, SharedView } from "./views/Friends";
+import { ProfileView } from "./views/Profile";
+import { getAccount } from "./state/cloud";
 import { watchSocial } from "./state/social";
 import { StorageView } from "./views/Storage";
 
@@ -78,6 +80,9 @@ function View({ route }: { route: Route }) {
       return <FriendsView />;
     case "shared":
       return <SharedView id={route.id} />;
+    case "profile":
+      // Keyed, so one friend’s page doesn’t carry over to the next.
+      return <ProfileView key={route.id ?? "me"} id={route.id} />;
   }
 }
 
@@ -392,7 +397,7 @@ export function App() {
         ))}
         <button
           type="button"
-          className={["storage", "server", "history", "friends", "shared"].includes(route.name) ? "on" : ""}
+          className={["storage", "server", "history", "friends", "shared", "profile"].includes(route.name) ? "on" : ""}
           aria-haspopup="menu"
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
@@ -406,6 +411,7 @@ export function App() {
                 { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
                 { separator: true },
                 { label: "Find music", icon: "search", run: () => findMusic() },
+                ...(getAccount().status === "signedIn" ? [{ label: "Your profile", icon: "user", run: () => navigate({ name: "profile" }) }] : []),
                 { label: "Friends", icon: "users", run: () => navigate({ name: "friends" }) },
                 { label: "Listen along", icon: "radio", run: () => openModal({ type: "listenAlong" }) },
                 { label: "Settings", icon: "settings", run: () => openModal({ type: "settings" }) },

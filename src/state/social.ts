@@ -138,8 +138,11 @@ export async function acceptFriend(person: Person) {
 }
 /** Declines a request to you, or cancels one you sent. */
 export const dropRequest = (person: Person) => act("Couldn't remove that request", () => cloudCall(`/v1/friends/requests/${encodeURIComponent(person.id)}`, { method: "DELETE" }));
+/** Whether it worked (a failure is told as a toast). */
 export async function removeFriend(person: Person) {
-  if (await act("Couldn't remove that friend", () => cloudCall(`/v1/friends/${encodeURIComponent(person.id)}`, { method: "DELETE" }))) toast(`Removed ${person.displayName} from your friends`);
+  const done = Boolean(await act("Couldn't remove that friend", () => cloudCall(`/v1/friends/${encodeURIComponent(person.id)}`, { method: "DELETE" })));
+  if (done) toast(`Removed ${person.displayName} from your friends`);
+  return done;
 }
 export const friendPlaylists = (friendId: string) => cloudCall<SharedSummary[]>(`/v1/friends/${encodeURIComponent(friendId)}/playlists`);
 

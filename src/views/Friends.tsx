@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { Art } from "../components/Artwork";
 import { Hero } from "../components/Hero";
 import { Bars, Icon } from "../components/Icon";
@@ -13,15 +13,15 @@ import { navigate, openMenu, openModal, playList, ask } from "../state/actions";
 import { cloudEnabled, signIn, useAccount } from "../state/cloud";
 import { joinRoom } from "../state/listen";
 import {
-  acceptFriend, addFriend, copyText, dismissInbox, dropRequest, followShared, friendPlaylists, loadShared, openShared, refreshSocial, removeFriend, saveSharedCopy,
+  acceptFriend, addFriend, copyText, dismissInbox, dropRequest, followShared, loadShared, openShared, refreshSocial, removeFriend, saveSharedCopy,
   sharedError, shareLink, trackForSong, useSocial, useSocialError, type Friend, type Person, type SharedPlaylist, type SharedSummary,
 } from "../state/social";
 import { getState, useStore, type Route } from "../state/store";
 import { Empty } from "./Collection";
 
-const personPalette = (p: Person) => paletteFromSeed(hashString(p.id));
+export const personPalette = (p: Person) => paletteFromSeed(hashString(p.id));
 const sharedPalette = (shareId: string) => paletteFromSeed(hashString(shareId));
-const ago = (at: number) => {
+export const ago = (at: number) => {
   const minutes = Math.round((Date.now() - at) / 60_000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes} min ago`;
@@ -29,9 +29,9 @@ const ago = (at: number) => {
   return hours < 24 ? `${hours} h ago` : plural(Math.round(hours / 24), "day") + " ago";
 };
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
-const since = (at: number) => new Date(at).toLocaleDateString([], { month: "long", year: "numeric" });
+export const since = (at: number, month: "long" | "short" = "long") => new Date(at).toLocaleDateString([], { month, year: "numeric" });
 
-function Avatar({ person, className = "person-art" }: { person: Person; className?: string }) {
+export function Avatar({ person, className = "person-art" }: { person: Person; className?: string }) {
   return <Art palette={personPalette(person)} round className={className} image={person.avatarUrl ?? undefined} label={person.displayName} />;
 }
 
@@ -40,7 +40,7 @@ function Name({ person }: { person: Person }) {
 }
 
 /** Signed out, or no online service: what this page would show, and one way in. While the account loads it says that instead. */
-function NeedsAccount({ what }: { what: "friends" | "shared" }) {
+export function NeedsAccount({ what }: { what: "friends" | "shared" }) {
   const account = useAccount();
   if (account.status === "loading") return <div className="view"><p className="muted metadata-loading"><span className="spinner" />Connecting to your account…</p></div>;
   const shared = what === "shared";
@@ -80,7 +80,7 @@ function NeedsAccount({ what }: { what: "friends" | "shared" }) {
   );
 }
 
-function SharedCard({ summary, subtitle, onDismiss }: { summary: SharedSummary; subtitle: string; onDismiss?: () => void }) {
+export function SharedCard({ summary, subtitle, onDismiss }: { summary: SharedSummary; subtitle: string; onDismiss?: () => void }) {
   return (
     <div className="shared-card-wrap">
       <Card
@@ -101,14 +101,14 @@ function SharedCard({ summary, subtitle, onDismiss }: { summary: SharedSummary; 
 /* ───────────────────────── what friends are playing ───────────────────────── */
 
 /** Plays the song a friend is on: your own copy if you have it, otherwise streamed from its link. */
-function playFriendSong(friend: Friend) {
+export function playFriendSong(friend: Friend, route: Route = { name: "friends" }) {
   const song = friend.activity?.song;
   if (!song?.sourceURL) return;
   const id = trackForSong({ title: song.title, artist: song.artist, album: null, sourceURL: song.sourceURL, savedAs: "audio", durationSeconds: null, artworkUrl: song.artworkUrl });
-  playList([id], id, { label: `${friend.displayName} is listening`, route: { name: "friends" } });
+  playList([id], id, { label: `${friend.displayName} is listening`, route });
 }
 
-function ListenAlong({ code, who, className = "btn sm primary" }: { code: string; who: string; className?: string }) {
+export function ListenAlong({ code, who, className = "btn sm primary" }: { code: string; who: string; className?: string }) {
   const listen = useStore((s) => s.listen.mode);
   return (
     <button type="button" className={className} disabled={listen !== "idle"} onClick={() => void joinRoom(code)} aria-label={`Listen along with ${who}`} title={listen !== "idle" ? "Leave your current room first" : undefined}>
@@ -118,7 +118,9 @@ function ListenAlong({ code, who, className = "btn sm primary" }: { code: string
 }
 
 /** A friend who's on a song right now (or paused on one): its cover, coloured like it, and a way in. */
-function NowCard({ friend, index }: { friend: Friend; index: number }) {
+/** `onProfile`: on their own profile, which already names them and has Listen along as its main button. */
+export function NowCard({ friend, index, onProfile = false }: { friend: Friend; index: number; onProfile?: boolean }) {
+  const route: Route = onProfile ? { name: "profile", id: friend.id } : { name: "friends" };
   const a = friend.activity!;
   const song = a.song!;
   const fallback = useMemo(() => personPalette(friend), [friend.id]);
@@ -129,16 +131,18 @@ function NowCard({ friend, index }: { friend: Friend; index: number }) {
       <div className="now-cover">
         <Art palette={palette} image={song.artworkUrl ?? undefined} icon="music" />
         {song.sourceURL ? (
-          <button type="button" className="now-play" onClick={() => playFriendSong(friend)} aria-label={`Play ${song.title} by ${song.artist}`} title="Play this song">
+          <button type="button" className="now-play" onClick={() => playFriendSong(friend, route)} aria-label={`Play ${song.title} by ${song.artist}`} title="Play this song">
             <Icon name="play" size={20} />
           </button>
         ) : null}
       </div>
       <div className="now-copy">
-        <span className="now-who">
-          <Avatar person={friend} className="now-avatar" />
-          <strong>{friend.displayName}</strong>
-        </span>
+        {onProfile ? null : (
+          <button type="button" className="now-who" onClick={() => navigate({ name: "profile", id: friend.id })} title={`Open ${friend.displayName}’s profile`}>
+            <Avatar person={friend} className="now-avatar" />
+            <strong>{friend.displayName}</strong>
+          </button>
+        )}
         <strong className="now-title" title={song.title}>{song.title}</strong>
         <span className="now-artist" title={song.artist}>{song.artist}</span>
         <span className="now-status">
@@ -146,7 +150,7 @@ function NowCard({ friend, index }: { friend: Friend; index: number }) {
           {status}
         </span>
       </div>
-      {a.roomCode ? <ListenAlong code={a.roomCode} who={friend.displayName} className="btn sm primary now-join" /> : null}
+      {a.roomCode && !onProfile ? <ListenAlong code={a.roomCode} who={friend.displayName} className="btn sm primary now-join" /> : null}
     </li>
   );
 }
@@ -164,45 +168,44 @@ function FriendStatus({ friend }: { friend: Friend }) {
   );
 }
 
+/** Asks first, then removes them; once that worked, runs `then` (say, to leave their profile). */
+export function confirmRemoveFriend(friend: Friend, then?: () => void) {
+  void ask({ title: `Remove ${friend.displayName}?`, body: "You'll stop seeing each other's shared playlists and listening. You can add each other again later.", confirmLabel: "Remove friend", danger: true, icon: "users" })
+    .then(async (ok) => {
+      if (ok && (await removeFriend(friend))) then?.();
+    });
+}
+
+/** A friend's menu: from their row (with "Open profile") or their profile page. */
+export function friendMenu(friend: Friend, at: { x: number; y: number }, { onProfile = false } = {}) {
+  const a = friend.activity;
+  const listen = getState().listen.mode;
+  const route: Route = onProfile ? { name: "profile", id: friend.id } : { name: "friends" };
+  openMenu({
+    ...at,
+    title: friend.displayName,
+    subtitle: friend.username ? `@${friend.username} · Friends since ${since(friend.since)}` : `Friends since ${since(friend.since)}`,
+    art: { palette: personPalette(friend), image: friend.avatarUrl ?? undefined, round: true },
+    items: [
+      ...(onProfile ? [] : [{ label: "Open profile", icon: "user", run: () => navigate({ name: "profile", id: friend.id }) }]),
+      ...(a?.roomCode ? [{ label: "Listen along", icon: "radio", disabled: listen !== "idle", run: () => void joinRoom(a.roomCode!) }] : []),
+      ...(a?.song?.sourceURL ? [{ label: `Play “${a.song.title}”`, icon: "play", run: () => playFriendSong(friend, route) }] : []),
+      ...(friend.username ? [{ label: "Copy username", icon: "copy", run: () => void copyText(`@${friend.username}`, "Username") }] : []),
+      { separator: true },
+      { label: "Remove friend…", icon: "trash", danger: true, run: () => confirmRemoveFriend(friend, onProfile ? () => { const r = getState().route; if (r.name === "profile" && r.id === friend.id) navigate({ name: "friends" }); } : undefined) },
+    ],
+  });
+}
+
 function FriendRow({ friend, index }: { friend: Friend; index: number }) {
-  const [open, setOpen] = useState(false);
-  const [playlists, setPlaylists] = useState<SharedSummary[] | null>(null);
-  const [error, setError] = useState("");
-  const panel = useId();
   const a = friend.activity;
   const live = Boolean(a?.playing);
-
-  useEffect(() => {
-    if (!open || playlists) return;
-    friendPlaylists(friend.id).then(setPlaylists, (e: unknown) => setError(e instanceof Error ? e.message : "Couldn't load their playlists."));
-  }, [open, playlists, friend.id]);
-
-  const confirmRemove = () =>
-    void ask({ title: `Remove ${friend.displayName}?`, body: "You'll stop seeing each other's shared playlists and listening. You can add each other again later.", confirmLabel: "Remove friend", danger: true, icon: "users" })
-      .then((ok) => ok && void removeFriend(friend));
-
-  const showMenu = (at: { x: number; y: number }) => {
-    const listen = getState().listen.mode;
-    openMenu({
-      ...at,
-      title: friend.displayName,
-      subtitle: friend.username ? `@${friend.username} · Friends since ${since(friend.since)}` : `Friends since ${since(friend.since)}`,
-      art: { palette: personPalette(friend), image: friend.avatarUrl ?? undefined, round: true },
-      items: [
-        ...(a?.roomCode ? [{ label: "Listen along", icon: "radio", disabled: listen !== "idle", run: () => void joinRoom(a.roomCode!) }] : []),
-        ...(a?.song?.sourceURL ? [{ label: `Play “${a.song.title}”`, icon: "play", run: () => playFriendSong(friend) }] : []),
-        { label: open ? "Hide their playlists" : "Show their playlists", icon: "playlists", run: () => setOpen(!open) },
-        ...(friend.username ? [{ label: "Copy username", icon: "copy", run: () => void copyText(`@${friend.username}`, "Username") }] : []),
-        { separator: true },
-        { label: "Remove friend…", icon: "trash", danger: true, run: confirmRemove },
-      ],
-    });
-  };
+  const showMenu = (at: { x: number; y: number }) => friendMenu(friend, at);
 
   return (
-    <li className={`friend${open ? " open" : ""}${live ? " live" : ""}`} style={{ "--i": Math.min(index, 12) } as CSSProperties}>
+    <li className={`friend${live ? " live" : ""}`} style={{ "--i": Math.min(index, 12) } as CSSProperties}>
       <div className="friend-main" onContextMenu={(e) => { e.preventDefault(); showMenu(menuPosition(e)); }}>
-        <button type="button" className="friend-toggle" aria-expanded={open} aria-controls={panel} onClick={() => setOpen(!open)}>
+        <button type="button" className="friend-toggle" onClick={() => navigate({ name: "profile", id: friend.id })} title={`Open ${friend.displayName}’s profile`}>
           <span className="friend-avatar">
             <Avatar person={friend} />
             {live ? <span className="friend-badge" aria-hidden="true"><Icon name="volume" size={10} /></span> : null}
@@ -211,8 +214,7 @@ function FriendRow({ friend, index }: { friend: Friend; index: number }) {
             <strong><Name person={friend} /></strong>
             <FriendStatus friend={friend} />
           </span>
-          <span className="friend-more-hint">Playlists</span>
-          <Icon name="chevronDown" size={16} className="friend-chevron" />
+          <Icon name="chevronRight" size={16} className="friend-chevron" />
         </button>
         <span className="friend-action">
           {a?.roomCode ? (
@@ -227,17 +229,6 @@ function FriendRow({ friend, index }: { friend: Friend; index: number }) {
           <Icon name="more" size={18} />
         </button>
       </div>
-      {open ? (
-        <div className="friend-playlists" id={panel}>
-          {error ? <p className="muted small">{error}</p> : !playlists ? <p className="muted small"><span className="spinner" />Loading their playlists…</p> : !playlists.length ? (
-            <p className="muted small">{friend.displayName} hasn't shared any playlists on their profile.</p>
-          ) : (
-            <div className="shelf-row">
-              {playlists.map((p) => <SharedCard key={p.shareId} summary={p} subtitle={plural(p.songCount, "song")} />)}
-            </div>
-          )}
-        </div>
-      ) : null}
     </li>
   );
 }
@@ -454,6 +445,8 @@ export function SharedView({ id }: { id: string }) {
   const [busy, setBusy] = useState(false);
 
   const [ids, setIds] = useState<string[]>([]);
+  // Yours, and on this device (one shared from another device may not have synced here yet).
+  const local = useStore((s) => Boolean(playlist?.playlistId && s.playlists.some((p) => p.id === playlist.playlistId)));
 
   // Loaded again while it's open (every 30 seconds while the window has focus), so the owner's changes show.
   useEffect(() => {
@@ -491,6 +484,8 @@ export function SharedView({ id }: { id: string }) {
   const route: Route = { name: "shared", id };
   const palette = sharedPalette(id);
   const art = playlist.tracks.find((t) => t.artworkUrl)?.artworkUrl ?? undefined;
+  // Your profile, or the owner's if they're your friend (only friends' profiles can be seen).
+  const ownerProfile: Route | null = playlist.mine ? { name: "profile" } : social?.friends.some((f) => f.id === playlist.owner.id) ? { name: "profile", id: playlist.owner.id } : null;
   const follow = async (on: boolean) => {
     setBusy(true);
     if (await followShared(id, on)) setPlaylist({ ...playlist, following: on });
@@ -506,16 +501,20 @@ export function SharedView({ id }: { id: string }) {
         description={playlist.description}
         tint={palette.b}
         play={{ ids, label: playlist.name, route }}
-        meta={<><Avatar person={playlist.owner} className="meta-avatar" /><strong>{playlist.mine ? "You" : playlist.owner.displayName}</strong><span>{plural(ids.length, "song")}</span>{total ? <span>{formatLongDuration(total)}</span> : null}</>}
+        meta={<>{ownerProfile ? (
+          <button type="button" className="meta-owner" onClick={() => navigate(ownerProfile)} title={playlist.mine ? "Open your profile" : `Open ${playlist.owner.displayName}’s profile`}>
+            <Avatar person={playlist.owner} className="meta-avatar" /><strong>{playlist.mine ? "You" : playlist.owner.displayName}</strong>
+          </button>
+        ) : <><Avatar person={playlist.owner} className="meta-avatar" /><strong>{playlist.owner.displayName}</strong></>}<span>{plural(ids.length, "song")}</span>{total ? <span>{formatLongDuration(total)}</span> : null}</>}
       />
       <div className="action-bar">
         <PlayFab ids={ids} label={playlist.name} route={route} size="lg" />
-        {playlist.mine ? (
+        {playlist.mine ? (local ? (
           <>
             <button type="button" className="btn" onClick={() => navigate({ name: "playlist", id: playlist.playlistId! })}><Icon name="playlists" size={18} />Open your playlist</button>
             <button type="button" className="btn" onClick={() => openModal({ type: "sharePlaylist", id: playlist.playlistId! })}><Icon name="link" size={18} />Sharing</button>
           </>
-        ) : (
+        ) : <span className="muted small">Shared from another device. It shows in your library once it syncs.</span>) : (
           <>
             <button type="button" className={`btn${playlist.following ? "" : " primary"}`} disabled={busy} onClick={() => void follow(!playlist.following)}>
               <Icon name={playlist.following ? "check" : "plus"} size={18} />{playlist.following ? "Following" : "Follow"}

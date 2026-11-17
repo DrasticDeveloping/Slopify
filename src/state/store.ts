@@ -26,6 +26,8 @@ export type Route =
   | { name: "server" }
   | { name: "history" }
   | { name: "friends" }
+  /** A friend’s profile, or yours without an id. */
+  | { name: "profile"; id?: string }
   /** A playlist someone shared (src/state/social.ts), by share id. */
   | { name: "shared"; id: string };
 
