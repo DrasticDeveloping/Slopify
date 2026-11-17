@@ -299,6 +299,15 @@ const message = (error: unknown) => (error instanceof Error ? error.message : "C
  */
 export const CLOUD_CLIENT = 2;
 /**
+ * Server behaviours this build was made for (cloud/src/features.ts callerHas). A change whose
+ * new server behaviour installed copies mustn't get adds a name here and checks it in the
+ * service, in the same pull request, so only builds containing it get it: the next nightly,
+ * and Stable once it's released after the merge. A name is never reused, and goes only once
+ * the service has stopped checking it (docs/cloud.md, "Old versions of the app").
+ */
+export const CLOUD_FEATURES: readonly string[] = [];
+const features = CLOUD_FEATURES.join(",");
+/**
  * Set once the service said this build is too old: no more calls this session
  * (each would only be turned away again), and the desktop app looks for its update.
  */
@@ -318,7 +327,12 @@ export async function cloudCall<T>(path: string, { method = "GET", body, signal,
   try {
     res = await send(path, {
       method,
-      headers: { Authorization: `Bearer ${token}`, "X-Slopify-Client": String(CLOUD_CLIENT), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-Slopify-Client": String(CLOUD_CLIENT),
+        ...(features ? { "X-Slopify-Features": features } : {}),
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: signal ?? AbortSignal.timeout(20_000),
       cache: "no-store",
@@ -386,5 +400,6 @@ export async function roomSocketUrl(code: string) {
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("token", token);
   url.searchParams.set("client", String(CLOUD_CLIENT));
+  if (features) url.searchParams.set("features", features);
   return url.toString();
 }

@@ -22,7 +22,8 @@ import {
  * is: `X-Slopify-Client: <n>`, or `?client=<n>` for WebSockets. Anything older
  * than MIN_CLIENT (or not saying, as builds before it didn't) gets
  * 426 UPDATE_REQUIRED, before sign-in is checked, so an old build that
- * misbehaves can be turned away cheaply.
+ * misbehaves can be turned away cheaply. It may also name the server behaviours
+ * it was made for (`X-Slopify-Features`, or `?features=`; src/features.ts).
  *
  *   GET    /v1/health
  *   GET    /p/:shareId                 a shared playlist's link opened in a browser: how to open it in Slopify (no sign-in)
@@ -75,6 +76,13 @@ async function limit(limiter: RateLimit | undefined, key: string) {
  */
 const MIN_CLIENT = 2;
 
+/** The version of the app's calls the caller says it makes (X-Slopify-Client, or ?client= on WebSockets), or null if it doesn't say a plausible one. */
+function callerClient(request: Request, url: URL) {
+  const raw = request.headers.get("X-Slopify-Client") ?? url.searchParams.get("client");
+  const client = Number(raw);
+  return raw && Number.isInteger(client) && client >= 0 && client < 1000 ? client : null;
+}
+
 const MAX_BODY_BYTES = 1024 * 1024;
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE = /^[A-HJ-NP-Z2-9]{4}-?[A-HJ-NP-Z2-9]{4}$/;
@@ -83,7 +91,7 @@ const CODE = /^[A-HJ-NP-Z2-9]{4}-?[A-HJ-NP-Z2-9]{4}$/;
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Slopify-Client",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Slopify-Client, X-Slopify-Features",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -186,8 +194,8 @@ const service = {
     try {
       if (parts[1] === "health" && parts.length === 2) return ok({ service: "slopify-cloud" });
       // Old builds are turned away first, before they cost a sign-in check or a rate-limit lookup.
-      const client = Number(request.headers.get("X-Slopify-Client") ?? url.searchParams.get("client") ?? 0);
-      if (!(client >= MIN_CLIENT)) {
+      const client = callerClient(request, url);
+      if (client === null || client < MIN_CLIENT) {
         return reply(426, { ok: false, error: { code: "UPDATE_REQUIRED", message: "This version of Slopify is too old for your account. Update Slopify to keep syncing." } });
       }
 
@@ -330,9 +338,11 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const started = Date.now();
     const response = await service.fetch(request, env);
-    // One line per call, so Workers Logs can count calls by route (wrangler.jsonc `observability`).
-    // Only the route's shape is logged: never ids, the query (WebSocket tokens travel there) or who called.
-    console.log(JSON.stringify({ method: request.method, route: routeOf(request.method, new URL(request.url).pathname), status: response.status, ms: Date.now() - started }));
+    // One line per call, so Workers Logs can count calls by route and by the version of the app's calls (wrangler.jsonc
+    // `observability`). Only the route's shape and that one number are logged: never ids, the rest of the query
+    // (WebSocket tokens travel there) or who called.
+    const url = new URL(request.url);
+    console.log(JSON.stringify({ method: request.method, route: routeOf(request.method, url.pathname), client: callerClient(request, url), status: response.status, ms: Date.now() - started }));
     return response;
   },
   scheduled: service.scheduled,
