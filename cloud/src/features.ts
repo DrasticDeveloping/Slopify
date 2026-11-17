@@ -16,5 +16,5 @@ const MAX_LENGTH = 1024;
 /** Whether the caller's build was made with server behaviour `name`: `X-Slopify-Features: a,b`, or `?features=a,b` on WebSockets. */
 export function callerHas(request: Request, name: string): boolean {
   const raw = request.headers.get("X-Slopify-Features") ?? new URL(request.url).searchParams.get("features") ?? "";
-  return raw.length <= MAX_LENGTH && raw.split(",").some((entry) => entry.trim() === name);
+  return name !== "" && raw.length <= MAX_LENGTH && raw.split(",").some((entry) => entry.trim() === name);
 }

@@ -76,7 +76,7 @@ async function limit(limiter: RateLimit | undefined, key: string) {
  */
 const MIN_CLIENT = 2;
 
-/** The version of the app's calls the caller says it makes (X-Slopify-Client, or ?client= on WebSockets), or null if it doesn't say a plausible one. */
+/** For the log: the version of the app's calls the caller says it makes (X-Slopify-Client, or ?client= on WebSockets), or null if it doesn't say a plausible one. */
 function callerClient(request: Request, url: URL) {
   const raw = request.headers.get("X-Slopify-Client") ?? url.searchParams.get("client");
   const client = Number(raw);
@@ -194,8 +194,8 @@ const service = {
     try {
       if (parts[1] === "health" && parts.length === 2) return ok({ service: "slopify-cloud" });
       // Old builds are turned away first, before they cost a sign-in check or a rate-limit lookup.
-      const client = callerClient(request, url);
-      if (client === null || client < MIN_CLIENT) {
+      const client = Number(request.headers.get("X-Slopify-Client") ?? url.searchParams.get("client") ?? 0);
+      if (!(client >= MIN_CLIENT)) {
         return reply(426, { ok: false, error: { code: "UPDATE_REQUIRED", message: "This version of Slopify is too old for your account. Update Slopify to keep syncing." } });
       }
 
