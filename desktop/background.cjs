@@ -69,6 +69,12 @@ function startBackground({ getWindow, show, log }) {
   }
   buildTray();
 
+  function setNowPlaying(now) {
+    nowPlaying = now;
+    buildTray();
+    discord?.setNowPlaying(nowPlaying);
+  }
+
   ipcMain.handle("desktop:get-settings", () => ({ ...settings, discordAvailable: Boolean(discord) }));
   ipcMain.handle("desktop:set-settings", (_event, patch) => {
     const next = { ...settings };
@@ -80,14 +86,13 @@ function startBackground({ getWindow, show, log }) {
     return { ...settings, discordAvailable: Boolean(discord) };
   });
   ipcMain.on("player:now-playing", (_event, now) => {
-    nowPlaying = now && typeof now === "object" && typeof now.title === "string" ? now : null;
-    buildTray();
-    discord?.setNowPlaying(nowPlaying);
+    setNowPlaying(now && typeof now === "object" && typeof now.title === "string" ? now : null);
   });
 
   return {
-    /** Whether closing the window should hide it to the tray instead of quitting. */
+    /** Whether closing the window should hide it and keep playback running. */
     keepInTray: () => settings.closeToTray,
+    clearNowPlaying: () => setNowPlaying(null),
     /** Whether music is playing right now (an update waits rather than cut it off). */
     isPlaying: () => Boolean(nowPlaying?.playing),
     hidden() {

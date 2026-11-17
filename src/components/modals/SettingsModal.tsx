@@ -4,7 +4,7 @@ import { plural } from "../../lib/format";
 import { rovingKey } from "../../lib/roving";
 import { qualified, reasonWeight, type ReasonKind, type TasteState } from "../../recommend/taste";
 import { resetAppData, resetRecommendations, showHiddenRecommendations, updateSettings, ask } from "../../state/actions";
-import { checkForUpdates, installUpdate, isDesktopApp, setDesktopSetting, setUpdateChannel, useDesktopSettings, useDesktopUpdates, type DesktopUpdates, type UpdateChannel } from "../../state/desktop";
+import { checkForUpdates, installUpdate, isDesktopApp, isMacDesktopApp, setDesktopSetting, setUpdateChannel, useDesktopSettings, useDesktopUpdates, type DesktopUpdates, type UpdateChannel } from "../../state/desktop";
 import { checkUsername, cloudEnabled, manageAccount, saveProfile, signIn, signOut, useAccount } from "../../state/cloud";
 import { toast } from "../../state/actions";
 import { connect, disconnect } from "../../state/server";
@@ -276,7 +276,9 @@ function DesktopBehaviourRows() {
   if (!d) return null;
   return (
     <>
-      <Row icon="collapse" title="Keep playing when closed" desc="Closing the window keeps Slopify playing in the system tray, like Discord. Quit from the tray icon.">
+      <Row icon="collapse" title="Keep playing when closed" desc={isMacDesktopApp
+        ? "Closing the window keeps music playing. Control playback from the menu bar or reopen Slopify from the Dock."
+        : "Closing the window keeps Slopify playing in the system tray, like Discord. Quit from the tray icon."}>
         <Toggle checked={d.closeToTray} onChange={(v) => setDesktopSetting({ closeToTray: v })} label="Keep playing when closed" />
       </Row>
       <Row icon="discord" title="Show what you're playing on Discord" desc={d.discordAvailable ? "Your Discord profile shows the song as \"Listening to\" while the Discord app is open." : "This copy of Slopify wasn't built with a Discord application, so it can't show your status."}>

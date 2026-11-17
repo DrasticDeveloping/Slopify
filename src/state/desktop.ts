@@ -81,6 +81,7 @@ interface Bridge {
 
 const bridge = (window as Window & { slopifyDesktop?: Bridge }).slopifyDesktop ?? null;
 export const isDesktopApp = Boolean(bridge);
+export const isMacDesktopApp = bridge?.platform === "darwin";
 
 let state: DesktopUpdates | null = null;
 const listeners = new Set<() => void>();
