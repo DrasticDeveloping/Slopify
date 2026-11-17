@@ -5,16 +5,16 @@ const fs = require("node:fs");
 const semver = require("semver");
 const { NightlyGitHubProvider } = require("../desktop/nightly-provider.cjs");
 
-function provider(tags, allowPrerelease = true) {
+function provider(tags, allowPrerelease = true, { platform = "win32", assets = null } = {}) {
   const requested = [];
   const updater = { channel: allowPrerelease ? "nightly" : "latest", allowPrerelease, currentVersion: new semver.SemVer("2.0.0") };
   const instance = new NightlyGitHubProvider({ owner: "test", repo: "releases" }, updater, {
-    platform: "win32", executor: { request: async (options) => {
+    platform, executor: { request: async (options) => {
       requested.push(options.path);
       // Stable reads the releases feed (electron-updater's own provider).
       if (options.path.includes(".atom")) return `<feed>${tags.map(tag => `<entry><link href="https://github.com/test/releases/releases/tag/${tag}"/><title>${tag}</title><content>Notes</content></entry>`).join("")}</feed>`;
       // `tags` are listed newest first; the API's order doesn't matter, so it's reversed here.
-      if (options.path.includes("/repos/test/releases/releases")) return JSON.stringify(tags.map((tag, i) => ({ tag_name: tag, name: tag, body: "Notes", draft: false, published_at: new Date(Date.UTC(2026, 9, 20) - i * 60_000).toISOString() })).reverse());
+      if (options.path.includes("/repos/test/releases/releases")) return JSON.stringify(tags.map((tag, i) => ({ tag_name: tag, name: tag, body: "Notes", draft: false, published_at: new Date(Date.UTC(2026, 9, 20) - i * 60_000).toISOString(), ...(assets ? { assets: assets(tag).map((name) => ({ name })) } : {}) })).reverse());
       if (options.path.endsWith("/latest")) return JSON.stringify({ tag_name: "v2.0.0" });
       const tag = /\/download\/(v[^/]+)\//.exec(options.path)?.[1];
       return `version: ${tag.slice(1)}\nfiles:\n  - url: Setup.exe\n    sha512: checksum\n`;
@@ -87,4 +87,43 @@ test("Stored beta migrates to Nightly; switching to Stable allows downgrade", as
   assert.equal(saved.channel, "stable");
   // Still a nightly, so a later check (after a failed one, or a restart) can still go back to Stable.
   assert.equal(updater.allowDowngrade, true);
+});
+
+test("A Mac reads the Mac update files", async () => {
+  const nightly = provider(["v2.0.1-nightly.20261013.930", "v2.0.0"], true, { platform: "darwin" });
+  assert.equal((await nightly.instance.getLatestVersion()).version, "2.0.1-nightly.20261013.930");
+  assert.ok(nightly.requested.some(path => path.endsWith("/v2.0.1-nightly.20261013.930/nightly-mac.yml")));
+  const stable = provider(["v2.0.1", "v2.0.1-nightly.20261013.930"], true, { platform: "darwin" });
+  assert.equal((await stable.instance.getLatestVersion()).version, "2.0.1");
+  assert.ok(stable.requested.some(path => path.endsWith("/v2.0.1/latest-mac.yml")));
+});
+
+test("Nightly passes over a release without this platform's update file", async () => {
+  // The newest release was published from a Windows-only build.
+  const assets = (tag) => tag === "v2.0.1-nightly.20261014.100" ? ["nightly.yml"] : ["nightly.yml", "nightly-mac.yml", "latest.yml", "latest-mac.yml"];
+  const tags = ["v2.0.1-nightly.20261014.100", "v2.0.1-nightly.20261013.930"];
+  assert.equal((await provider(tags, true, { platform: "darwin", assets }).instance.getLatestVersion()).version, "2.0.1-nightly.20261013.930");
+  assert.equal((await provider(tags, true, { platform: "win32", assets }).instance.getLatestVersion()).version, "2.0.1-nightly.20261014.100");
+});
+
+test("A Mac downloads the zip for its own kind of Mac", () => {
+  const load = (arch, rosetta = false) => {
+    const sandbox = { module: { exports: {} }, process: { arch }, require(name) {
+      if (name === "electron") return { app: { runningUnderARM64Translation: rosetta }, net: {} };
+      return require(name);
+    } };
+    vm.runInNewContext(fs.readFileSync(require.resolve("../desktop/mac-update.cjs"), "utf8"), sandbox);
+    return sandbox.module.exports.zipFor;
+  };
+  const files = [
+    { url: "Slopify-2.0.1-x64-mac.zip" }, { url: "Slopify-2.0.1-arm64-mac.zip" },
+    { url: "Slopify-2.0.1-arm64.dmg" }, { url: "Slopify-2.0.1-x64.dmg" },
+  ];
+  assert.equal(load("arm64")(files).url, "Slopify-2.0.1-arm64-mac.zip");
+  assert.equal(load("x64")(files).url, "Slopify-2.0.1-x64-mac.zip");
+  // The Intel app on Apple silicon moves to the native one.
+  assert.equal(load("x64", true)(files).url, "Slopify-2.0.1-arm64-mac.zip");
+  // An Apple silicon Mac can run the Intel one when that's all there is; an Intel Mac can't run arm64.
+  assert.equal(load("arm64")([files[0]]).url, "Slopify-2.0.1-x64-mac.zip");
+  assert.equal(load("x64")([files[1]]), null);
 });

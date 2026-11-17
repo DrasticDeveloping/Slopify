@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { engine } from "../audio/engine";
 import { formatTime } from "../lib/format";
+import { keyLabel } from "../lib/keys";
 import { pollPosition, useCurrent, useLiveText } from "../lib/hooks";
 import { onLiveFrame } from "../lib/live";
 import { cycleRepeat, isLiked, navigate, next, trackSongRoute, openMenu, positionOf, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, cycleShuffle } from "../state/actions";
@@ -43,14 +44,14 @@ export function Transport({ big }: { big?: boolean }) {
       >
         <Icon name={smart ? "smartShuffle" : "shuffle"} size={size - 2} />
       </button>
-      <button type="button" className="icon-btn" onClick={previous} disabled={!hasTrack} aria-label="Previous" title="Previous (Ctrl ←)">
+      <button type="button" className="icon-btn" onClick={previous} disabled={!hasTrack} aria-label="Previous" title={keyLabel("Previous (Ctrl ←)")}>
         <Icon name="prev" size={size} />
       </button>
       <button type="button" className={`play-main${isPlaying ? " playing" : ""}${buffering ? " loading" : ""}`} onClick={togglePlay} aria-label={isPlaying ? "Pause" : "Play"} title={isPlaying ? "Pause (Space)" : "Play (Space)"}>
         <span className="pm-icon pm-play"><Icon name="play" size={big ? 30 : 20} /></span>
         <span className="pm-icon pm-pause"><Icon name="pause" size={big ? 30 : 20} /></span>
       </button>
-      <button type="button" className="icon-btn" onClick={next} disabled={!hasTrack} aria-label="Next" title="Next (Ctrl →)">
+      <button type="button" className="icon-btn" onClick={next} disabled={!hasTrack} aria-label="Next" title={keyLabel("Next (Ctrl →)")}>
         <Icon name="next" size={size} />
       </button>
       <button

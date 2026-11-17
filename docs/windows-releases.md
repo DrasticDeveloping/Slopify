@@ -1,5 +1,7 @@
 # Make Windows builds to share
 
+(For the Mac app, see [docs/mac-releases.md](mac-releases.md). Releases carry both.)
+
 On a Windows x64 computer with Node 22.12 or newer, run these commands from the project folder. In PowerShell, use `npm.cmd` to avoid blocked PowerShell shims.
 
 ```powershell
@@ -21,7 +23,7 @@ Each build goes in its own folder, `release/<version>/` (for example `release/0.
 | `Slopify-<version>-x64-Setup.exe` | An installer with a destination choice and desktop shortcut. Installs for the current user, and updates itself. |
 | Matching `.exe.sha256` files | SHA-256 checksums for checking that a file transferred correctly. |
 | `latest.yml` or `nightly.yml`, and `.blockmap` | Update files. Only needed when publishing a release; don't send them. |
-| `build.json` | What was built: version, channel, update repo, and Git commit. |
+| `build-windows.json` | What was built: version, channel, update repo, Git commit, and the files. A Mac build of the same version adds its files and `build-mac.json` to the same folder. |
 
 `release/last-build.json` points to the newest build, and `release/unpacked-path.txt` to the temporary unpacked app from `dist:win:unpacked` (its EXE needs the surrounding files; don't send it alone).
 
@@ -77,7 +79,9 @@ npm.cmd run release:nightly     # build a nightly and publish it as a pre-releas
 npm.cmd run release:stable   # build package.json's version and publish it as the latest release
 ```
 
-Each command builds first, then runs `node scripts/publish-release.mjs`, which uploads `release/last-build.json`'s files as a GitHub release named for its version (`v0.0.2-nightly.20261012.930`). Publishing refuses a version that's already released, and a build without an update repo. To publish a build you've already made and tested, run `node scripts/publish-release.mjs` on its own.
+Each command builds first, then runs `node scripts/publish-release.mjs`, which uploads the files of every platform built for the last build's version (`release/<version>/build-*.json`) as one GitHub release named for that version (`v0.0.2-nightly.20261012.930`). Publishing refuses a version that's already released, a build without an update repo, and Windows and Mac builds of one version made from different commits. To publish a build you've already made and tested, run `node scripts/publish-release.mjs` on its own (`--version <v>` picks another version's folder).
+
+A release published from here has only the Windows files, unless the Mac build of the same version was copied into its folder. Macs on Nightly pass over a release without Mac files, so a nightly publishes with a warning. A stable release becomes the one every copy on Stable reads, so publishing refuses a stable release without the Mac files unless you pass `--allow-missing` (`node scripts/publish-release.mjs --allow-missing`); Macs on Stable then report an error until the next stable release with them. The release workflow always publishes both.
 
 Before a stable release, raise the version: `npm.cmd version patch --no-git-tag-version`.
 
@@ -87,16 +91,16 @@ Build an older and a newer version with any `updateRepo` set (for example `SLOPI
 
 ### Automatic Nightly builds
 
-`.github/workflows/release.yml` builds Slopify on GitHub's Windows machines:
+`.github/workflows/release.yml` builds Slopify on GitHub's Windows and Mac machines, from the same commit and with the same version (worked out once, by `node scripts/release-build.mjs version`), and publishes them as one release. If either build fails, nothing is published:
 
-- **At most every 6 hours**, once nightlies are switched on, it builds a nightly of `master` and publishes it. Like T3 Code's, the schedule checks twice an hour (at :08 and :38), because GitHub often starts scheduled runs late or skips them; when it skips one, there's another chance 30 minutes later instead of 6 hours later. Each check runs on a small Linux machine and starts the Windows build only when the last nightly was published at least 6 hours ago and `master` has commits it doesn't (compared with that nightly's tag, so a manual nightly of another branch doesn't hold up the next one of `master`). Otherwise the run ends in a few seconds. After a release of `master` fails once it has been built (a failed cloud check and rollback, say, or a failed publish), scheduled checks wait 6 hours before building again, rather than redeploying every 30 minutes, and say so in a warning on each skipped run; run the workflow by hand to ship a fix sooner.
+- **At most every 6 hours**, once nightlies are switched on, it builds a nightly of `master` and publishes it. Like T3 Code's, the schedule checks twice an hour (at :08 and :38), because GitHub often starts scheduled runs late or skips them; when it skips one, there's another chance 30 minutes later instead of 6 hours later. Each check runs on a small Linux machine and starts the builds only when the last nightly was published at least 6 hours ago and `master` has commits it doesn't (compared with that nightly's tag, so a manual nightly of another branch doesn't hold up the next one of `master`). Otherwise the run ends in a few seconds. After a release of `master` fails once it has been built (a failed cloud check and rollback, say, or a failed publish), scheduled checks wait 6 hours before building again, rather than redeploying every 30 minutes, and say so in a warning on each skipped run; run the workflow by hand to ship a fix sooner.
 - **On demand**, from Actions → Release → Run workflow, it builds a nightly or stable release from any branch.
 
 Each release's notes list the commits since the previous release on the same channel (the last Nightly for a Nightly, the last Stable for a Stable), newest first, with their pull request numbers and a full-changelog link. Merge commits are left out. If GitHub can't supply the list, the release is published without it.
 
 The app's update notification reads these lists. **What's new** (desktop/changelog.cjs) shows every change between the installed version and the update, newest build first, with the builds grouped. It uses one request to GitHub's releases API when an update is found. A nightly update lists nightlies only and a stable update lists stable releases only, because each kind's notes only cover changes since the last release of that kind. When the notes have no list, or GitHub can't be reached, the notification links to the release page instead.
 
-The workflow needs the work committed and pushed. Manual runs default to publishing disabled and retain a downloadable `slopify-windows-nightly` or `slopify-windows-stable` artifact for 14 days. GitHub-hosted Actions runners are free for this public repository.
+The workflow needs the work committed and pushed. Manual runs default to publishing disabled and retain downloadable `slopify-windows-<channel>` and `slopify-mac-<channel>` artifacts for 14 days. GitHub-hosted Actions runners are free for this public repository.
 
 Nightlies are off until you switch them on, so nothing is published on a schedule before you're ready. To switch them on, set the repository variable (**Settings → Secrets and variables → Actions → Variables**, or the command below); to pause them, set it to anything else or delete it:
 
@@ -104,7 +108,7 @@ Nightlies are off until you switch them on, so nothing is published on a schedul
 gh variable set SLOPIFY_PUBLISH_NIGHTLIES --repo DrasticDeveloping/Slopify --body true
 ```
 
-Once on, the schedule can publish the first Nightly without a previous release: an empty release list does not skip the build. Later runs skip packaging while `master` is unchanged or the last nightly is under 6 hours old. Releases are tagged at the exact clean source commit recorded in `build.json`, rather than whichever commit happens to be the default branch tip when publishing. Local publishing rejects dirty builds; commit and push the source, then rebuild before publishing.
+Once on, the schedule can publish the first Nightly without a previous release: an empty release list does not skip the build. Later runs skip packaging while `master` is unchanged or the last nightly is under 6 hours old. Releases are tagged at the exact clean source commit recorded in `build-windows.json` and `build-mac.json`, rather than whichever commit happens to be the default branch tip when publishing. Local publishing rejects dirty builds; commit and push the source, then rebuild before publishing.
 
 ## Build again after changes
 

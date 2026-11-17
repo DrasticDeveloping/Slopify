@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell, utilityProcess } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell, utilityProcess } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { startUpdates } = require("./updates.cjs");
@@ -10,6 +10,11 @@ app.setAppUserModelId("com.drasticdeveloping.slopify");
 // Once the video controls fade out, nothing covers the video and Chromium hands it to a
 // Windows hardware overlay, where the picture can freeze while the sound carries on.
 app.commandLine.appendSwitch("disable-direct-composition-video-overlays");
+// The Mac app is signed ad hoc, so each update is a different app to the keychain, which
+// would ask for your password to let it read the key Chromium encrypts cookies with. Slopify
+// keeps nothing in cookies it relies on (Clerk's session is in local storage), so it doesn't
+// use the keychain for them.
+if (process.platform === "darwin") app.commandLine.appendSwitch("use-mock-keychain");
 // Running from a checkout (`npm run desktop`, T3's Launch) uses the library and profile
 // all checkouts share (or this checkout's own, isolated: see server/data-dir.cjs) and
 // its own port, so it can run beside an installed copy.
@@ -90,6 +95,40 @@ function createWindow() {
   window.loadURL(origin).catch(fail);
 }
 
+/*
+ * The Mac menu bar: the usual app, Edit (which copy and paste in text fields need),
+ * View and Window menus. Settings… (⌘,) opens Slopify's settings; ⌘W closes the
+ * window, which keeps Slopify playing like the close button does. Windows and Linux
+ * hide the menu bar (setMenuBarVisibility above).
+ */
+function macMenu() {
+  const settings = () => {
+    showWindow();
+    if (window && !window.isDestroyed()) window.webContents.send("player:command", "settings");
+  };
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: "appMenu", submenu: [
+      { role: "about" },
+      { type: "separator" },
+      { label: "Settings…", accelerator: "Command+,", click: settings },
+      { type: "separator" },
+      { role: "services" },
+      { type: "separator" },
+      { role: "hide" },
+      { role: "hideOthers" },
+      { role: "unhide" },
+      { type: "separator" },
+      { role: "quit" },
+    ] },
+    { role: "editMenu" },
+    // Reload and the developer tools only from a checkout: a reload stops the music.
+    app.isPackaged
+      ? { label: "View", submenu: [{ role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }] }
+      : { role: "viewMenu" },
+    { role: "windowMenu" },
+  ]));
+}
+
 const logFile = path.join(profileDir, "desktop.log");
 const log = (chunk) => { try { fs.appendFileSync(logFile, chunk); } catch { /* Logging never stops the app. */ } };
 
@@ -101,7 +140,7 @@ async function startBackend() {
     env: {
       ...process.env, HOST: "127.0.0.1", PORT: String(port),
       SLOPIFY_DATA_DIR: process.env.SLOPIFY_DATA_DIR || (checkout ? checkout.checkoutDataDir(app.getAppPath()) : path.join(userData, "library")),
-      FFMPEG_BIN: app.isPackaged ? path.join(process.resourcesPath, "bin/ffmpeg.exe") : require("ffmpeg-static")
+      FFMPEG_BIN: app.isPackaged ? path.join(process.resourcesPath, process.platform === "win32" ? "bin/ffmpeg.exe" : "bin/ffmpeg") : require("ffmpeg-static")
     }
   });
   let output = "";
@@ -199,6 +238,7 @@ else {
     listenForLinks(profileDir, openLink);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid SLOPIFY_DESKTOP_PORT.");
     await startBackend();
+    if (process.platform === "darwin") macMenu();
     createWindow();
     background = startBackground({ getWindow: () => window, show: showWindow, log });
     startUpdates(() => window, log, { isPlaying: () => Boolean(background?.isPlaying()) });

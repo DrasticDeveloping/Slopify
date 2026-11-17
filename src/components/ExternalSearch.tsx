@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import { openSearchResultMenu, openTrackMenu } from "../lib/menus";
 import { formatTime } from "../lib/format";
+import { keyLabel } from "../lib/keys";
 import { navigate, playList, togglePlay } from "../state/actions";
 import { getState, useStore } from "../state/store";
 import {
@@ -533,7 +534,7 @@ export function ExternalSearch({ query }: { query: string }) {
           {r.playlist?.spotifyLimit ? (
             <p className="muted small">
               Spotify only shows other apps the first 100 songs of a playlist. To bring in all of it, open the playlist in
-              the Spotify app, select every song (Ctrl+A), copy them (Ctrl+C) and paste here.
+              the Spotify app, select every song ({keyLabel("Ctrl+A")}), copy them ({keyLabel("Ctrl+C")}) and paste here.
             </p>
           ) : null}
           {r.playlist?.unavailableCount ? <p className="muted small">{countSongs(r.playlist.unavailableCount)} in this playlist {r.playlist.unavailableCount === 1 ? "isn't" : "aren't"} available on {r.kind === "soundcloud_playlist" ? "SoundCloud" : "Spotify"}.</p> : null}

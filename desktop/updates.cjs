@@ -13,7 +13,9 @@ const { loadChangelog } = require("./changelog.cjs");
  * The installed app checks as it starts and installs what it finds straight away,
  * then reopens (unless music is already playing by then). Updates found later
  * download in the background and install on restart, or on the next start. The
- * portable EXE can't replace itself, so it links to the download.
+ * portable EXE can't replace itself, so it links to the download. On a Mac, the
+ * update is installed by mac-update.cjs, and a copy that can't replace itself (not
+ * yet moved to Applications, say) links to the download too.
  */
 
 /** Often, so a build the online service turns away (cloud/src/index.ts MIN_CLIENT) is replaced soon. */
@@ -63,12 +65,16 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
   const feed = app.isPackaged ? readFeed() : null;
   // Test override: a folder of release files served over HTTP (see docs/windows-releases.md).
   const testFeed = feed && process.env.SLOPIFY_UPDATE_FEED_URL;
+  const mac = feed && process.platform === "darwin" ? require("./mac-update.cjs").createMacInstaller(log) : null;
+  /** Updates are downloaded by hand: the portable EXE, or a Mac copy that can't replace itself. */
+  const manual = portable || Boolean(mac && !mac.canInstall());
   /** status: unsupported | idle | checking | none | available | downloading | ready | installing | error */
   let state = {
     version: app.getVersion(),
     channel: readChannel(),
     status: feed ? "idle" : "unsupported",
-    portable,
+    /** Updates are downloaded by hand (named for the portable EXE, the first such copy). */
+    portable: manual,
     available: null,
     /** When the update was built (ISO), and its release page. */
     releaseDate: null,
@@ -133,27 +139,36 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
   autoUpdater.on("update-not-available", () => {
     if (!stale()) send({ status: "none", available: null, checkedAt: Date.now() });
   });
+  /** Whether quitting installs the update that's downloaded. */
+  const installOnQuit = (on) => {
+    autoUpdater.autoInstallOnAppQuit = on;
+    mac?.setInstallOnQuit(on);
+  };
   autoUpdater.on("update-available", (info) => {
     // Found for the channel chosen before a switch: ignored, and checked again for the new one.
     if (stale()) return;
     downloadingFor = state.channel;
+    // A Mac copy whose install of this version failed (mac-update.cjs) offers it as a download instead.
+    const byHand = manual || Boolean(mac?.failedBefore(info.version));
     // Already listed for this update (found again, or again after a channel switch): reused.
     const asked = changelogAsks.get(info.version);
     const known = asked?.done ? asked.result : null;
     send({
-      status: portable ? "available" : "downloading", available: info.version, progress: 0, checkedAt: Date.now(),
+      status: byHand ? "available" : "downloading", portable: byHand, available: info.version, progress: 0, checkedAt: Date.now(),
       releaseDate: info.releaseDate || null,
       releaseUrl: testFeed ? null : `https://github.com/${feed.owner}/${feed.repo}/releases/tag/v${info.version}`,
       changelog: known,
     });
     fetchChangelog(info.version);
-    if (!portable) autoUpdater.downloadUpdate().catch(() => undefined); // Failures arrive as "error".
+    if (mac && !byHand) downloadForMac(info);
+    else if (!byHand) autoUpdater.downloadUpdate().catch(() => undefined); // Failures arrive as "error".
   });
   autoUpdater.on("download-progress", (p) => send({ status: "downloading", progress: Math.round(p.percent) }));
-  autoUpdater.on("update-downloaded", (info) => {
+  autoUpdater.on("update-downloaded", downloaded);
+  function downloaded(info) {
     // A download from before a channel switch (a nightly, after choosing Stable) is never installed.
     const wanted = downloadingFor === state.channel && (state.channel === "nightly" || !/-/.test(info.version));
-    autoUpdater.autoInstallOnAppQuit = wanted;
+    installOnQuit(wanted);
     const now = installWhenReady;
     installWhenReady = false;
     if (!wanted) return send({ status: "idle", available: null, progress: 0 });
@@ -164,7 +179,15 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
       return;
     }
     send({ status: "ready", available: info.version, progress: 100 });
-  });
+  }
+  /** On a Mac, the update is downloaded and installed by mac-update.cjs; it reports back as electron-updater would. */
+  function downloadForMac(info) {
+    const base = testFeed
+      ? (testFeed.endsWith("/") ? testFeed : `${testFeed}/`)
+      : `https://github.com/${feed.owner}/${feed.repo}/releases/download/v${info.version}/`;
+    mac.download(info, base, (progress) => send({ status: "downloading", progress }))
+      .then(() => downloaded(info), (error) => autoUpdater.emit("error", error));
+  }
   autoUpdater.on("error", (error) => {
     log(`[updates] ${error?.stack || error}\n`);
     // An install that failed is offered again, to retry with Restart.
@@ -234,7 +257,7 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
     }
     if (!checking) {
       checkingFor = generation;
-      installWhenReady = reason === "startup" && !portable;
+      installWhenReady = reason === "startup" && !manual;
       checking = autoUpdater.checkForUpdates()
         .catch(() => undefined) // Reported through the "error" event.
         .finally(() => { checking = null; });
@@ -253,7 +276,7 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
     installWhenReady = false;
     useChannel(channel);
     // An update downloaded for the old channel no longer installs on quit.
-    autoUpdater.autoInstallOnAppQuit = false;
+    installOnQuit(false);
     send({ channel, status: "idle", available: null, error: null });
     // A check still under way is for the old channel: let it finish unheard, then check this one.
     if (checking) await checking;
@@ -262,14 +285,14 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
   }
 
   function install() {
-    if (portable && state.available) {
+    if (state.portable && state.available) {
       void shell.openExternal(testFeed || `https://github.com/${feed.owner}/${feed.repo}/releases/tag/v${state.available}`);
       return state;
     }
     if (state.status !== "ready" && state.status !== "installing") return state;
     // Installs silently, with no setup wizard, then reopens the app. Quitting lets
     // before-quit stop the music server first.
-    setImmediate(() => autoUpdater.quitAndInstall(true, true));
+    setImmediate(() => (mac ? mac.quitAndInstall() : autoUpdater.quitAndInstall(true, true)));
     return state;
   }
 
@@ -281,6 +304,8 @@ function friendlyError(error) {
   const text = String(error?.message || error);
   if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ERR_INTERNET|net::/i.test(text)) return "Couldn't reach the update server. Check your connection.";
   if (/404|No published versions|Cannot find .*\.yml/i.test(text)) return "No releases are published for this channel yet.";
+  if (/no download for this Mac/i.test(text)) return "This update has no download for this Mac yet.";
+  if (/download of Slopify|Command failed: \/usr\/bin\//i.test(text)) return "The update's download didn't check out, so it wasn't installed. Slopify will try again.";
   return "Couldn't check for updates. Details are in desktop.log.";
 }
 

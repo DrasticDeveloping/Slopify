@@ -3,28 +3,70 @@ import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+import { manifestName, PLATFORMS, releaseDir, root } from "./release-build.mjs";
 
 const { revertTarget, withoutReverts } = createRequire(import.meta.url)("../desktop/changelog.cjs");
 
 /*
- * Publishes the last Windows build (release/last-build.json) as a GitHub release
- * on its updateRepo, which installed copies of Slopify check for updates.
- * Nightly builds become pre-releases; stable builds become the latest release.
- * Uses the GitHub CLI: signed in with `gh auth login`, or GH_TOKEN in CI.
+ * Publishes a build as a GitHub release on its updateRepo, which installed copies of
+ * Slopify check for updates: every platform built for that version in release/<version>/
+ * (Windows, and the Mac), one release. Nightly builds become pre-releases; stable builds
+ * become the latest release. Uses the GitHub CLI: signed in with `gh auth login`, or
+ * GH_TOKEN in CI.
+ *
+ *   node scripts/publish-release.mjs [--version <v>] [--require windows,mac]
+ *
+ * Without --version it publishes the version of the last build made here
+ * (release/last-build.json). --require refuses a release missing a platform; the
+ * release workflow requires both. A stable release needs both anyway, unless
+ * --allow-missing is passed.
  */
 
-const root = fileURLToPath(new URL("../", import.meta.url));
-const releaseDir = path.join(root, "release");
-let build;
-try {
-  build = JSON.parse(await fs.readFile(path.join(releaseDir, "last-build.json"), "utf8"));
-} catch {
-  fail("There's no build to publish. Run `npm run dist:win:nightly` or `npm run dist:win` first.");
+const { values: flags } = parseArgs({ options: { version: { type: "string" }, require: { type: "string" }, "allow-missing": { type: "boolean" } } });
+let folder = flags.version;
+if (!folder) {
+  try {
+    folder = JSON.parse(await fs.readFile(path.join(releaseDir, "last-build.json"), "utf8")).folder;
+  } catch {
+    fail("There's no build to publish. Run `npm run dist:win:nightly`, `npm run dist:mac:nightly` (or the stable ones) first.");
+  }
+}
+const builds = [];
+for (const platform of Object.keys(PLATFORMS)) {
+  try {
+    builds.push(JSON.parse(await fs.readFile(path.join(releaseDir, folder, manifestName(platform)), "utf8")));
+  } catch { /* Not built for this platform. */ }
+}
+if (!builds.length) fail(`There's no build of ${folder} in release/${folder}/.`);
+for (const platform of (flags.require || "").split(",").map((p) => p.trim()).filter(Boolean)) {
+  if (!PLATFORMS[platform]) fail(`--require takes ${Object.keys(PLATFORMS).join(", ")}, not "${platform}".`);
+  if (!builds.some((b) => b.platform === platform)) fail(`release/${folder}/ has no ${PLATFORMS[platform].name} build.`);
+}
+const build = { ...builds[0], folder, files: builds.flatMap((b) => b.files), platforms: builds.map((b) => b.platform) };
+for (const other of builds) {
+  for (const field of ["version", "channel", "updateRepo", "commit"]) {
+    if (other[field] !== build[field]) fail(`The ${PLATFORMS[other.platform].name} and ${PLATFORMS[build.platform].name} builds in release/${folder}/ differ in ${field} (${other[field]} and ${build[field]}). Build them again from one source.`);
+  }
 }
 if (!build.updateRepo) fail("This build has no update repo. Set updateRepo in release.config.json (or SLOPIFY_UPDATE_REPO), then build again.");
 if (!/^[a-f0-9]{40}$/.test(build.commit || "")) fail("Publish only a clean Git build with a recorded source commit. Commit your changes and build again.");
-if (!build.files.some((name) => /^(latest|nightly)\.yml$/.test(name))) fail("This build has no update file (latest.yml or nightly.yml). Build it again with an update repo set.");
+for (const b of builds) {
+  const kind = PLATFORMS[b.platform];
+  if (!b.files.some(kind.updateFile)) fail(`The ${kind.name} build has no update file. Build it again with an update repo set.`);
+}
+const mac = builds.find((b) => b.platform === "mac");
+// Both kinds of Mac update from this release, so it has the app for both.
+for (const arch of mac ? ["arm64", "x64"] : []) {
+  if (!mac.files.some((name) => name.endsWith(`-${arch}-mac.zip`))) fail(`The Mac build has no app for ${arch} Macs. Build it for both (the default).`);
+}
+// A stable release becomes GitHub's latest, which every installed copy on Stable reads: one missing a
+// platform leaves that platform's copies unable to check for updates. (Nightly copies pass over it.)
+const missing = Object.keys(PLATFORMS).filter((platform) => !builds.some((b) => b.platform === platform));
+if (missing.length && build.channel === "stable" && !flags["allow-missing"]) {
+  fail(`release/${folder}/ has no ${missing.map((p) => PLATFORMS[p].name).join(" or ")} build, and a stable release without one stops those copies checking for updates. Build it too (the release workflow builds both), or pass --allow-missing.`);
+}
+for (const platform of missing) console.warn(`Publishing without a ${PLATFORMS[platform].name} build: copies on ${PLATFORMS[platform].name} keep the version they have until a release has one.`);
 
 const tag = `v${build.version}`;
 const nightly = build.channel === "nightly";
@@ -54,8 +96,14 @@ if (refs.some((ref) => ref.ref === `refs/tags/${tag}`)) fail(`${tag} already exi
 const notes = [
   nightly ? "A nightly build of Slopify: the newest changes, before they reach Stable." : "Slopify release.",
   "",
-  "Download the **Setup** EXE to install Slopify (it updates itself), or the **Portable** EXE to run it without installing.",
-  "",
+  ...(build.platforms.includes("windows") ? [
+    "**Windows:** download the **Setup** EXE to install Slopify (it updates itself), or the **Portable** EXE to run it without installing.",
+    "",
+  ] : []),
+  ...(build.platforms.includes("mac") ? [
+    "**Mac:** download the DMG for your Mac (**arm64** for Apple silicon, M1 and later; **x64** for Intel), open it and drag Slopify to Applications. The first time, open it from Applications, then allow it in System Settings → Privacy & Security → Open Anyway. After that it updates itself.",
+    "",
+  ] : []),
   ...changesSincePreviousRelease(),
   // The commit this release was built from (its tag points there too).
   build.commit ? `Source: ${build.commit}` : "",

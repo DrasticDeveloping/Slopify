@@ -23,7 +23,7 @@ Slopify started from the Resonance desktop app. It rebuilds that app's interface
 
 ## What's new in Slopify
 
-- **One app on every device.** The same web app runs as a desktop app (Electron) and as a server other devices can open. It can also be installed from the browser, including on a phone.
+- **One app on every device.** The same web app runs as a desktop app (Electron, built for Windows and macOS) and as a server other devices can open. It can also be installed from the browser, including on a phone.
 - **A library of links.** The server keeps each song's source link and metadata. Media is prepared when it's needed, and devices can keep their own offline copies.
 - **Finding music.** Search covers YouTube, Spotify and SoundCloud. Results play in full right away, and YouTube videos stream as video.
 - **Recommendations.** Home suggestions, mixes generated when the app opens, song and artist radio, artist pages and discographies.
@@ -33,7 +33,6 @@ Slopify started from the Resonance desktop app. It rebuilds that app's interface
 ## What didn't come over
 
 - The native iOS and Android apps. On phones, Slopify is installed from the browser.
-- The macOS installer. Slopify's server and web app run on macOS and Linux, but only Windows installers are built for now (see [docs/windows-releases.md](docs/windows-releases.md)).
 
 ## Moving from Resonance
 

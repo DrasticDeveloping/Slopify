@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from "react";
 import { useDayChange } from "../lib/hooks";
 import { baseVersion, builtAt, dayOf, isNightly, plural, whenBuilt } from "../lib/releases";
 import { openModal } from "../state/actions";
-import { installUpdate, useDesktopUpdates } from "../state/desktop";
+import { installUpdate, isMacDesktop, useDesktopUpdates } from "../state/desktop";
 import { useStore } from "../state/store";
 import { Icon } from "./Icon";
 
@@ -92,7 +92,7 @@ export function UpdateBanner() {
             </button>
           </div>
           <p className={`ub-foot${playing && !u.portable ? " warn" : ""}`}>
-            {u.portable ? "This copy is portable, so download the new EXE."
+            {u.portable ? (isMacDesktop ? "This copy can't replace itself where it is, so download the new one." : "This copy is portable, so download the new EXE.")
               : playing ? "Restarting stops the music. Or it installs next time."
               : "Or it installs next time Slopify opens."}
           </p>

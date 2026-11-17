@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { keyLabel } from "../lib/keys";
 import { thisDevice } from "../lib/native";
 import { goBack, goForward, navigate, openMenu, openModal, playList, togglePlay } from "../state/actions";
 import { getState, useStore, type MenuState } from "../state/store";
@@ -72,7 +73,7 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
         { label: "Music server", icon: "server", run: () => navigate({ name: "server" }) },
         { separator: true },
         ...(pwa.canInstall ? [{ label: "Install Slopify", icon: "download", run: () => void installApp() }] : []),
-        { label: "Settings", icon: "settings", hint: "Ctrl ,", run: () => openModal({ type: "settings" }) },
+        { label: "Settings", icon: "settings", hint: keyLabel("Ctrl ,"), run: () => openModal({ type: "settings" }) },
         { label: "Keyboard shortcuts", icon: "keyboard", hint: "?", run: () => openModal({ type: "settings", tab: "shortcuts" }) },
         ...(account.status === "signedIn" ? [{ separator: true }, { label: "Manage account", icon: "user", run: manageAccount }, { label: "Sign out", icon: "logout", run: () => void signOut() }] : []),
       ],
@@ -144,7 +145,7 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
             <Icon name="close" size={16} />
           </button>
         ) : (
-          <kbd className="kbd">Ctrl K</kbd>
+          <kbd className="kbd">{keyLabel("Ctrl K")}</kbd>
         )}
       </label>
 

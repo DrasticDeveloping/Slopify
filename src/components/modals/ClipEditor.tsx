@@ -5,6 +5,7 @@ import { engine } from "../../audio/engine";
 import { rng } from "../../data/library";
 import { fadeLevel, type ClipRange, type FadeShape } from "../../data/types";
 import { formatTime } from "../../lib/format";
+import { keyLabel } from "../../lib/keys";
 import { onLiveFrame } from "../../lib/live";
 import { useMediaQuery } from "../../lib/hooks";
 import { closeModal, isPlayable, libraryIds, mediaUrlOf, previewClip, saveClip, seek, setClipDraft, toast, togglePlay } from "../../state/actions";
@@ -761,8 +762,8 @@ export function ClipEditorModal({ trackId }: { trackId?: string }) {
             </label>
           ) : <span />}
           <div className="ce-tools" role="toolbar" aria-label="Editing tools">
-            <button type="button" className="icon-btn" onClick={stepBack} disabled={!undo.length} aria-label="Undo" title="Undo (Ctrl Z)"><Icon name="undo" size={18} /></button>
-            <button type="button" className="icon-btn" onClick={stepForward} disabled={!redo.length} aria-label="Redo" title="Redo (Ctrl Shift Z)"><Icon name="redo" size={18} /></button>
+            <button type="button" className="icon-btn" onClick={stepBack} disabled={!undo.length} aria-label="Undo" title={keyLabel("Undo (Ctrl Z)")}><Icon name="undo" size={18} /></button>
+            <button type="button" className="icon-btn" onClick={stepForward} disabled={!redo.length} aria-label="Redo" title={keyLabel("Redo (Ctrl Shift Z)")}><Icon name="redo" size={18} /></button>
             <span className="ce-sep" />
             <button type="button" className="icon-btn" onClick={() => zoom(2)} disabled={!zoomed} aria-label="Zoom out" title="Zoom out (−)"><Icon name="zoomOut" size={18} /></button>
             <button type="button" className="icon-btn" onClick={() => zoom(0.5)} disabled={span <= 0.51} aria-label="Zoom in" title="Zoom in (+)"><Icon name="zoomIn" size={18} /></button>
