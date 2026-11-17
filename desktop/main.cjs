@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { startUpdates } = require("./updates.cjs");
 const { startBackground } = require("./background.cjs");
+const { handOff, listenForLinks } = require("./link-handoff.cjs");
 
 app.setName("Slopify");
 app.setAppUserModelId("com.drasticdeveloping.slopify");
@@ -125,7 +126,9 @@ async function startBackend() {
  * Slopify links (slopify://p/<share id>): a shared playlist's web page opens
  * them, and Windows starts Slopify with the link (or hands it to the Slopify
  * already running). Whichever copy ran last answers them: an installed one, or
- * a checkout run with `npm run desktop`.
+ * a checkout run with `npm run desktop`. That copy first offers the link to
+ * the other kind if it's open (see link-handoff.cjs), so a link never starts a
+ * second Slopify beside the one in use.
  */
 const LINK = /^slopify:\/\/p\/([a-z0-9]{16})\/?$/i;
 if (fromCheckout) app.setAsDefaultProtocolClient("slopify", process.execPath, [path.resolve(app.getAppPath())]);
@@ -134,16 +137,30 @@ else app.setAsDefaultProtocolClient("slopify");
 let pendingLink = null;
 let linksReady = false;
 const linkIn = (argv) => argv.find((arg) => typeof arg === "string" && arg.toLowerCase().startsWith("slopify://"));
+/** Opens a slopify:// link in this copy; false if it isn't one. */
 function openLink(url) {
   const match = LINK.exec(url || "");
-  if (!match) return;
+  if (!match) return false;
   const link = { type: "shared", id: match[1].toLowerCase() };
   if (linksReady && window && !window.isDestroyed()) {
     window.webContents.send("desktop:link", link);
     showWindow();
+    // A link handed over from another copy arrives in the background, and Windows won't let a
+    // background app take focus; going always-on-top and back still lifts the window above the browser.
+    if (process.platform === "win32" && !window.isAlwaysOnTop()) {
+      window.setAlwaysOnTop(true);
+      window.setAlwaysOnTop(false);
+    }
   } else {
     pendingLink = link;
   }
+  return true;
+}
+/** The profiles of the other copies a link could be meant for: the installed one and the checkouts' shared one. */
+function otherProfiles() {
+  const same = (a, b) => process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return ["Slopify", "Slopify Dev"].map((name) => path.join(app.getPath("appData"), name))
+    .filter((dir) => !same(path.resolve(dir), path.resolve(profileDir)));
 }
 ipcMain.handle("desktop:window-shown", () => Boolean(window && !window.isDestroyed() && window.isVisible() && !window.isMinimized()));
 ipcMain.handle("desktop:links-ready", (event) => {
@@ -166,6 +183,20 @@ else {
   });
   app.on("activate", showWindow);
   app.whenReady().then(async () => {
+    // Started by a link while another Slopify is open: that one shows it, and this one isn't needed.
+    // Links clicked meanwhile (second-instance, open-url) replace pendingLink, so they're handed over too.
+    let handed = false;
+    while (pendingLink) {
+      const link = pendingLink;
+      if (!(await handOff(otherProfiles(), `slopify://p/${link.id}`))) break;
+      handed = true;
+      if (pendingLink === link) pendingLink = null;
+    }
+    if (handed && !pendingLink) {
+      app.quit();
+      return;
+    }
+    listenForLinks(profileDir, openLink);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid SLOPIFY_DESKTOP_PORT.");
     await startBackend();
     createWindow();
