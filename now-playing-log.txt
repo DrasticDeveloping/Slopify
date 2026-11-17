@@ -1,0 +1,66 @@
+# iOS Simulator (iPhone 17 Pro, iOS 26.5), mediaremoted Now Playing log for Slopify, PR #67 commit 57541db
+# Captured with: xcrun simctl spawn <sim> log show --predicate 'process == "mediaremoted" AND category == "NowPlaying"'
+
+## Lock-screen commands registered while a song plays (next/previous enabled)
+2026-11-17 15:01:21.565 Df mediaremoted[79189:90ce35] [com.apple.amp.mediaremote:NowPlaying] Set: 【 􁊸 LOCL (iPhone) ❯ 􀎬 com.apple.WebKit.GPU (73495) ❯ 􀽍 default 】 setting supportedCommands to <(
+    "<MRCommandInfo: 0x103d4ee00, Play, enabled = 1, options = (null)>",
+    "<MRCommandInfo: 0x103d4c880, Pause, enabled = 1, options = (null)>",
+    "<MRCommandInfo: 0x103d4d2a0, PreviousTrack, enabled = 1, options = (null)>",
+    "<MRCommandInfo: 0x103d4db40, NextTrack, enabled = 1, options = (null)>"
+
+## Now Playing info for 'One More Time': artwork present, 512x512 (the square cover the page draws)
+2026-11-17 15:06:43.848 Df mediaremoted[79189:9140ac] [com.apple.amp.mediaremote:NowPlaying] Set: 【 􁊸 LOCL (iPhone) ❯ 􀎬 com.apple.WebKit.GPU/mov.unblocked.slopify (73495) Slopify ❯ 􀽍 default 】 setting playback state from <Playing> to <Paused>
+2026-11-17 15:06:43.850 Df mediaremoted[79189:9140ac] [com.apple.amp.mediaremote:NowPlaying] [MRDNowPlayingPlayerClient] PlaybackState changed from Playing to Paused for 【 􁊸 LOCL (iPhone) ❯ 􀎬 com.apple.WebKit.GPU/mov.unblocked.slopify (73495) Slopify ❯ 􀽍 default 】
+2026-11-17 15:06:43.851 Df mediaremoted[79189:9140ac] [com.apple.amp.mediaremote:NowPlaying] [MRDNowPlayingPlayerClient] isPlaying changed to false for 【 􁊸 LOCL (iPhone) ❯ 􀎬 com.apple.WebKit.GPU/mov.unblocked.slopify (73495) Slopify ❯ 􀽍 default 】
+2026-11-17 15:06:43.854 Df mediaremoted[79189:915215] [com.apple.amp.mediaremote:NowPlaying] Set: 【 􁊸 LOCL (iPhone) ❯ 􀎬 com.apple.WebKit.GPU/mov.unblocked.slopify (73495) Slopify ❯ 􀽍 default 】 setting nowPlayingItem to <<MRContentItem: 0x103ec8900> {
+    identifier = 14359364;
+    metadata =     {
+        "__playbackRate" = 0;
+        "__title" = "One More Time";
+        albumName = "One More Time";
+        artworkAvailable = 1;
+        artworkIdentifier = 14359364;
+        artworkMIMEType = "image/tiff";
+        "custom: calculatedElapsedTime" = "00:05:21 (321.410635)";
+        "custom: delta" = "00:00:00 (0.011809)";
+        "custom: remainingTime" = "00:00:00 (0.046397)";
+        duration = "00:05:21 (321.457031)";
+        elapsedTime = "00:05:21 (321.410635)";
+        elapsedTimeTimestamp = "2026-11-17 21:06:43 +0000";
+        legacyUniqueIdentifier = 14359364;
+        nowPlayingInfo =         {
+            kMRMediaRemoteNowPlayingInfoArtworkDataHeight = 512;
+            kMRMediaRemoteNowPlayingInfoArtworkDataWidth = 512;
+        };
+        playbackRate = 0;
+        title = "One More Time";
+        trackArtistName = "Daft Punk";
+    };
+
+## Autoplay moves to 'Something About Us': the cover follows the song
+    };
+}>
+2026-11-17 15:06:44.013 Df mediaremoted[79189:915217] [com.apple.amp.mediaremote:NowPlaying] Set: 【 􁊸 LOCL (iPhone) ❯ 􀎬 com.apple.WebKit.GPU/mov.unblocked.slopify (73495) Slopify ❯ 􀽍 default 】 setting nowPlayingItem to <<MRContentItem: 0x103ec8900> {
+    identifier = 14570527;
+    metadata =     {
+        "__playbackRate" = 1;
+        "__title" = "Something About Us";
+        albumName = "Something About Us";
+        artworkAvailable = 1;
+        artworkIdentifier = 14570527;
+        artworkMIMEType = "image/tiff";
+        "custom: calculatedElapsedTime" = "00:00:00 (0.012004)";
+        "custom: delta" = "00:00:00 (0.000795)";
+        "custom: remainingTime" = "00:03:48 (228.287389)";
+        duration = "00:03:48 (228.298594)";
+        elapsedTime = "00:00:00 (0.011205)";
+        elapsedTimeTimestamp = "2026-11-17 21:06:44 +0000";
+        legacyUniqueIdentifier = 14570527;
+        nowPlayingInfo =         {
+            kMRMediaRemoteNowPlayingInfoArtworkDataHeight = 512;
+            kMRMediaRemoteNowPlayingInfoArtworkDataWidth = 512;
+        };
+        playbackRate = 1;
+        title = "Something About Us";
+        trackArtistName = "Daft Punk";
+    };
