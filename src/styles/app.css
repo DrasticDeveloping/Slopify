@@ -1604,7 +1604,7 @@ button.th:not(:disabled):hover { color: var(--text); }
 .snz-wd { padding: 4px 0 6px; text-align: center; font-size: 11px; font-weight: 650; color: var(--text-3); }
 .snz-day { position: relative; height: 36px; display: grid; place-items: center; font-size: 13px; font-weight: 560; font-variant-numeric: tabular-nums; color: var(--text); outline: none; }
 .snz-day > span { position: relative; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; transition: background 120ms; }
-.snz-day:hover:not(:disabled) > span { background: rgb(255 255 255 / 0.12); }
+.snz-day:hover:not(:disabled, [aria-pressed="true"]) > span { background: rgb(255 255 255 / 0.12); }
 .snz-day:disabled { color: var(--text-3); opacity: 0.45; }
 .snz-day.today > span { box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.35); }
 .snz-day:focus-visible > span { box-shadow: inset 0 0 0 2px rgb(255 255 255 / 0.8); }
@@ -1616,7 +1616,7 @@ button.th:not(:disabled):hover { color: var(--text); }
 .snz-times { display: flex; align-items: center; gap: 6px; margin: 10px 2px 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--text-2); }
 .snz-times > span { flex: 1; white-space: nowrap; }
 .snz-chip { height: 28px; padding: 0 9px; border-radius: 14px; font-size: 12.5px; font-weight: 600; white-space: nowrap; color: var(--text-2); background: rgb(255 255 255 / 0.06); transition: background 120ms, color 120ms; }
-.snz-chip:hover:not(:disabled) { background: rgb(255 255 255 / 0.11); color: var(--text); }
+.snz-chip:hover:not(:disabled, [aria-pressed="true"]) { background: rgb(255 255 255 / 0.11); color: var(--text); }
 .snz-chip:focus-visible { outline: none; box-shadow: 0 0 0 1.5px rgb(255 255 255 / 0.8); }
 .snz-chip[aria-pressed="true"] { background: #f6f5f8; color: #111; }
 .snz-chip:disabled { opacity: 0.35; }
