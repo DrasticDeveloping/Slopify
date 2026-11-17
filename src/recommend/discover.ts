@@ -305,11 +305,10 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       if (query.kind === "discover-song" && cleanTitle(title) !== cleanTitle(query.title)) return;
       // Its best match found, even if that's dropped below (dismissed, shown or owned): no other upload stands in.
       found = true;
-      // A song search finds one song, whichever upload (and credit) it comes from: it's known by what was searched,
-      // so Find more and Not interested cover every upload of it.
-      const key = query.kind === "discover-song" ? discoveryKey(query.artist, query.title) : discoveryKey(artist, title);
-      // The upload's own name counts too (a dismissal made under it, or the same upload found by another search).
-      const keys = [...new Set([key, discoveryKey(artist, title)])];
+      const key = discoveryKey(artist, title);
+      // A song search is for one song, whatever its upload is credited as: what was searched counts too, for
+      // dismissals, songs already shown and duplicates.
+      const keys = [...new Set([key, ...(query.kind === "discover-song" ? [discoveryKey(query.artist, query.title)] : [])])];
       const links = candidateSources(candidate);
       const ids = links.map(sourceId).filter((id): id is string => Boolean(id));
       if (keys.some((k) => exclude.has(k) || input.taste.hiddenDiscoveries[k] || seen.has(k)) || ids.some((id) => sources.has(id))) return;
