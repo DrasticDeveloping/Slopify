@@ -21,6 +21,8 @@
     "test:changelog": "node --test scripts/test-changelog.cjs",
     "test:link-handoff": "node --test scripts/test-link-handoff.cjs",
     "desktop": "npm run build && node scripts/run-desktop.mjs",
+    "dist:mac": "npm run build && node scripts/package-macos.mjs",
+    "dist:mac:unpacked": "npm run build && node scripts/package-macos.mjs --dir",
     "dist:win": "npm run build && node scripts/package-windows.mjs",
     "dist:win:nightly": "npm run build && node scripts/package-windows.mjs --channel nightly",
     "dist:win:portable": "npm run build && node scripts/package-windows.mjs --portable",

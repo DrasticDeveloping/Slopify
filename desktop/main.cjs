@@ -6,10 +6,13 @@ const { startBackground } = require("./background.cjs");
 const { handOff, listenForLinks } = require("./link-handoff.cjs");
 
 app.setName("Slopify");
-app.setAppUserModelId("com.drasticdeveloping.slopify");
-// Once the video controls fade out, nothing covers the video and Chromium hands it to a
-// Windows hardware overlay, where the picture can freeze while the sound carries on.
-app.commandLine.appendSwitch("disable-direct-composition-video-overlays");
+const isMac = process.platform === "darwin";
+const isWindows = process.platform === "win32";
+if (isWindows) {
+  app.setAppUserModelId("com.drasticdeveloping.slopify");
+  // The Windows hardware overlay can freeze the picture after the video controls fade out.
+  app.commandLine.appendSwitch("disable-direct-composition-video-overlays");
+}
 // Running from a checkout (`npm run desktop`, T3's Launch) uses the library and profile
 // all checkouts share (or this checkout's own, isolated: see server/data-dir.cjs) and
 // its own port, so it can run beside an installed copy.
@@ -22,6 +25,7 @@ fs.mkdirSync(profileDir, { recursive: true });
 app.setPath("userData", profileDir);
 const port = Number(process.env.SLOPIFY_DESKTOP_PORT || (fromCheckout ? 5197 : 5198));
 const TITLE_BAR = 36;
+const icon = path.join(app.getAppPath(), "dist/icons/icon-512.png");
 const origin = `http://127.0.0.1:${port}`;
 let window;
 let backend;
@@ -32,7 +36,11 @@ let exiting = false;
 let background;
 
 function showWindow() {
-  if (!window || window.isDestroyed()) return;
+  if (exiting) return;
+  if (!window) {
+    if (isMac && ready) createWindow();
+    return;
+  }
   if (window.isMinimized()) window.restore();
   window.show();
   window.focus();
@@ -48,46 +56,52 @@ function external(url) {
 }
 
 function createWindow() {
-  window = new BrowserWindow({
+  const createdWindow = new BrowserWindow({
     title: "Slopify", width: 1320, height: 900, minWidth: 420, minHeight: 600,
     backgroundColor: "#08080c", show: false,
-    icon: path.join(app.getAppPath(), "dist/icons/icon-512.png"),
+    icon,
     // The app draws its own title bar; Windows and Linux keep their native buttons over it.
     titleBarStyle: "hidden",
-    ...(process.platform === "darwin"
+    ...(isMac
       ? { trafficLightPosition: { x: 14, y: 11 } }
       : { titleBarOverlay: { color: "#00000000", symbolColor: "#c8c8d4", height: TITLE_BAR } }),
     // Playback (crossfades, the next song) keeps time while the window is hidden in the tray.
     webPreferences: { preload: path.join(__dirname, "preload.cjs"), nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false }
   });
+  window = createdWindow;
   // Like Discord: closing the window keeps Slopify playing in the tray, unless Settings turns that off.
-  window.on("close", (event) => {
+  createdWindow.on("close", (event) => {
     if (exiting || !background?.keepInTray()) return;
     event.preventDefault();
-    window.hide();
+    createdWindow.hide();
     background.hidden();
+  });
+  createdWindow.on("closed", () => {
+    window = undefined;
+    linksReady = false;
+    if (isMac) background?.clearNowPlaying();
   });
   // The page always counts as visible (backgroundThrottling: false), so it's told when the window really is,
   // and stops drawing while it's minimised or in the tray.
   const tellShown = () => {
-    if (!window.isDestroyed()) window.webContents.send("desktop:window-shown", window.isVisible() && !window.isMinimized());
+    if (!createdWindow.isDestroyed()) createdWindow.webContents.send("desktop:window-shown", createdWindow.isVisible() && !createdWindow.isMinimized());
   };
-  for (const event of ["show", "hide", "minimize", "restore"]) window.on(event, tellShown);
-  window.setMenuBarVisibility(false);
-  window.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: "deny" }; });
-  window.webContents.on("will-navigate", (event, url) => {
+  for (const event of ["show", "hide", "minimize", "restore"]) createdWindow.on(event, tellShown);
+  if (!isMac) createdWindow.setMenuBarVisibility(false);
+  createdWindow.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: "deny" }; });
+  createdWindow.webContents.on("will-navigate", (event, url) => {
     if (new URL(url).origin !== origin) { event.preventDefault(); external(url); }
   });
   // Only Slopify's own page may copy to the clipboard (its Copy buttons); everything else is refused.
-  window.webContents.session.setPermissionRequestHandler((_contents, permission, callback, details) => {
+  createdWindow.webContents.session.setPermissionRequestHandler((_contents, permission, callback, details) => {
     let own = false;
     try {
       own = new URL(details.requestingUrl).origin === origin;
     } catch { /* No page: refused. */ }
     callback(own && permission === "clipboard-sanitized-write");
   });
-  window.once("ready-to-show", () => window.show());
-  window.loadURL(origin).catch(fail);
+  createdWindow.once("ready-to-show", () => createdWindow.show());
+  createdWindow.loadURL(origin).catch(fail);
 }
 
 const logFile = path.join(profileDir, "desktop.log");
@@ -101,7 +115,9 @@ async function startBackend() {
     env: {
       ...process.env, HOST: "127.0.0.1", PORT: String(port),
       SLOPIFY_DATA_DIR: process.env.SLOPIFY_DATA_DIR || (checkout ? checkout.checkoutDataDir(app.getAppPath()) : path.join(userData, "library")),
-      FFMPEG_BIN: app.isPackaged ? path.join(process.resourcesPath, "bin/ffmpeg.exe") : require("ffmpeg-static")
+      FFMPEG_BIN: fromCheckout
+        ? require("ffmpeg-static")
+        : path.join(process.resourcesPath, "bin", isWindows ? "ffmpeg.exe" : "ffmpeg")
     }
   });
   let output = "";
@@ -124,15 +140,13 @@ async function startBackend() {
 
 /*
  * Slopify links (slopify://p/<share id>): a shared playlist's web page opens
- * them, and Windows starts Slopify with the link (or hands it to the Slopify
- * already running). Whichever copy ran last answers them: an installed one, or
- * a checkout run with `npm run desktop`. That copy first offers the link to
- * the other kind if it's open (see link-handoff.cjs), so a link never starts a
- * second Slopify beside the one in use.
+ * them and the OS delivers the link to the registered copy. On macOS this is
+ * the packaged app, whose Info.plist declares the scheme. If started by a link,
+ * the app first offers it to another open copy (see link-handoff.cjs).
  */
 const LINK = /^slopify:\/\/p\/([a-z0-9]{16})\/?$/i;
-if (fromCheckout) app.setAsDefaultProtocolClient("slopify", process.execPath, [path.resolve(app.getAppPath())]);
-else app.setAsDefaultProtocolClient("slopify");
+if (!fromCheckout) app.setAsDefaultProtocolClient("slopify");
+else if (!isMac) app.setAsDefaultProtocolClient("slopify", process.execPath, [path.resolve(app.getAppPath())]);
 /** A link that came before the page was ready for it. */
 let pendingLink = null;
 let linksReady = false;
@@ -140,30 +154,32 @@ const linkIn = (argv) => argv.find((arg) => typeof arg === "string" && arg.toLow
 /** Opens a slopify:// link in this copy; false if it isn't one. */
 function openLink(url) {
   const match = LINK.exec(url || "");
-  if (!match) return false;
+  if (!match || exiting) return false;
   const link = { type: "shared", id: match[1].toLowerCase() };
-  if (linksReady && window && !window.isDestroyed()) {
+  if (linksReady && window) {
     window.webContents.send("desktop:link", link);
     showWindow();
     // A link handed over from another copy arrives in the background, and Windows won't let a
     // background app take focus; going always-on-top and back still lifts the window above the browser.
-    if (process.platform === "win32" && !window.isAlwaysOnTop()) {
+    if (isWindows && !window.isAlwaysOnTop()) {
       window.setAlwaysOnTop(true);
       window.setAlwaysOnTop(false);
     }
   } else {
     pendingLink = link;
+    if (!window) showWindow();
   }
   return true;
 }
 /** The profiles of the other copies a link could be meant for: the installed one and the checkouts' shared one. */
 function otherProfiles() {
-  const same = (a, b) => process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const same = (a, b) => isWindows ? a.toLowerCase() === b.toLowerCase() : a === b;
   return ["Slopify", "Slopify Dev"].map((name) => path.join(app.getPath("appData"), name))
     .filter((dir) => !same(path.resolve(dir), path.resolve(profileDir)));
 }
 ipcMain.handle("desktop:window-shown", () => Boolean(window && !window.isDestroyed() && window.isVisible() && !window.isMinimized()));
 ipcMain.handle("desktop:links-ready", (event) => {
+  if (event.sender !== window?.webContents) return;
   linksReady = true;
   if (pendingLink) event.sender.send("desktop:link", pendingLink);
   pendingLink = null;
@@ -199,12 +215,16 @@ else {
     listenForLinks(profileDir, openLink);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid SLOPIFY_DESKTOP_PORT.");
     await startBackend();
+    if (exiting) return;
+    if (isMac && fromCheckout) app.dock?.setIcon(icon);
     createWindow();
     background = startBackground({ getWindow: () => window, show: showWindow, log });
     startUpdates(() => window, log, { isPlaying: () => Boolean(background?.isPlaying()) });
   }).catch(fail);
 }
-app.on("window-all-closed", () => app.quit());
+app.on("window-all-closed", () => {
+  if (!isMac) app.quit();
+});
 app.on("before-quit", (event) => {
   exiting = true;
   background?.close();

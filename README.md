@@ -29,7 +29,7 @@ Run for this computer only, the server stops about 20 seconds after you close th
 
 For example: `npm start -- --port 5253`.
 
-`npm run desktop` opens Slopify as a desktop app (Electron), in its own window with its own title bar, like Discord or T3 Code, not in a browser. Run from a checkout, it uses port 5197, separate from an installed copy. Clicking Launch again while it's open brings the window forward. Closing the window keeps Slopify playing in the system tray (right-click the tray icon to quit), and it can show what you're playing on Discord; both are in **Settings → General**.
+`npm run desktop` opens Slopify in its own Electron window. Run from a checkout, it uses port 5197, separate from an installed copy. Clicking Launch again while it's open brings the window forward. Slopify can keep playing after you close its window, with controls in the system tray or macOS menu bar. You can change that behavior and Discord playback sharing in **Settings → General**.
 
 **Your library follows you between checkouts.** Every clone and worktree shares one library and desktop profile, in `%APPDATA%\Slopify Dev\library` (on macOS, `~/Library/Application Support/Slopify Dev/library`; on Linux, `~/.config/Slopify Dev/library`), so songs saved while running one worktree are there in the next. The first run starts it from that checkout's own `data/` folder, if it has songs. To try changes without touching it, use isolated mode: `npm run desktop:isolated`, `npm run dev:isolated` or `node server/main.mjs --isolated` use the checkout's own `data/` folder, which starts empty, and (for the desktop app) a profile of its own in `data/desktop-profile`. Only one copy can use a library at a time: a second one started on the same library (another checkout, `npm start` beside the desktop app) says so and stops, rather than overwriting the first one's changes.
 
@@ -38,6 +38,10 @@ In T3, **Launch Slopify** runs `npm.cmd run desktop`, and **Launch Slopify (work
 With the app already built, `node server/main.mjs --open` also opens the Electron desktop window. It does not open a browser or start the standalone server on port 5199. Use `--port` and `--data` with `--open` to override the desktop port and library folder; the desktop always listens on this computer only. Without `--open`, the command still runs the standalone server for other devices. If `dist/` is missing, run `npm.cmd run build` first.
 
 ## Install Slopify
+
+On a Mac, run `npm run dist:mac` to build a disk image with Slopify, the music server, and FFmpeg. Use native Node.js for the Mac you are building on (Apple silicon or Intel). The disk image and app bundle appear under `release/macos/<version>/<arch>/`. Open the disk image and drag **Slopify** into **Applications**. For local testing, `npm run dist:mac:unpacked` builds just the app bundle. These builds use ad hoc signing for local use and have no automatic updates.
+
+The Mac app keeps its library in `~/Library/Application Support/Slopify/library`. Click its Dock icon to reopen the window after closing it. **Settings → General → Keep playing when closed** controls whether playback continues, and **⌘Q** quits Slopify and its music server.
 
 For a Windows desktop app you can send to someone, run `npm.cmd run dist:win` (or `npm.cmd run dist:win:nightly` for a nightly). It produces a portable EXE and an installer in `release/<version>/`, with the backend and FFmpeg included. Installed copies update themselves from Stable or Nightly, chosen in **Settings → General**. See [the Windows release process](docs/windows-releases.md) for setup, sharing, and updates.
 
