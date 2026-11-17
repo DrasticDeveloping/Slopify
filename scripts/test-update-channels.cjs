@@ -18,6 +18,8 @@ function provider(tags, allowPrerelease = true, current = "2.0.0") {
   const gone = new Set();
   /** Publishes a release, newest. */
   const publish = (tag, body = "Notes") => { releases.unshift([tag, body]); };
+  /** Deletes a release. */
+  const unpublish = (tag) => { releases.splice(releases.findIndex(([t]) => t === tag), 1); };
   const instance = new NightlyGitHubProvider({ owner: "test", repo: "releases" }, updater, {
     platform: "win32", executor: { request: async (options) => {
       requested.push(options.path);
@@ -40,7 +42,7 @@ function provider(tags, allowPrerelease = true, current = "2.0.0") {
       return `version: ${tag.slice(1)}\nfiles:\n  - url: Setup.exe\n    sha512: checksum\n`;
     } },
   });
-  return { instance, requested, publish, gone };
+  return { instance, requested, publish, unpublish, gone };
 }
 
 test("Nightly receives a newer stable and resolves its installer", async () => {
@@ -167,13 +169,16 @@ test("Past the first page, the list is read once until a release is published", 
 
 test("A release found further back that has since gone is looked for again", async () => {
   const many = (n) => Array.from({ length: n }, (_, i) => `v2.0.3-nightly.20261013.${2000 - i}`);
-  const { instance, requested, gone } = provider([["v2.2.0", phoneOnly], ...many(150), "v2.1.0", "v2.0.9"], false, "2.0.0");
+  const { instance, requested, gone, unpublish } = provider([["v2.2.0", phoneOnly], ...many(150), "v2.1.0", "v2.0.9"], false, "2.0.0");
   assert.equal((await instance.getLatestVersion()).version, "2.1.0");
   gone.add("v2.1.0");
   await assert.rejects(instance.getLatestVersion(), /404/);
   const before = requested.filter((path) => path.includes("/releases?")).length;
   await assert.rejects(instance.getLatestVersion(), /404/);
   assert.equal(requested.filter((path) => path.includes("/releases?")).length, before + 2, "the list past page 1 is read again");
+  // Once it's out of the list too, the next release for this app is found.
+  unpublish("v2.1.0");
+  assert.equal((await instance.getLatestVersion()).version, "2.0.9");
 });
 
 test("A lower version published later is passed over, not where the list stops", async () => {
