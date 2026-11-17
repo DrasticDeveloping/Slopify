@@ -9,9 +9,7 @@
     var app = "slopify://p/" + id[1];
     document.getElementById("page").innerHTML = '<h1>Opening the playlist in Slopify…</h1><p>Someone shared a Slopify playlist with you.</p>'
       + '<a class="btn" href="' + app + '">Open in Slopify</a>'
-      // The service's own address for the link: every version of the app opens it (versions before 0.0.4 don't know this site's).
-      + "<p><small>Nothing happened? Open Slopify, sign in, and paste this address into the search bar:</small></p>"
-      + '<p><code>https://slopify-cloud.gavdie01.workers.dev/p/' + id[1] + '</code></p>';
+      + "<p><small>Nothing happened? Open Slopify, sign in, and paste this page's address into the search bar.</small></p>";
     location.href = app;
   }
 </script></body></html>
