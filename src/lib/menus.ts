@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   addToPlaylist, addToQueue, deleteFromDevice, deleteFromLibrary, deletePlaylist, dismissStream, isPlayable, navigate,
-  isLiked, openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, shufflePlay, startRadio, switchToAfterCurrent, toast, toggleLike,
+  isLiked, openMenu, openModal, playList, playNext, removeFromPlaylist, saveStream, streamSavesVideo, shufflePlay, startRadio, switchToAfterCurrent, toast, toggleLike,
 } from "../state/actions";
 import { streamLink } from "../state/importer";
 import { shareOf } from "../state/social";
@@ -72,16 +72,33 @@ function grouped(...groups: MenuItem[][]): MenuItem[] {
 }
 
 export interface StreamMenuOptions {
-  /** Saves the song to the library its own way (a search result saves as found, video or audio); null when it can't be saved now. */
+  /** Saves the song to the library as a song; null when it can't be saved now. */
   save?: (() => void) | null;
+  /**
+   * Saves it as a video (a YouTube video); null when it can't be saved now. Left out with `save` given, there's only
+   * `save`; with neither, a streamed YouTube video offers both.
+   */
+  saveVideo?: (() => void) | null;
   /** The song's page on its platform. */
   source?: string;
   /** A search result rather than a recommendation, so there's nothing to be "not interested" in. */
   searchResult?: boolean;
 }
 
-/** A streamed song: it plays like any song, and can be added to the library (playlists add it there first). */
+/**
+ * A streamed song: it plays like any song, and can be added to the library (playlists add it there first). A YouTube
+ * video offers saving it as a song or as a video, side by side, so the choice is made when saving.
+ */
 function streamMenu(t: Track, opts: StreamMenuOptions = {}): MenuItem[] {
+  const saveVideo = opts.saveVideo !== undefined || opts.save !== undefined ? opts.saveVideo : streamSavesVideo(t.id) ? () => saveStream(t.id, undefined, { video: true }) : undefined;
+  const song = opts.save !== undefined ? opts.save : () => saveStream(t.id, undefined, saveVideo === undefined ? undefined : { video: false });
+  // Both ways when there are two; one that can't be done now (already saved that way) is left out, unless neither can.
+  const save: MenuItem[] = saveVideo === undefined
+    ? [{ label: "Add to library", icon: "download", disabled: song === null, run: song ?? undefined }]
+    : [
+      ...(song || !saveVideo ? [{ label: "Save song", icon: "music", disabled: song === null, run: song ?? undefined }] : []),
+      ...(saveVideo || !song ? [{ label: "Save video", icon: "video", disabled: saveVideo === null, run: saveVideo ?? undefined }] : []),
+    ];
   return grouped(
     [
       { label: "Play next", icon: "queue", quick: true, run: () => playNext([t.id]) },
@@ -89,7 +106,7 @@ function streamMenu(t: Track, opts: StreamMenuOptions = {}): MenuItem[] {
       likeItem(t),
     ],
     [
-      { label: "Add to library", icon: "download", disabled: opts.save === null, run: opts.save ?? (() => saveStream(t.id)) },
+      ...save,
       { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu([t.id]) },
     ],
     [{ label: "Start song radio", icon: "radio", run: () => startRadio(t.id) }],
@@ -126,6 +143,11 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
     : [];
   // A streamed song in a playlist (one made without downloading) can still be taken out of it.
   if (single?.stream) return grouped(streamMenu(single, opts.stream), mixHide, removeFromPlaylistItem);
+  // A search result you have one copy of (it plays from the library) can still be saved the other way.
+  const saveOther: MenuItem[] = [
+    ...(opts.stream?.save ? [{ label: "Save song", icon: "music", run: opts.stream.save }] : []),
+    ...(opts.stream?.saveVideo ? [{ label: "Save video", icon: "video", run: opts.stream.saveVideo }] : []),
+  ];
   return grouped(
     [
       { label: "Play next", icon: "queue", quick: true, disabled: !anyPlayable, run: () => playNext(ids) },
@@ -133,6 +155,7 @@ export function trackMenu(ids: string[], opts: { playlistId?: string; context?: 
       ...(single ? [likeItem(single)] : []),
     ],
     [
+      ...saveOther,
       { label: "Add to playlist", icon: "plus", submenu: playlistSubmenu(ids) },
     ],
     [
@@ -167,9 +190,14 @@ export function openTrackMenu(e: ReactMouseEvent | HTMLElement, ids: string[], o
 }
 
 /** A search result that can't be streamed: it can still be saved, and its link copied. */
-export function openSearchResultMenu(e: ReactMouseEvent, title: string, artist: string, opts: Pick<StreamMenuOptions, "save" | "source">) {
+export function openSearchResultMenu(e: ReactMouseEvent, title: string, artist: string, opts: Pick<StreamMenuOptions, "save" | "saveVideo" | "source">) {
   const items = grouped(
-    opts.save !== undefined ? [{ label: "Add to library", icon: "download", disabled: opts.save === null, run: opts.save ?? undefined }] : [],
+    opts.saveVideo !== undefined
+      ? [
+        ...(opts.save !== undefined ? [{ label: "Save song", icon: "music", disabled: opts.save === null, run: opts.save ?? undefined }] : []),
+        { label: "Save video", icon: "video", disabled: opts.saveVideo === null, run: opts.saveVideo ?? undefined },
+      ]
+      : opts.save !== undefined ? [{ label: "Add to library", icon: "download", disabled: opts.save === null, run: opts.save ?? undefined }] : [],
     linkItems(opts.source),
   );
   if (!items.length) return;

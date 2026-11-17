@@ -74,8 +74,13 @@ export interface StreamMedia {
 interface StreamHooks {
   /** The full song's audio, or its video. `background`: fetched ahead, so the server may put it off (see fetchStream). */
   source(id: string, options?: { background?: boolean }): Promise<StreamMedia>;
-  /** Downloads the song into the library (one at a time, in order), then hands `then` its library id. */
-  save(id: string, then?: (libraryId: string) => void): void;
+  /**
+   * Downloads the song into the library (one at a time, in order), then hands `then` its library id. `video`: save
+   * it as a video (true) or a song (false); left out, as it was found.
+   */
+  save(id: string, then?: (libraryId: string) => void, options?: { video?: boolean }): void;
+  /** Whether the song can be saved as a video too (a YouTube video). */
+  savesVideo(id: string): boolean;
   dismiss(id: string): void;
 }
 // `var` with no initializer: importer.ts calls connectStreams while this module is still loading
@@ -89,7 +94,8 @@ const savedStreams = new Map<string, string>();
 export function linkSavedStream(streamId: string, libraryId: string) {
   savedStreams.set(streamId, libraryId);
 }
-export const saveStream = (id: string, then?: (libraryId: string) => void) => streamHooks?.save(id, then);
+export const saveStream = (id: string, then?: (libraryId: string) => void, options?: { video?: boolean }) => streamHooks?.save(id, then, options);
+export const streamSavesVideo = (id: string) => streamHooks?.savesVideo(id) ?? false;
 const isStream = (id: string) => Boolean(getState().tracks[id]?.stream);
 /** Streamed songs join a playlist (or Liked Songs) once they are in the library, since playlists only keep library songs. */
 function addStreamsLater(playlistId: string, ids: string[]) {
