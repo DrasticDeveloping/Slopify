@@ -98,7 +98,7 @@ npm.cmd run dev             # http://127.0.0.1:8787
 ## Limits
 
 - The Free Workers plan allows 100,000 requests a day for the whole account, browsers' CORS checks (`OPTIONS`) included. A focused window uses about 3 requests every 30 seconds, and nothing while it isn't focused.
-- To see where requests go: Cloudflare dashboard → Workers & Pages → slopify-cloud → Observability. The service logs one line per call (`method`, `route` with ids replaced by `:id`, `status`, `ms`); group by `route` and `method` to count them. Cloudflare's own per-call logs are off (`wrangler.jsonc` `observability`), since they would keep addresses and WebSocket tokens. Workers Logs allows 200,000 lines a day on the Free plan, more than the request limit.
+- To see where requests go: Cloudflare dashboard → Workers & Pages → slopify-cloud → Observability. The service logs one line per call (`method`, `route` with ids replaced by `:id`, `client`, `status`, `ms`); group by `route` and `method` to count them. Cloudflare's own per-call logs are off (`wrangler.jsonc` `observability`), since they would keep addresses and WebSocket tokens. Workers Logs allows 200,000 lines a day on the Free plan, more than the request limit.
 - Each account may make 300 calls a minute, and each address 600 (wrangler.jsonc `ratelimits`); past that, calls get 429 and the app retries a minute later. A first sync sends one call per song, so a very large library takes a few minutes to upload.
 - An account can keep up to 20,000 songs.
 - Rooms hold 20 people. A room ends a minute after its host leaves, five minutes after everyone has, or a day after it started. Closing or reloading the app leaves its room at once: a guest drops off the list, and a host's room ends.
@@ -114,6 +114,21 @@ Use it when an old build misbehaves (say, it keeps re-saving the library), or wh
 
 1. Raise `CLOUD_CLIENT` in the app, and ship the release to both channels.
 2. Then raise `MIN_CLIENT` to match and deploy the service. Deploying it first locks everyone out until their update arrives.
+
+### New server behaviour, only for the builds made with it
+
+Stable and Nightly copies use one service. When a release deploys a change to it, that change reaches copies already installed too, Stable's included. When installed copies mustn't get a new behaviour yet, give it a name:
+
+1. In the same pull request, add the name to `CLOUD_FEATURES` in `src/state/cloud.ts`, and check it in the service: `if (callerHas(request, "name")) { new } else { as before }` (`cloud/src/features.ts`). Builds send their names in `X-Slopify-Features` (`?features=` on Listen Along's WebSocket).
+2. A build has the name exactly when it contains that pull request: the next nightly does, and Stable does once a stable release is made after the merge. Copies made before it, and older ones that send no names, keep the old behaviour, whatever order merges and releases happen in.
+3. The app's side must still work when the service answers the old way: a release that doesn't deploy the service (one published from a PC, or without the Cloudflare secrets), a rollback, or the iPhone app, which release.yml doesn't build.
+4. What a named behaviour writes must survive builds without it, not just be readable by them: an account's library is shared by its devices, and shared playlists and Listen Along rooms mix people on both channels. An older build that saves the library sends back only the parts it knows (`merge` in `src/state/sync.ts`; settings it doesn't know are the exception, and are kept), so new data elsewhere in that document is lost. That includes a copy moved back to Stable, and a browser still running an old cached version of the app. Keep new data where older builds keep it, or have the service keep it for them.
+5. A room's broadcasts reach guests on older builds too. For a new kind of message, note each person's names when they join (`callerHas` on their socket request) and choose what to send each of them. Checking only the host's names doesn't protect older guests.
+6. Keep the old branch while supported copies lack the name, or until `MIN_CLIENT` turns them away. Then delete the check, and after that the name. Never reuse a name: copies that still send it would get the new behaviour.
+
+The names are the app's own word, like `X-Slopify-Client`: use them to choose between behaviours the service supports anyway, never for who may do what or for the limits that protect the service. A new header must be allowed by the service's CORS (`Access-Control-Allow-Headers` in `cloud/src/index.ts`) and deployed before any published build sends it, or the app's direct calls fail.
+
+Each call's log line includes `client`: the caller's `CLOUD_CLIENT` number, or `null` if it's missing or isn't a plausible one. Group by `client` and `status` to count calls, and 426s, by that number. It doesn't say which release a copy is, or which names it has.
 
 ## Backups
 
