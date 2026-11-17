@@ -195,7 +195,8 @@ export interface DiscoverOptions {
   /** Fixed searches (an artist's popular songs) instead of ones built from the seeds. */
   queries?: DiscoveryQuery[];
   /** Called with the picks so far as each search arrives. */
-  onSongs?: (songs: DiscoveredSong[]) => void;
+  /** `noChart`: popular songs were wanted but the chart was unavailable (see Discovery). */
+  onSongs?: (songs: DiscoveredSong[], noChart: boolean) => void;
   /** Keep songs already in the library (marked `owned`), for lists like an artist's popular songs. */
   withOwned?: boolean;
   /**
@@ -259,7 +260,7 @@ export async function discover({ seeds, signal, refresh = 0, exclude = new Set()
         const partial = doubtful(result);
         if (partial) failed++;
         streak = partial ? streak + 1 : 0;
-        onSongs?.(picks());
+        onSongs?.(picks(), noChart);
       } catch {
         if (!signal.aborted) {
           failed++;

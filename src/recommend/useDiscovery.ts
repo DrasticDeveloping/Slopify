@@ -119,12 +119,14 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
     const live = () => !controller.signal.aborted;
     /** The picks so far: what's shown, and kept, if the searches run out of time. */
     let found: DiscoveredSong[] = [];
+    /** Found while the chart was down: shown, but not kept (the next visit tries again). */
+    let stopgap = false;
     const deadline = window.setTimeout(() => {
       controller.abort();
       setLoading(false);
       if (!found.length) return setNote("Music searches took too long. Try again later.");
       wanted.current = -1;
-      keep(id, { songs: found, note: "", edition, shown: [...shown.current.keys], at: Date.now() });
+      if (!stopgap) keep(id, { songs: found, note: "", edition, shown: [...shown.current.keys], at: Date.now() });
     }, 90_000);
     // Each edition rotates which of the surface's songs lead the seeds.
     const seeds = fixedSeeds ?? (seedIds ? seedsForIds(seedIds, edition * 5) : discoverySeeds(getState()));
@@ -145,9 +147,10 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
       budget: limit <= 5 ? 12 : 48,
       // Suggestions from your whole taste lean on popular songs while there's little of it.
       popular: tasteWide ? 0 : undefined,
-      onSongs: (next) => {
+      onSongs: (next, noChart) => {
         if (!live() || (keeping && !next.length)) return;
         found = next;
+        stopgap = noChart;
         setSongs(next);
       },
     })

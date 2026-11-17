@@ -284,7 +284,8 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
   const seen = new Set<string>();
   const sources = new Set<string>();
   const results: Array<DiscoveredSong & { score: number; provider: string; fill: boolean }> = [];
-  for (const { query, candidates } of batches) {
+  // Popular searches go last, so a song your own music also led to keeps that reason.
+  for (const { query, candidates } of [...batches].sort((a, b) => Number(Boolean(a.query.fill)) - Number(Boolean(b.query.fill)))) {
     /** A song search is for one song: its best match, not other uploads of it credited differently ("A, B" and "A"). */
     let found = false;
     candidates.forEach((candidate, index) => {

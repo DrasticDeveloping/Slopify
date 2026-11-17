@@ -311,6 +311,7 @@ async function findSongs(mix: Mix) {
     // A mix filled at the same time (one opened while the others were being made) may have taken some meanwhile.
     const takenNow = new Set(mixes.filter((m) => m.id !== mix.id).flatMap((m) => m.songs.map((song) => song.key)));
     songs.splice(0, songs.length, ...songs.filter((song) => !takenNow.has(song.key)));
+    if (!songs.length && mix.kind === "weekly") throw new Error("Every song found is in another mix.");
     publish(mixes.map((m) => {
       if (!sameEdition(m)) return m;
       // Fewer new songs than planned keep the daily mix's familiar-to-new balance.
