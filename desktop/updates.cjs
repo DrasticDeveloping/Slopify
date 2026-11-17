@@ -22,6 +22,8 @@ const CHECK_EVERY = 10 * 60_000;
 const INSTALL_NOTICE = 1500;
 /** How long after a failed request for an update's changes it's asked for again. */
 const CHANGELOG_RETRY = 30 * 60_000;
+/** A failed request (often a dropped connection) is first tried again after these waits, before CHANGELOG_RETRY applies. */
+const CHANGELOG_QUICK_RETRIES = [20_000, 2 * 60_000];
 /** An install that hasn't closed the app by then has failed. */
 const INSTALL_TIMEOUT = 30_000;
 const settingsFile = () => path.join(app.getPath("userData"), "updates.json");
@@ -194,9 +196,10 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
   /**
    * Lists what's new in `version` (desktop/changelog.cjs). One GitHub request per update:
    * a check that finds it again while that's under way, or after it worked, asks nothing;
-   * after a failure it's asked again only once CHANGELOG_RETRY has passed.
+   * after a failure it's asked again soon (CHANGELOG_QUICK_RETRIES), then by a later
+   * check once CHANGELOG_RETRY has passed.
    */
-  function fetchChangelog(version) {
+  function fetchChangelog(version, attempt = 0) {
     if (testFeed) return;
     const last = changelogAsks.get(version);
     if (last && (last.pending || last.done || Date.now() - last.at < CHANGELOG_RETRY)) return;
@@ -209,12 +212,26 @@ function startUpdates(getWindow, log, { isPlaying = () => false } = {}) {
         // Only the latest request speaks, and only while its update is still the one offered.
         if (changelogAsks.get(version) === ask && state.available === version) send({ changelog });
       })
-      .catch((error) => log(`[updates] couldn't list the changes in ${version}: ${error?.message || error}\n`))
+      .catch((error) => {
+        log(`[updates] couldn't list the changes in ${version}: ${error?.message || error}\n`);
+        const wait = CHANGELOG_QUICK_RETRIES[attempt];
+        if (wait == null) return;
+        setTimeout(() => {
+          // Still the latest request, and its update is still the one offered.
+          if (changelogAsks.get(version) !== ask || state.available !== version) return;
+          changelogAsks.delete(version);
+          fetchChangelog(version, attempt + 1);
+        }, wait).unref?.();
+      })
       .finally(() => { ask.pending = false; });
   }
 
   function check(reason) {
-    if (state.status === "ready" || state.status === "downloading" || state.status === "installing") return state;
+    if (state.status === "ready" || state.status === "downloading" || state.status === "installing") {
+      // An update waiting without its changes (the request failed): ask again, as often as fetchChangelog allows.
+      if (state.available && !state.changelog) fetchChangelog(state.available);
+      return state;
+    }
     if (!checking) {
       checkingFor = generation;
       installWhenReady = reason === "startup" && !portable;
