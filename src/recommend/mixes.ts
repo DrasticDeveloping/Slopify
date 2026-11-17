@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { hashString } from "../data/library";
-import { canStream, streamTrackId } from "../state/importer";
+import { canStream, compactCandidate, streamTrackId } from "../state/importer";
 import { getState } from "../state/store";
 import { type DiscoveredSong } from "./discover";
 import { ownedCopies, ownedIndex } from "./owned";
@@ -47,6 +47,8 @@ const DAY = 86_400_000;
 /* ───────────────────────── stored editions ───────────────────────── */
 
 const isSong = (s: DiscoveredSong) => s && typeof s.key === "string" && typeof s.artist === "string" && typeof s.title === "string" && typeof s.candidate?.sourceURL === "string";
+/** An edition's found songs as kept: valid ones, at most a mix's worth, with only what playing and saving them need (compactCandidate). */
+const keptSongs = (songs: DiscoveredSong[]) => songs.filter(isSong).slice(0, MAX_SONGS).map((song) => ({ ...song, candidate: compactCandidate(song.candidate) }));
 const isMix = (m: Mix) =>
   m && typeof m.id === "string" && ["daily", "weekly", "repeat"].includes(m.kind) && typeof m.expires === "number"
   && Array.isArray(m.libraryIds) && Array.isArray(m.seedIds) && Array.isArray(m.hidden) && Array.isArray(m.songs);
@@ -58,7 +60,7 @@ function load(): Mix[] {
     return raw
       .filter((m: Mix) => isMix(m) && m.expires > Date.now())
       .slice(0, 5)
-      .map((m: Mix) => ({ ...m, songs: m.songs.filter(isSong).slice(0, MAX_SONGS) }));
+      .map((m: Mix) => ({ ...m, songs: keptSongs(m.songs) }));
   } catch {
     // A corrupt edition never prevents startup; new ones are made.
     return [];
@@ -88,7 +90,7 @@ export const useMixes = () => useSyncExternalStore(subscribe, () => mixes);
 export const currentMixes = () => mixes.filter((m) => m.expires > Date.now());
 export const onMixes = subscribe;
 export function adoptMixes(next: Mix[]) {
-  const valid = next.filter((m) => isMix(m) && m.expires > Date.now()).slice(0, 5).map((m) => ({ ...m, songs: m.songs.filter(isSong).slice(0, MAX_SONGS) }));
+  const valid = next.filter((m) => isMix(m) && m.expires > Date.now()).slice(0, 5).map((m) => ({ ...m, songs: keptSongs(m.songs) }));
   if (JSON.stringify(valid) === JSON.stringify(mixes)) return;
   // A search under way for a mix replaced from elsewhere no longer owns it.
   for (const m of valid) {
@@ -285,12 +287,12 @@ async function findSongs(mix: Mix) {
       if (!sameEdition(m)) return m;
       // Fewer new songs than planned keep the daily mix's familiar-to-new balance.
       const libraryIds = m.kind === "daily" && songs.length ? m.libraryIds.slice(0, Math.round((songs.length * 7) / 3)) : m.libraryIds;
-      return { ...m, libraryIds, songs: songs.slice(0, target), complete: true, note };
+      return { ...m, libraryIds, songs: keptSongs(songs.slice(0, target)), complete: true, note };
     }));
   } catch {
     // A search replaced by a synced copy meanwhile says nothing about that copy.
     if ((searches.get(mix.id) ?? 0) !== search) return;
     failedAt.set(`${mix.id}|${mix.edition}`, Date.now());
-    publish(mixes.map((m) => (sameEdition(m) ? { ...m, songs, note: "Couldn't finish this edition. Open it again to retry." } : m)));
+    publish(mixes.map((m) => (sameEdition(m) ? { ...m, songs: keptSongs(songs), note: "Couldn't finish this edition. Open it again to retry." } : m)));
   }
 }

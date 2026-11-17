@@ -50,7 +50,7 @@ import {
  *   PUT    /v1/library/songs/:id       save a song (a link and its details)
  *   DELETE /v1/library/songs/:id
  *   GET    /v1/library/state           { rev, data }
- *   PUT    /v1/library/state           { baseRev, data } → 200, or 409 with the current copy
+ *   PUT    /v1/library/state           { baseRev, data } → { rev }, or 409 with the current copy
  *   POST   /v1/rooms                   start a Listen Along room → { code }
  *   GET    /v1/rooms/:code             { code, hostName, members }
  *   GET    /v1/rooms/:code/socket      join (WebSocket)

@@ -657,6 +657,22 @@ function sourceSongKey(meta: SourceTrack | null | undefined) {
 }
 
 /**
+ * A found song's candidate as a mix edition keeps it (mixes.ts), which is stored and synced to the account: without
+ * the copies search results keep of the same picture, which are read only where the other copy comes first (the
+ * video thumbnail when it's the thumbnail, the uploader's avatar when the import has it too). Nothing shown or saved
+ * changes; the import's own artwork stays even when it's the thumbnail, since a repaired stream keeps it. A fallback
+ * keeps its avatar: repairing a stream gives it the first copy's import (replaceSource), so its own may be the only one.
+ */
+export function compactCandidate(c: Candidate, fallback = false): Candidate {
+  const { videoThumbnailURL, creatorAvatarURL, fallbackCandidates, ...rest } = c;
+  const out: Candidate = rest;
+  if (videoThumbnailURL && videoThumbnailURL !== c.thumbnailURL) out.videoThumbnailURL = videoThumbnailURL;
+  if (creatorAvatarURL && (fallback || creatorAvatarURL !== c.importMetadata?.creatorAvatarURL)) out.creatorAvatarURL = creatorAvatarURL;
+  if (fallbackCandidates) out.fallbackCandidates = fallbackCandidates.map((f) => compactCandidate(f, true));
+  return out;
+}
+
+/**
  * What a streamed song needs to stream again in a later session (kept with playlists made without downloading:
  * store.ts): the upload and its other matched copies by link, and the song's own details; not search scores,
  * thumbnails of every copy, or uploads only listened to.
