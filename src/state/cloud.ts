@@ -295,7 +295,9 @@ const message = (error: unknown) => (error instanceof Error ? error.message : "C
 
 /**
  * Which version of the online service's calls this app makes (cloud/src/index.ts
- * MIN_CLIENT). Raise it with a change the service must be able to tell apart.
+ * MIN_CLIENT). Raise it when older builds must be turned away (by raising MIN_CLIENT to
+ * match, after the release). To give new server behaviour only to builds made with it, use
+ * CLOUD_FEATURES below.
  */
 export const CLOUD_CLIENT = 2;
 /**

@@ -1,7 +1,7 @@
 /*
  * Server behaviours a caller's build was made for. One service answers every
- * installed copy, Stable and Nightly alike, and each release redeploys it, so new
- * behaviour that installed copies mustn't get yet is checked by name: a build
+ * installed copy, Stable and Nightly alike, so a change deployed to it reaches them
+ * all. New behaviour that installed copies mustn't get yet is checked by name: a build
  * lists the names it was made with (src/state/cloud.ts CLOUD_FEATURES), and the
  * same pull request adds the name and its check here. A build has a name exactly
  * when it contains that pull request, whatever order merges and releases happen in.
