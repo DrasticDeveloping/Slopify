@@ -120,9 +120,9 @@ test("Without its own version listed, Nightly doesn't go back to an older build 
   assert.equal((await newer.instance.getLatestVersion()).version, "2.0.1-nightly.20261013.950");
 });
 
-test("Switching a nightly to Stable still goes back to the newest stable release for this app", async () => {
+test("Switching a nightly to Stable lands on the latest stable release, whichever app it changed", async () => {
   const { instance } = provider([["v2.0.2", phoneOnly], "v2.0.1"], false, "2.0.3-nightly.20261013.930");
-  assert.equal((await instance.getLatestVersion()).version, "2.0.1");
+  assert.equal((await instance.getLatestVersion()).version, "2.0.2");
 });
 
 test("Stable finds its release however many nightlies came after it", async () => {
@@ -134,6 +134,15 @@ test("Stable finds its release however many nightlies came after it", async () =
   const deeper = provider([...many(150), ["v2.0.2", phoneOnly], ...many(20).map((t) => t.replace("2.0.3", "2.0.2")), "v2.0.1"], false, "2.0.0");
   assert.equal((await deeper.instance.getLatestVersion()).version, "2.0.1");
   assert.equal(deeper.requested.filter((path) => path.includes("/releases?")).length, 2);
+  // However far back it is.
+  const far = provider([["v2.2.0", phoneOnly], ...many(350), "v2.1.0", "v2.0.0"], false, "2.0.0");
+  assert.equal((await far.instance.getLatestVersion()).version, "2.1.0");
+  // But never further back than the installed version: up to date, or an unpublished build in between.
+  for (const current of ["2.1.0", "2.1.5"]) {
+    const upToDate = provider([["v2.2.0", phoneOnly], ...many(150), "v2.1.0", ...many(300).map((t) => t.replace("2.0.3", "2.1.0")), "v2.0.0"], false, current);
+    assert.equal((await upToDate.instance.getLatestVersion()).version, current);
+    assert.equal(upToDate.requested.filter((path) => path.includes("/releases?")).length, 2, current);
+  }
 });
 
 test("Nightly versions sort chronologically below the next stable", () => {
