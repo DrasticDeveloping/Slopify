@@ -17,8 +17,20 @@ function provider(tags, allowPrerelease = true, current = "2.0.0") {
   const instance = new NightlyGitHubProvider({ owner: "test", repo: "releases" }, updater, {
     platform: "win32", executor: { request: async (options) => {
       requested.push(options.path);
-      // Listed newest first; the API's order doesn't matter, so it's reversed here.
-      if (options.path.includes("/repos/test/releases/releases")) return JSON.stringify(releases.map(([tag, body], i) => ({ tag_name: tag, name: tag, body, draft: false, published_at: new Date(Date.UTC(2026, 9, 20) - i * 60_000).toISOString() })).reverse());
+      const listed = releases.map(([tag, body], i) => ({ tag_name: tag, name: tag, body, draft: false, published_at: new Date(Date.UTC(2026, 9, 20) - i * 60_000).toISOString() }));
+      // GitHub's latest release: the newest stable one.
+      if (options.path.endsWith("/repos/test/releases/releases/latest")) {
+        const latest = listed.find((r) => !semver.prerelease(r.tag_name));
+        if (!latest) throw Object.assign(new Error("404 Not Found"), { statusCode: 404 });
+        return JSON.stringify(latest);
+      }
+      // Listed newest first, a page at a time; the order within a page doesn't matter, so it's reversed here.
+      if (options.path.includes("/repos/test/releases/releases?")) {
+        const query = new URLSearchParams(options.path.split("?")[1]);
+        const size = Number(query.get("per_page")) || 30;
+        const page = Number(query.get("page")) || 1;
+        return JSON.stringify(listed.slice((page - 1) * size, page * size).reverse());
+      }
       const tag = /\/download\/(v[^/]+)\//.exec(options.path)?.[1];
       return `version: ${tag.slice(1)}\nfiles:\n  - url: Setup.exe\n    sha512: checksum\n`;
     } },
@@ -97,6 +109,31 @@ test("When nothing listed changes this app, the installed version is reported", 
 test("Notes that don't say which apps count for both", async () => {
   const { instance } = provider([["v2.0.1-nightly.20261013.1000", "A nightly build of Slopify."], ["v2.0.1-nightly.20261013.930", both]]);
   assert.equal((await instance.getLatestVersion()).version, "2.0.1-nightly.20261013.1000");
+});
+
+test("Without its own version listed, Nightly doesn't go back to an older build for a passed-over one", async () => {
+  // Installed: an unpublished build between two published ones.
+  const { instance } = provider([["v2.0.1-nightly.20261013.1000", phoneOnly], ["v2.0.1-nightly.20261013.900", both]], true, "2.0.1-nightly.20261013.930");
+  assert.equal((await instance.getLatestVersion()).version, "2.0.1-nightly.20261013.930");
+  // A newer build for this app is still taken.
+  const newer = provider([["v2.0.1-nightly.20261013.1000", phoneOnly], ["v2.0.1-nightly.20261013.950", both]], true, "2.0.1-nightly.20261013.930");
+  assert.equal((await newer.instance.getLatestVersion()).version, "2.0.1-nightly.20261013.950");
+});
+
+test("Switching a nightly to Stable still goes back to the newest stable release for this app", async () => {
+  const { instance } = provider([["v2.0.2", phoneOnly], "v2.0.1"], false, "2.0.3-nightly.20261013.930");
+  assert.equal((await instance.getLatestVersion()).version, "2.0.1");
+});
+
+test("Stable finds its release however many nightlies came after it", async () => {
+  const many = (n) => Array.from({ length: n }, (_, i) => `v2.0.3-nightly.20261013.${2000 - i}`);
+  const { instance, requested } = provider([...many(150), "v2.0.2"], false);
+  assert.equal((await instance.getLatestVersion()).version, "2.0.2");
+  assert.equal(requested.filter((path) => path.includes("/releases?")).length, 0, "GitHub's latest release was enough");
+  // A phone-only latest release: the list is read further back, page by page.
+  const deeper = provider([...many(150), ["v2.0.2", phoneOnly], ...many(20).map((t) => t.replace("2.0.3", "2.0.2")), "v2.0.1"], false, "2.0.0");
+  assert.equal((await deeper.instance.getLatestVersion()).version, "2.0.1");
+  assert.equal(deeper.requested.filter((path) => path.includes("/releases?")).length, 2);
 });
 
 test("Nightly versions sort chronologically below the next stable", () => {

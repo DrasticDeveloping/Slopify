@@ -98,7 +98,7 @@ The app's update notification reads these lists. **What's new** (desktop/changel
 
 ### Updates for one app only
 
-Each release's notes also record which apps its changes are for: the Windows app, the phone app, both, or neither. Each app only offers the updates that change it, so a nightly with just a phone fix doesn't show the update notification on PCs. The Windows app passes over a release that doesn't change it and takes the newest one before it that does, or stays as it is once it reaches its own version (it never goes back to an older build for this). What's new leaves out the builds it passed over. The record is a hidden `<!-- Platforms: mobile -->` comment (`desktop`, `mobile`, both, or `none`), with a line saying so when it isn't both. Releases without one, including every release from before it, count for both apps.
+Each release's notes also record which apps its changes are for: the Windows app, the phone app, both, or neither. Each app only offers the updates that change it, so a nightly with just a phone fix doesn't show the update notification on PCs. The Windows app passes over a release that doesn't change it and takes the newest one before it that does, or stays as it is once it reaches its own version (on Nightly it never goes back to an older build for this). What's new leaves out the builds it passed over. The record is a hidden `<!-- Platforms: mobile -->` comment (`desktop`, `mobile`, both, or `none`), with a line saying so when it isn't both. Releases without one, including every release from before it, count for both apps.
 
 `scripts/publish-release.mjs` works it out from each change on the branch since the previous release on the same channel: a pull request's merge counts as its whole change, and a squashed or direct commit as itself. By default the files decide (desktop/platforms.cjs):
 
@@ -109,7 +109,9 @@ Each release's notes also record which apps its changes are for: the Windows app
 | `docs/`, `cloud/`, `.github/`, `work/`, Markdown files, `scripts/test-*`, `scripts/publish-release.mjs` | Neither |
 | Everything else (`src/`, `server/`, `package.json`, …) | Both |
 
-Most changes for one app are in shared code (`src/`), so a pull request can say which app it's for with a label: **mobile only** or **desktop only**. The label wins over its files. Add it before the release that includes the pull request is published; the notes are written then. If GitHub can't list every change's files (more than 300 in one, say), the release counts for both. The labels are created once with:
+Most changes for one app are in shared code (`src/`), so a pull request can say which app it's for with a label: **mobile only** or **desktop only**. **Without the label, a phone change in `src/` counts for both apps and PCs are offered it, as before.** The label wins over its files. Add it before the release that includes the pull request is published (a nightly can follow a merge within the hour); the notes are written then. The pull request is found from its merge commit ("Merge pull request #N") or a squashed commit ending "(#N)"; a rebase-merged one goes by its files. If GitHub can't list every change's files (more than 300 in one, say), the release counts for both.
+
+To correct a release that's already out, edit its notes on GitHub and change the hidden comment, for example to `<!-- Platforms: mobile -->`. The Windows app reads the notes at every check, so it takes effect within 10 minutes (an update it has already downloaded still installs). The labels are created once with:
 
 ```powershell
 gh label create "mobile only" --repo DrasticDeveloping/Slopify --color 1d76db --description "Only changes the phone app: PCs don't offer the update"

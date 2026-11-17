@@ -159,10 +159,11 @@ async function platformsSince(commits) {
     return await platformsOfRange({
       commits,
       head: build.commit,
-      // GitHub lists up to 300 files for a comparison: one with more may have left some out.
+      // GitHub lists up to 300 files for a comparison: one with more may have left some out. A rename counts both names.
       filesOf: (parent, sha) => {
-        const files = JSON.parse(gh("api", `repos/${build.updateRepo}/compare/${parent}...${sha}`, "--jq", "[.files[].filename]"));
-        return files.length < 300 ? files : null;
+        const { count, names } = JSON.parse(gh("api", `repos/${build.updateRepo}/compare/${parent}...${sha}`,
+          "--jq", "{ count: (.files | length), names: [.files[] | .filename, (.previous_filename // empty)] }"));
+        return count < 300 ? names : null;
       },
       labelsOf: (number) => JSON.parse(gh("api", `repos/${build.updateRepo}/issues/${number}/labels?per_page=100`, "--jq", "[.[].name]")),
     });
@@ -174,9 +175,9 @@ async function platformsSince(commits) {
 
 /** A line for the notes when the release isn't for both apps. */
 function platformsLine(platforms) {
-  if (platforms[0] === "desktop") return "Only changes the Windows app, so the phone app doesn't offer it.";
+  if (platforms[0] === "desktop") return "Only changes the Windows app.";
   if (platforms[0] === "mobile") return "Only changes the phone app, so the Windows app doesn't offer it.";
-  return "Doesn't change the apps (only docs, tests, the online service or release tooling), so they don't offer it.";
+  return "Doesn't change the apps (only docs, tests, the online service or release tooling), so the Windows app doesn't offer it.";
 }
 
 /*
