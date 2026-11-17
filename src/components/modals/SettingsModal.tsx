@@ -276,7 +276,7 @@ function DesktopBehaviourRows() {
   if (!d) return null;
   return (
     <>
-      <Row icon="collapse" title="Keep playing when closed" desc="Closing the window keeps Slopify playing in the system tray, like Discord. Quit from the tray icon.">
+      <Row icon="collapse" title="Keep playing when closed" desc="Keep music playing after you close the window. Choose Quit Slopify from the app icon in the menu bar or system tray to stop it.">
         <Toggle checked={d.closeToTray} onChange={(v) => setDesktopSetting({ closeToTray: v })} label="Keep playing when closed" />
       </Row>
       <Row icon="discord" title="Show what you're playing on Discord" desc={d.discordAvailable ? "Your Discord profile shows the song as \"Listening to\" while the Discord app is open." : "This copy of Slopify wasn't built with a Discord application, so it can't show your status."}>

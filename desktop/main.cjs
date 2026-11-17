@@ -6,10 +6,11 @@ const { startBackground } = require("./background.cjs");
 const { handOff, listenForLinks } = require("./link-handoff.cjs");
 
 app.setName("Slopify");
-app.setAppUserModelId("com.drasticdeveloping.slopify");
-// Once the video controls fade out, nothing covers the video and Chromium hands it to a
-// Windows hardware overlay, where the picture can freeze while the sound carries on.
-app.commandLine.appendSwitch("disable-direct-composition-video-overlays");
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.drasticdeveloping.slopify");
+  // Windows hardware overlays can freeze the picture after the video controls fade out.
+  app.commandLine.appendSwitch("disable-direct-composition-video-overlays");
+}
 // Running from a checkout (`npm run desktop`, T3's Launch) uses the library and profile
 // all checkouts share (or this checkout's own, isolated: see server/data-dir.cjs) and
 // its own port, so it can run beside an installed copy.
@@ -101,7 +102,9 @@ async function startBackend() {
     env: {
       ...process.env, HOST: "127.0.0.1", PORT: String(port),
       SLOPIFY_DATA_DIR: process.env.SLOPIFY_DATA_DIR || (checkout ? checkout.checkoutDataDir(app.getAppPath()) : path.join(userData, "library")),
-      FFMPEG_BIN: app.isPackaged ? path.join(process.resourcesPath, "bin/ffmpeg.exe") : require("ffmpeg-static")
+      FFMPEG_BIN: app.isPackaged
+        ? path.join(process.resourcesPath, "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg")
+        : require("ffmpeg-static")
     }
   });
   let output = "";
