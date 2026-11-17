@@ -292,7 +292,7 @@ async function findSongs(mix: Mix) {
         onSongs: (found) => (partial = found),
       }).catch((error: unknown): Discovery => {
         // Out of time: what was found makes the edition if it's enough of one; otherwise it shows while it's tried again.
-        if (partial.length < Math.min(12, target - songs.length)) {
+        if (songs.length + partial.length < Math.min(12, target)) {
           songs.push(...partial);
           throw error;
         }
@@ -305,8 +305,9 @@ async function findSongs(mix: Mix) {
       // was found shows, and it's tried again later.
       if (result.noChart && !mix.seedIds.length) unfinished = true;
     }
-    // Nothing found because music search wasn't answering: retried later, not published as a finished, empty edition.
-    if ((!songs.length && failed) || unfinished) throw new Error("Music search is unavailable.");
+    // Nothing found because music search wasn't answering (or a weekly found nothing at all): retried later, not
+    // published as a finished, empty edition.
+    if ((!songs.length && (failed || mix.kind === "weekly")) || unfinished) throw new Error("Music search is unavailable.");
     // A mix filled at the same time (one opened while the others were being made) may have taken some meanwhile.
     const takenNow = new Set(mixes.filter((m) => m.id !== mix.id).flatMap((m) => m.songs.map((song) => song.key)));
     songs.splice(0, songs.length, ...songs.filter((song) => !takenNow.has(song.key)));
@@ -320,6 +321,6 @@ async function findSongs(mix: Mix) {
     // A search replaced by a synced copy meanwhile says nothing about that copy.
     if ((searches.get(mix.id) ?? 0) !== search) return;
     failedAt.set(`${mix.id}|${mix.edition}`, Date.now());
-    publish(mixes.map((m) => (sameEdition(m) ? { ...m, songs: keptSongs(songs.length ? songs : m.songs), note: "Couldn't finish this edition. Open it again to retry." } : m)));
+    publish(mixes.map((m) => (sameEdition(m) ? { ...m, songs: keptSongs(songs.length >= Math.min(12, m.songs.length) ? songs : m.songs), note: "Couldn't finish this edition. Open it again to retry." } : m)));
   }
 }

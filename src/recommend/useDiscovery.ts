@@ -129,7 +129,8 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
     // Each edition rotates which of the surface's songs lead the seeds.
     const seeds = fixedSeeds ?? (seedIds ? seedsForIds(seedIds, edition * 5) : discoverySeeds(getState()));
     setLoading(true);
-    if (!keepShown.current) setSongs([]);
+    const keeping = keepShown.current;
+    if (!keeping) setSongs([]);
     keepShown.current = false;
     setNote("");
     discover({
@@ -145,7 +146,7 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
       // Suggestions from your whole taste lean on popular songs while there's little of it.
       popular: tasteWide ? 0 : undefined,
       onSongs: (next) => {
-        if (!live()) return;
+        if (!live() || (keeping && !next.length)) return;
         found = next;
         setSongs(next);
       },
@@ -153,6 +154,8 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
       .then(
         (result) => {
           if (!live()) return;
+          // A first taste that found nothing leaves the popular songs up.
+          if (keeping && !result.songs.length) return setNote(result.note);
           const nothingNew = !result.songs.length && edition > 0 && before.current.length > 0;
           const next = nothingNew ? before.current : result.songs;
           // An outage isn't "nothing new": say the searches didn't work.
@@ -160,9 +163,10 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
           setSongs(next);
           setNote(nextNote);
           // Only a search that found something is kept: an empty one (even when the
-          // previous songs stay on screen) leaves the kept songs to age as before.
+          // previous songs stay on screen) leaves the kept songs to age as before. Neither is a stand-in
+          // for popular songs while the chart was down, so the next visit tries again.
           wanted.current = -1;
-          if (result.songs.length) {
+          if (result.songs.length && !result.noChart) {
             keep(id, { songs: result.songs, note: result.note, edition, shown: [...shown.current.keys], at: Date.now() });
           }
         },

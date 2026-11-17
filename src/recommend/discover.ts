@@ -283,7 +283,7 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
   const owned = ownedIndex(input);
   const seen = new Set<string>();
   const sources = new Set<string>();
-  const results: Array<DiscoveredSong & { score: number; provider: string }> = [];
+  const results: Array<DiscoveredSong & { score: number; provider: string; fill: boolean }> = [];
   for (const { query, candidates } of batches) {
     /** A song search is for one song: its best match, not other uploads of it credited differently ("A, B" and "A"). */
     let found = false;
@@ -307,23 +307,25 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       // A song search finds one song, whichever upload (and credit) it comes from: it's known by what was searched,
       // so Find more and Not interested cover every upload of it.
       const key = query.kind === "discover-song" ? discoveryKey(query.artist, query.title) : discoveryKey(artist, title);
+      // The upload's own name counts too (a dismissal made under it, or the same upload found by another search).
+      const keys = [...new Set([key, discoveryKey(artist, title)])];
       const links = candidateSources(candidate);
       const ids = links.map(sourceId).filter((id): id is string => Boolean(id));
-      if (exclude.has(key) || input.taste.hiddenDiscoveries[key] || seen.has(key) || ids.some((id) => sources.has(id))) return;
+      if (keys.some((k) => exclude.has(k) || input.taste.hiddenDiscoveries[k] || seen.has(k)) || ids.some((id) => sources.has(id))) return;
       // Songs you already have, from any link or upload, under the name we read or the one the service gave.
       const raw = { artist: meta.artist || candidate.artist, title: meta.title || candidate.title };
       const copies = [...owned.find({ artist, title, sources: links }), ...owned.find(raw)];
       if (copies.length && !withOwned) return;
-      seen.add(key);
+      keys.forEach((k) => seen.add(k));
       ids.forEach((id) => sources.add(id));
       const reason = query.reason ? query.reason
         : query.kind === "discover-song" ? `Listeners of ${query.because} also play this · ListenBrainz`
         : query.kind === "discover-artist" ? `Fans of ${query.because} also play ${query.artist} · ListenBrainz`
         : query.because;
-      const base = query.fill ? 1.2 + query.affinity : query.kind === "discover-song" ? 5 + 3 * query.affinity : query.kind === "discover-artist" ? 3 + 3 * query.affinity : sameArtist ? 2 : 1;
+      const base = query.fill ? 1 + query.affinity : query.kind === "discover-song" ? 5 + 3 * query.affinity : query.kind === "discover-artist" ? 3 + 3 * query.affinity : sameArtist ? 2 : 1;
       const score = base * reasonWeight(input.taste, query.kind) + 1 / (index + 1) - 3 * sat(penalties.get(cleanArtist(artist)) ?? 0);
       results.push({
-        key, candidate, title, artist, reason, kind: query.kind, score,
+        key, candidate, title, artist, reason, kind: query.kind, score, fill: Boolean(query.fill),
         ...(copies.length ? { owned: copies[0] } : {}),
         artwork: query.artwork || candidate.importMetadata?.artworkURL || candidate.thumbnailURL || undefined,
         provider: candidate.searchProvider ?? candidate.sourceProvider ?? "unknown",
@@ -336,9 +338,10 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       r.score
       - picked.slice(-2).filter((s) => meaningfulArtist(r.artist) && cleanArtist(s.artist) === cleanArtist(r.artist)).length * 1.2
       - picked.slice(-2).filter((s) => s.provider === r.provider).length * 0.5;
-    results.sort((a, b) => adjusted(b) - adjusted(a) || a.key.localeCompare(b.key));
+    // Popular songs only fill in after everything from your own music.
+    results.sort((a, b) => Number(a.fill) - Number(b.fill) || adjusted(b) - adjusted(a) || a.key.localeCompare(b.key));
     const next = results.shift()!;
     if (picked.filter((s) => cleanArtist(s.artist) === cleanArtist(next.artist)).length < perArtist) picked.push(next);
   }
-  return picked.map(({ score: _score, provider: _provider, ...song }) => song);
+  return picked.map(({ score: _score, provider: _provider, fill: _fill, ...song }) => song);
 }
