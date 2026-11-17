@@ -71,7 +71,14 @@ export interface MenuItem {
   short?: string;
   /** A quick action that's switched on (a liked song): its tile is lit. */
   on?: boolean;
+  /** Quiet text at the end of the row, such as when a snooze would end. */
+  note?: string;
+  /** Opens a panel (a calendar) in place of the menu's items, with a way back. */
+  panel?: MenuPanel;
 }
+
+/** What a menu row's panel shows: a calendar to snooze `ids` until a day you pick. */
+export type MenuPanel = { type: "snoozeUntil"; ids: string[] };
 
 /** The picture at the top of a menu: a song's or playlist's cover, an image, or an initial. */
 export interface MenuArt {

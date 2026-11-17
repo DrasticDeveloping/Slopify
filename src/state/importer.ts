@@ -717,9 +717,18 @@ function keptStream(id: string): StreamSong | null {
  */
 export function syncedStream(id: string): StreamSong | null {
   const song = keptStream(id);
-  if (!song) return null;
+  return song ? syncedStreamSong(song) : null;
+}
+
+/**
+ * A streamed song's record as synced (see syncedStream), from a record kept with it (a slip-in's) rather than from
+ * the song as played here, so it works before the song is playable in this session. Its other copies are limited
+ * as keptStream does. Taking an already synced record gives the same record back.
+ */
+export function syncedStreamSong(song: StreamSong): StreamSong {
   const c = song.candidate;
   const meta = c.importMetadata;
+  const fallbacks = (c.fallbackCandidates ?? []).filter(isDownloadable).slice(0, 2);
   return {
     key: song.key,
     kind: song.kind,
@@ -735,7 +744,7 @@ export function syncedStream(id: string): StreamSong | null {
       durationSeconds: c.durationSeconds,
       ...(c.requiresReview ? { requiresReview: true } : {}),
       ...(meta ? { importMetadata: { provider: meta.provider, trackID: meta.trackID, durationSeconds: meta.durationSeconds, ...(meta.localFile ? { localFile: true, title: meta.title, artist: meta.artist } : {}) } } : {}),
-      ...(c.fallbackCandidates?.length ? { fallbackCandidates: c.fallbackCandidates.map((f) => ({ sourceURL: f.sourceURL, sourceProvider: f.sourceProvider })) } : {}),
+      ...(fallbacks.length ? { fallbackCandidates: fallbacks.map((f) => ({ sourceURL: f.sourceURL, sourceProvider: f.sourceProvider })) } : {}),
     },
   };
 }
