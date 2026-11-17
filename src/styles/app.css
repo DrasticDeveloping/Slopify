@@ -1591,6 +1591,51 @@ button.th:not(:disabled):hover { color: var(--text); }
 .menu.plain .menu-item:not(.danger, .accent):is(:hover:not(:disabled), :focus-visible, .open) .menu-icon,
 .menu.plain .menu-item[aria-checked="true"] .menu-icon { color: var(--text); }
 .menu.plain .menu-item:focus-visible { box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.55); }
+/* Quiet text at the end of a row: when each snooze length would end. */
+.menu-note { flex: none; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* A panel in place of a menu's items: the calendar for snoozing until a day you pick. Plain black and white,
+   like the menu it opens from, so the cover's colour stays the only one. */
+.menu.has-panel:not(.sheet) { width: 300px; max-width: none; max-height: calc(100vh - 20px); overflow-y: auto; padding: 6px 8px 10px; }
+.menu-panel { animation: menu-item-in 220ms var(--ease-out); }
+.menu.sheet .menu-panel { max-height: 78vh; overflow-y: auto; }
+.snz-month { display: flex; align-items: center; gap: 2px; padding: 0 2px 6px; }
+.snz-month strong { flex: 1; padding-left: 6px; font-size: 14.5px; font-weight: 720; }
+.snz-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); row-gap: 2px; }
+.snz-wd { padding: 4px 0 6px; text-align: center; font-size: 11px; font-weight: 650; color: var(--text-3); }
+.snz-day { position: relative; height: 36px; display: grid; place-items: center; font-size: 13px; font-weight: 560; font-variant-numeric: tabular-nums; color: var(--text); outline: none; }
+.snz-day > span { position: relative; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; transition: background 120ms; }
+.snz-day:hover:not(:disabled) > span { background: rgb(255 255 255 / 0.12); }
+.snz-day:disabled { color: var(--text-3); opacity: 0.45; }
+.snz-day.today > span { box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.35); }
+.snz-day:focus-visible > span { box-shadow: inset 0 0 0 2px rgb(255 255 255 / 0.8); }
+/* The days it'll be skipped, from today to the day picked, as one band. */
+.snz-day.skipped::before { content: ""; position: absolute; inset: 3px 0; background: rgb(255 255 255 / 0.07); }
+.snz-day.from::before { left: 50%; }
+.snz-day.to::before { right: 50%; }
+.snz-day[aria-pressed="true"] > span { background: #f6f5f8; color: #111; font-weight: 750; }
+.snz-times { display: flex; align-items: center; gap: 6px; margin: 10px 2px 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--text-2); }
+.snz-times > span { flex: 1; white-space: nowrap; }
+.snz-chip { height: 28px; padding: 0 9px; border-radius: 14px; font-size: 12.5px; font-weight: 600; white-space: nowrap; color: var(--text-2); background: rgb(255 255 255 / 0.06); transition: background 120ms, color 120ms; }
+.snz-chip:hover:not(:disabled) { background: rgb(255 255 255 / 0.11); color: var(--text); }
+.snz-chip:focus-visible { outline: none; box-shadow: 0 0 0 1.5px rgb(255 255 255 / 0.8); }
+.snz-chip[aria-pressed="true"] { background: #f6f5f8; color: #111; }
+.snz-chip:disabled { opacity: 0.35; }
+.snz-sum { margin: 12px 4px 10px; font-size: 12.5px; color: var(--text-2); }
+.snz-sum b { color: var(--text); font-weight: 650; }
+.snz-go { width: 100%; height: 38px; border-radius: 19px; background: #f6f5f8; color: #111; font-size: 13.5px; font-weight: 700; transition: background 120ms, transform 120ms; }
+.snz-go:hover:not(:disabled) { background: #fff; }
+.snz-go:active:not(:disabled) { transform: scale(0.98); }
+.snz-go:focus-visible { outline: none; box-shadow: 0 0 0 2px #161616, 0 0 0 3.5px rgb(255 255 255 / 0.8); }
+.snz-go:disabled { opacity: 0.35; }
+/* Phones: bigger days and times, sized for thumbs. */
+.menu.sheet .snz-day { height: 44px; font-size: 15px; }
+.menu.sheet .snz-day > span { width: 38px; height: 38px; }
+.menu.sheet .snz-month strong { font-size: 16px; }
+.menu.sheet .snz-times { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; font-size: 13px; }
+.menu.sheet .snz-times > span { grid-column: 1 / -1; }
+.menu.sheet .snz-chip { height: 38px; border-radius: 19px; font-size: 14px; }
+.menu.sheet .snz-sum { font-size: 13.5px; }
+.menu.sheet .snz-go { height: 48px; border-radius: 24px; font-size: 15.5px; }
 
 .toasts { position: fixed; left: 50%; bottom: calc(var(--player-h) + 26px); transform: translateX(-50%); z-index: 90; display: flex; flex-direction: column-reverse; align-items: center; gap: 8px; pointer-events: none; width: min(460px, calc(100vw - 24px)); }
 .toast { position: relative; overflow: hidden; pointer-events: auto; display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 10px 11px 16px; border-radius: 14px; background: color-mix(in oklab, var(--panel-solid) 94%, white); border: 1px solid var(--line-strong); box-shadow: 0 18px 40px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3); animation: toast-in 420ms var(--ease-spring); }
