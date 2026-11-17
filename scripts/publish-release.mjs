@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const { revertTarget, withoutReverts } = createRequire(import.meta.url)("../desktop/changelog.cjs");
+const require = createRequire(import.meta.url);
+const { revertTarget, withoutReverts } = require("../desktop/changelog.cjs");
+const { platformsMarker, platformsOfRange } = require("../desktop/platforms.cjs");
 
 /*
  * Publishes the last Windows build (release/last-build.json) as a GitHub release
@@ -56,7 +58,7 @@ const notes = [
   "",
   "Download the **Setup** EXE to install Slopify (it updates itself), or the **Portable** EXE to run it without installing.",
   "",
-  ...changesSincePreviousRelease(),
+  ...(await changesSincePreviousRelease()),
   // The commit this release was built from (its tag points there too).
   build.commit ? `Source: ${build.commit}` : "",
 ].join("\n");
@@ -83,9 +85,10 @@ console.log(`Published ${tag} to https://github.com/${build.updateRepo}/releases
  * Merge commits, reverts and the commits they reverted are left out; a commit that
  * was a pull request's last commit is marked with that pull request. Asks GitHub
  * rather than local Git, because CI checkouts are shallow. If GitHub can't answer,
- * the notes go out without the list.
+ * the notes go out without the list. The notes also say which apps the changes are
+ * for (desktop/platforms.cjs), so each app only offers updates that change it.
  */
-function changesSincePreviousRelease() {
+async function changesSincePreviousRelease() {
   const shown = 100;
   const longest = 200;
   try {
@@ -125,7 +128,9 @@ function changesSincePreviousRelease() {
     });
     const more = changes.length - lines.length;
     const { reverted, restored } = undoneEarlier(kept.outside);
+    const platforms = complete ? await platformsSince(commits) : null;
     return [
+      ...(platforms ? [...(platforms.length < 2 ? [platformsLine(platforms), ""] : []), platformsMarker(platforms), ""] : []),
       `### What's changed since ${previous}`,
       "",
       // Everything here may have been reverted: then there's nothing to list, but there is a list.
@@ -143,6 +148,35 @@ function changesSincePreviousRelease() {
     console.warn("Couldn't list the changes since the previous release; publishing without them.");
     return [];
   }
+}
+
+/**
+ * The apps the changes since the previous release are for, or null (both, by leaving the
+ * notes without a record) if GitHub can't say for every change.
+ */
+async function platformsSince(commits) {
+  try {
+    return await platformsOfRange({
+      commits,
+      head: build.commit,
+      // GitHub lists up to 300 files for a comparison: one with more may have left some out.
+      filesOf: (parent, sha) => {
+        const files = JSON.parse(gh("api", `repos/${build.updateRepo}/compare/${parent}...${sha}`, "--jq", "[.files[].filename]"));
+        return files.length < 300 ? files : null;
+      },
+      labelsOf: (number) => JSON.parse(gh("api", `repos/${build.updateRepo}/issues/${number}/labels?per_page=100`, "--jq", "[.[].name]")),
+    });
+  } catch {
+    console.warn("Couldn't tell which apps the changes are for; this release is offered to both.");
+    return null;
+  }
+}
+
+/** A line for the notes when the release isn't for both apps. */
+function platformsLine(platforms) {
+  if (platforms[0] === "desktop") return "Only changes the Windows app, so the phone app doesn't offer it.";
+  if (platforms[0] === "mobile") return "Only changes the phone app, so the Windows app doesn't offer it.";
+  return "Doesn't change the apps (only docs, tests, the online service or release tooling), so they don't offer it.";
 }
 
 /*
