@@ -443,7 +443,9 @@ function mergeMixes(base: Record<string, Mix> = {}, mine: Record<string, Mix> = 
     const settled = same(m, b) || same(t, b);
     let chosen = same(m, b) ? t : same(t, b) ? m : undefined;
     if (!settled) {
-      const [x, y] = [m, t].filter((e): e is Mix => Boolean(e)).sort((p, q) => q.expires - p.expires || Number(q.complete) - Number(p.complete) || (JSON.stringify(p) < JSON.stringify(q) ? -1 : 1));
+      // An edition made from your music wins over a starter one (popular songs, from before there was any).
+      const seeded = (e: Mix) => Number(e.seedIds.length > 0 || e.kind !== "weekly");
+      const [x, y] = [m, t].filter((e): e is Mix => Boolean(e)).sort((p, q) => q.expires - p.expires || seeded(q) - seeded(p) || Number(q.complete) - Number(p.complete) || (JSON.stringify(p) < JSON.stringify(q) ? -1 : 1));
       chosen = y && y.edition === x.edition ? { ...x, hidden: [...new Set([...x.hidden, ...y.hidden])] } : x;
     }
     if (chosen && chosen.expires > now) out[id] = chosen;

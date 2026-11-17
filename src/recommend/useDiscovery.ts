@@ -77,7 +77,8 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
   // Suggestions from your taste before you have any (popular songs) give way as soon as you do.
   const cold = useMemo(() => tasteWide && !discoverySeeds(getState()).artists.length, [tasteWide, tracks, tasteRev]);
   // The surface, whatever your taste is at the moment: its kept songs stand until Find more or they get old.
-  const id = JSON.stringify([scope, seedIds ?? null, queries ?? null, limit, withOwned, ...(fixedSeeds ? [fixedSeeds] : []), ...(cold ? ["cold"] : [])]);
+  const surface = JSON.stringify([scope, seedIds ?? null, queries ?? null, limit, withOwned, ...(fixedSeeds ? [fixedSeeds] : [])]);
+  const id = cold ? `${surface}|cold` : surface;
   const [edition, setEdition] = useState(() => keptFor(id)?.edition ?? 0);
   const [songs, setSongs] = useState<DiscoveredSong[]>(() => keptFor(id)?.songs ?? []);
   const [loading, setLoading] = useState(false);
@@ -87,17 +88,21 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
   const before = useRef<DiscoveredSong[]>([]);
   /** Find more asks for a search even when this edition is kept. */
   const wanted = useRef(-1);
+  /** A first taste: the popular songs stay on show until songs from it arrive. */
+  const keepShown = useRef(false);
 
   useEffect(() => {
     const hit = keptFor(id);
     const switched = shown.current.id !== id;
     if (switched) {
+      keepShown.current = shown.current.id === `${id}|cold`;
       shown.current = { id, keys: new Set(hit?.shown ?? []) };
       // A Find more asked for on the last surface isn't asked of this one.
       wanted.current = -1;
     }
     // Kept (and not asked to find more): shown as it was.
     if (hit && (switched || (hit.edition === edition && wanted.current !== edition))) {
+      keepShown.current = false;
       setSongs(hit.songs);
       setNote(hit.note);
       setLoading(false);
@@ -124,7 +129,8 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
     // Each edition rotates which of the surface's songs lead the seeds.
     const seeds = fixedSeeds ?? (seedIds ? seedsForIds(seedIds, edition * 5) : discoverySeeds(getState()));
     setLoading(true);
-    setSongs([]);
+    if (!keepShown.current) setSongs([]);
+    keepShown.current = false;
     setNote("");
     discover({
       seeds,

@@ -1,5 +1,5 @@
 import { discoveryKey, discoveryQueries, fetchRelated, MIN_QUERIES, pickDiscoveries, popularQueries, relatedLinks, type DiscoveredSong, type DiscoveryBatch, type DiscoveryQuery, type Related, type Seed } from "./discover";
-import { chartSongs } from "./popular";
+import { chartSongs, fullTitle } from "./popular";
 import { meaningfulArtist } from "./taste";
 import { rememberSongLinks } from "../state/actions";
 import { searchDiscovery, searchMore, type MediaKind, type Resolution } from "../state/importer";
@@ -210,6 +210,8 @@ export interface Discovery {
   note: string;
   /** Some searches failed or a provider didn't answer, so an empty list may not mean there's nothing to find. */
   failed: boolean;
+  /** Popular songs were wanted (little to go on) but the chart couldn't be loaded. */
+  noChart?: boolean;
 }
 
 /** Songs outside the library for these seeds, searched three at a time until there are enough. */
@@ -225,12 +227,17 @@ export async function discover({ seeds, signal, refresh = 0, exclude = new Set()
   }
   signal.throwIfAborted();
   let queries = fixed ?? discoveryQueries(related, seeds, getState(), refresh);
+  let noChart = false;
   // Few searches from your own music (a new listener, or artists with few relationships): popular songs fill in.
   if (!fixed && popular !== undefined && queries.filter((q) => q.artist).length < MIN_QUERIES) {
     const chart = await chartSongs().catch(() => []);
     signal.throwIfAborted();
-    const start = chart.length ? popular % chart.length : 0;
-    if (chart.length) queries = discoveryQueries(related, seeds, getState(), refresh, Date.now(), popularQueries([...chart.slice(start), ...chart.slice(0, start)]));
+    noChart = !chart.length;
+    // A remix or live recording in the chart is searched for as that recording, not the plain song.
+    const songs = chart.map((song) => ({ artist: song.artist, title: fullTitle(song), artwork: song.artwork }));
+    // Find more moves a shelf's worth further down the chart.
+    const start = songs.length ? (popular + refresh * 30) % songs.length : 0;
+    if (songs.length) queries = discoveryQueries(related, seeds, getState(), refresh, Date.now(), popularQueries([...songs.slice(start), ...songs.slice(0, start)]));
   }
   queries = queries.slice(0, budget);
   const batches: DiscoveryBatch[] = [];
@@ -266,7 +273,7 @@ export async function discover({ seeds, signal, refresh = 0, exclude = new Set()
   const songs = picks();
   if (!songs.length) note = failed ? "Music search isn't responding right now. Try again in a few minutes." : exclude.size ? "No more new songs found. Try again later as the catalog grows." : "No matching songs found right now.";
   else if (failed && !note) note = "Some music searches are unavailable.";
-  return { songs, note, failed: failed > 0 };
+  return { songs, note, failed: failed > 0, ...(noChart ? { noChart } : {}) };
 }
 
 /* ───────────────────────── seeds and the library ───────────────────────── */

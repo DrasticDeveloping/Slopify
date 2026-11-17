@@ -4,7 +4,7 @@ import { canStream, compactCandidate, streamTrackId } from "../state/importer";
 import { getState } from "../state/store";
 import { type DiscoveredSong } from "./discover";
 import { ownedCopies, ownedIndex } from "./owned";
-import { discover, interleave, seedsForIds, trackKey } from "./service";
+import { discover, interleave, seedsForIds, trackKey, type Discovery } from "./service";
 import { qualified, tasteProfile } from "./taste";
 
 /*
@@ -212,7 +212,8 @@ export function ensureMixes(now = new Date()) {
       next[index] = { ...next[index], description: plan.description, seedIds: plan.seedIds, libraryIds: plan.libraryIds };
     } else if (plan.kind === "weekly" && !next[index].seedIds.length && plan.seedIds.length && !filling.has(plan.id)) {
       // The starter weekly (popular songs, from before there was any music to go on) gives way once there is.
-      next[index] = plan;
+      // Its songs stay on show until the new edition's are found.
+      next[index] = { ...plan, songs: next[index].songs, hidden: next[index].hidden };
       failedAt.delete(`${plan.id}|${plan.edition}`);
     }
   }
@@ -254,6 +255,8 @@ export function fillMix(id: string): Promise<void> {
   if (running) return running;
   const mix = getMix(id);
   if (!mix || mix.complete) return Promise.resolve();
+  // A note from an earlier try (or an older version) goes while this one runs.
+  if (mix.note) update(id, () => ({ note: undefined }));
   const task = findSongs(mix).finally(() => filling.delete(id));
   filling.set(id, task);
   return task;
@@ -271,6 +274,7 @@ async function findSongs(mix: Mix) {
   const songs: DiscoveredSong[] = [];
   let note = "";
   let failed = false;
+  let unfinished = false;
   try {
     for (let n = 0; n < rounds && songs.length < target; n++) {
       /** What this round has found so far, kept if it runs out of time. */
@@ -282,19 +286,27 @@ async function findSongs(mix: Mix) {
         limit: target - songs.length,
         budget: Math.floor(48 / rounds),
         exclude: new Set([...taken, ...songs.map((song) => song.key)]),
-        // Halfway down the chart, so a new listener's weekly isn't the same popular songs as Home's shelf.
-        popular: mix.kind === "weekly" ? 50 : undefined,
+        // Halfway down the chart, so a new listener's weekly isn't the same popular songs as Home's shelf,
+        // and further on each round, so rounds don't spend their searches on the same songs.
+        popular: mix.kind === "weekly" ? 50 + n * Math.floor(48 / rounds) : undefined,
         onSongs: (found) => (partial = found),
-      }).catch((error: unknown) => {
-        if (!partial.length) throw error;
+      }).catch((error: unknown): Discovery => {
+        // Out of time: what was found makes the edition if it's enough of one; otherwise it shows while it's tried again.
+        if (partial.length < Math.min(12, target - songs.length)) {
+          songs.push(...partial);
+          throw error;
+        }
         return { songs: partial, note: "", failed: false };
       });
       songs.push(...result.songs);
       note = result.note;
       failed ||= result.failed;
+      // A starter weekly (popular songs only) without the chart would be a few stray songs until Monday: what
+      // was found shows, and it's tried again later.
+      if (result.noChart && !mix.seedIds.length) unfinished = true;
     }
     // Nothing found because music search wasn't answering: retried later, not published as a finished, empty edition.
-    if (!songs.length && failed) throw new Error("Music search is unavailable.");
+    if ((!songs.length && failed) || unfinished) throw new Error("Music search is unavailable.");
     // A mix filled at the same time (one opened while the others were being made) may have taken some meanwhile.
     const takenNow = new Set(mixes.filter((m) => m.id !== mix.id).flatMap((m) => m.songs.map((song) => song.key)));
     songs.splice(0, songs.length, ...songs.filter((song) => !takenNow.has(song.key)));
@@ -308,6 +320,6 @@ async function findSongs(mix: Mix) {
     // A search replaced by a synced copy meanwhile says nothing about that copy.
     if ((searches.get(mix.id) ?? 0) !== search) return;
     failedAt.set(`${mix.id}|${mix.edition}`, Date.now());
-    publish(mixes.map((m) => (sameEdition(m) ? { ...m, songs: keptSongs(songs), note: "Couldn't finish this edition. Open it again to retry." } : m)));
+    publish(mixes.map((m) => (sameEdition(m) ? { ...m, songs: keptSongs(songs.length ? songs : m.songs), note: "Couldn't finish this edition. Open it again to retry." } : m)));
   }
 }
