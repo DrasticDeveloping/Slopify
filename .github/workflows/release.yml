@@ -292,10 +292,21 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      # Only the publishing script is used from the checkout; nothing is built here.
+      # Only the publishing script is used from the checkout (the commit the app was built from); nothing is
+      # built here.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
+          ref: ${{ needs.windows.outputs.source }}
+
+      # The script's own packages (the release notes use semver). --ignore-scripts: nothing is built, so
+      # Electron isn't downloaded.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci --ignore-scripts
 
       - uses: actions/download-artifact@v7
         with:
