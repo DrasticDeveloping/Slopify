@@ -97,6 +97,7 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
   const tops = cache(200);
   const stats = cache(1000);
   const tracks = cache(1000);
+  const charts = cache(1);
   const pending = new Map();
   let queue = Promise.resolve();
   let last = 0;
@@ -381,6 +382,22 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
     }, signal);
   }
 
+  /**
+   * What's popular right now: the catalog's chart, most popular first, one
+   * copy of each song. A starting point for someone with too little listening
+   * for recommendations of their own.
+   */
+  const chart = (signal) => once(charts, "0", (v) => (v.length ? 6 * HOUR : 10 * 60_000), async (signal) => {
+    const { data = [] } = await get("/chart/0/tracks?limit=100", signal);
+    const seen = new Set();
+    return data.map((t) => fromTrack(t, "")).filter((song) => {
+      const key = song && song.artist && `${normalize(song.artist)}|${coreTitle(song.title)}`;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, signal);
+
   async function lookupSongs(body, signal) {
     const list = (Array.isArray(body?.songs) ? body.songs : []).slice(0, MAX_SONGS);
     const results = [];
@@ -476,6 +493,7 @@ export function createCatalog({ fetchImpl = fetch } = {}) {
       return album(id.slice(2), signal);
     },
     lookupSongs,
+    chart: async (signal) => ({ songs: await chart(signal) }),
     songRelease,
     topSongs,
     songStats,

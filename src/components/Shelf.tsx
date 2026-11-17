@@ -21,13 +21,22 @@ export function Shelf({ title, subtitle, action, onShowAll, grid = false, childr
   useEffect(() => {
     const el = scroller.current;
     if (!el || grid) return;
-    const update = () => setEdges({ start: el.scrollLeft < 4, end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 4 });
+    let atStart = true;
+    const update = () => {
+      atStart = el.scrollLeft < 4;
+      setEdges({ start: atStart, end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 4 });
+    };
     update();
     el.addEventListener("scroll", update, { passive: true });
     const ro = new ResizeObserver(update);
     ro.observe(el);
     // Cards arriving or leaving change how far the row scrolls without resizing it (and the arrows hide when it can't).
-    const mo = new MutationObserver(update);
+    // A row still at its start stays there: a card sorted in ahead of the first (a shelf still filling) would
+    // otherwise leave it snapped to the card it showed before, one place in.
+    const mo = new MutationObserver(() => {
+      if (atStart) el.scrollLeft = 0;
+      update();
+    });
     mo.observe(el, { childList: true });
     return () => {
       el.removeEventListener("scroll", update);

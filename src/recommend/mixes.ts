@@ -176,7 +176,13 @@ function plannedMixes(now: Date): Mix[] {
     }));
   }
 
-  planned.push(fresh({ id: "weekly", name: "Discover Weekly", description: "New songs across your taste. A fresh edition every Monday.", kind: "weekly", edition: week, expires: weekEnds, libraryIds: [], seedIds: ids }));
+  planned.push(fresh({
+    id: "weekly",
+    name: "Discover Weekly",
+    // Nothing to go on yet: a starter edition of popular songs, until there is (ensureMixes).
+    description: ids.length ? "New songs across your taste. A fresh edition every Monday." : "Popular songs to start you off. Save and like music to make it yours.",
+    kind: "weekly", edition: week, expires: weekEnds, libraryIds: [], seedIds: ids,
+  }));
 
   const plays = new Map<string, number>();
   const library = new Set(ids);
@@ -204,6 +210,10 @@ export function ensureMixes(now = new Date()) {
     if (index < 0) next.push(plan);
     else if (!next[index].complete && !filling.has(plan.id)) {
       next[index] = { ...next[index], description: plan.description, seedIds: plan.seedIds, libraryIds: plan.libraryIds };
+    } else if (plan.kind === "weekly" && !next[index].seedIds.length && plan.seedIds.length && !filling.has(plan.id)) {
+      // The starter weekly (popular songs, from before there was any music to go on) gives way once there is.
+      next[index] = plan;
+      failedAt.delete(`${plan.id}|${plan.edition}`);
     }
   }
   if (JSON.stringify(next) !== JSON.stringify(mixes)) publish(next);
@@ -244,10 +254,6 @@ export function fillMix(id: string): Promise<void> {
   if (running) return running;
   const mix = getMix(id);
   if (!mix || mix.complete) return Promise.resolve();
-  if (mix.kind === "weekly" && !mix.seedIds.length) {
-    update(id, () => ({ note: "Import, like or play songs to build your first weekly edition." }));
-    return Promise.resolve();
-  }
   const task = findSongs(mix).finally(() => filling.delete(id));
   filling.set(id, task);
   return task;
@@ -267,12 +273,21 @@ async function findSongs(mix: Mix) {
   let failed = false;
   try {
     for (let n = 0; n < rounds && songs.length < target; n++) {
+      /** What this round has found so far, kept if it runs out of time. */
+      let partial: DiscoveredSong[] = [];
       const result = await discover({
         seeds: seedsForIds(mix.seedIds, n * 5),
-        signal: AbortSignal.timeout(90_000),
+        // The weekly's 30 songs take longer to find, sharing the search pace with Home's shelves.
+        signal: AbortSignal.timeout(mix.kind === "weekly" ? 240_000 : 90_000),
         limit: target - songs.length,
         budget: Math.floor(48 / rounds),
         exclude: new Set([...taken, ...songs.map((song) => song.key)]),
+        // Halfway down the chart, so a new listener's weekly isn't the same popular songs as Home's shelf.
+        popular: mix.kind === "weekly" ? 50 : undefined,
+        onSongs: (found) => (partial = found),
+      }).catch((error: unknown) => {
+        if (!partial.length) throw error;
+        return { songs: partial, note: "", failed: false };
       });
       songs.push(...result.songs);
       note = result.note;

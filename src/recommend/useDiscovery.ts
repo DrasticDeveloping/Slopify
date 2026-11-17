@@ -72,8 +72,12 @@ function keep(id: string, entry: Kept) {
 export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, queries, limit = 30, withOwned = false }: Options = {}) {
   const tracks = useStore((s) => s.tracks);
   const hidden = useStore((s) => s.taste.hiddenDiscoveries);
+  const tasteRev = useStore((s) => s.taste.rev);
+  const tasteWide = !seedIds && !fixedSeeds && !queries;
+  // Suggestions from your taste before you have any (popular songs) give way as soon as you do.
+  const cold = useMemo(() => tasteWide && !discoverySeeds(getState()).artists.length, [tasteWide, tracks, tasteRev]);
   // The surface, whatever your taste is at the moment: its kept songs stand until Find more or they get old.
-  const id = JSON.stringify([scope, seedIds ?? null, queries ?? null, limit, withOwned, ...(fixedSeeds ? [fixedSeeds] : [])]);
+  const id = JSON.stringify([scope, seedIds ?? null, queries ?? null, limit, withOwned, ...(fixedSeeds ? [fixedSeeds] : []), ...(cold ? ["cold"] : [])]);
   const [edition, setEdition] = useState(() => keptFor(id)?.edition ?? 0);
   const [songs, setSongs] = useState<DiscoveredSong[]>(() => keptFor(id)?.songs ?? []);
   const [loading, setLoading] = useState(false);
@@ -108,10 +112,14 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
 
     const controller = new AbortController();
     const live = () => !controller.signal.aborted;
+    /** The picks so far: what's shown, and kept, if the searches run out of time. */
+    let found: DiscoveredSong[] = [];
     const deadline = window.setTimeout(() => {
       controller.abort();
       setLoading(false);
-      setNote("Music searches took too long. Try again later.");
+      if (!found.length) return setNote("Music searches took too long. Try again later.");
+      wanted.current = -1;
+      keep(id, { songs: found, note: "", edition, shown: [...shown.current.keys], at: Date.now() });
     }, 90_000);
     // Each edition rotates which of the surface's songs lead the seeds.
     const seeds = fixedSeeds ?? (seedIds ? seedsForIds(seedIds, edition * 5) : discoverySeeds(getState()));
@@ -128,7 +136,13 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
       withOwned,
       // A handful of suggestions doesn't need the full search budget.
       budget: limit <= 5 ? 12 : 48,
-      onSongs: (next) => live() && setSongs(next),
+      // Suggestions from your whole taste lean on popular songs while there's little of it.
+      popular: tasteWide ? 0 : undefined,
+      onSongs: (next) => {
+        if (!live()) return;
+        found = next;
+        setSongs(next);
+      },
     })
       .then(
         (result) => {

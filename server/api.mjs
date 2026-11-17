@@ -792,6 +792,11 @@ export function createImportApi({ dataDir, owned = () => true, stopsWhenClosed =
         res.writeHead(200, { "Content-Type": type, "Content-Length": bytes.length, "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff" });
         return res.end(bytes);
       }
+      // Popular songs right now, for a new listener's recommendations.
+      if (parts[0] === "catalog" && parts[1] === "chart" && parts.length === 2 && method === "GET") {
+        const result = await catalog.chart(AbortSignal.timeout(20_000));
+        return sendJSON(res, 200, { ok: true, result });
+      }
       if (parts[0] === "catalog" && parts[1] === "album" && parts.length === 3 && method === "GET") {
         const result = await catalog.album(parts[2], AbortSignal.timeout(20_000));
         return sendJSON(res, 200, { ok: true, result });

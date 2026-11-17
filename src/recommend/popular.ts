@@ -92,6 +92,15 @@ function useLoaded<T>(key: string | null, load: (key: string) => Promise<T>): Lo
   return { value: current ? state.value : null, loading: current ? state.loading : !!key, error: current ? state.error : "", retry: () => setAttempt((n) => n + 1) };
 }
 
+const charts = remembered(async () => {
+  const res = await fetch("/api/catalog/chart", { signal: AbortSignal.timeout(30_000) });
+  const json = (await res.json().catch(() => null)) as { ok?: boolean; result?: { songs?: TopSong[] } } | null;
+  if (!res.ok || !json?.ok || !Array.isArray(json.result?.songs)) throw new Error("The music catalog is unavailable.");
+  return json.result.songs;
+});
+/** The songs most popular right now, most popular first. */
+export const chartSongs = () => charts("0");
+
 /** An artist's songs by popularity. `name` null waits (the artist isn't known yet). */
 export const useTopSongs = (name: string | null) => useLoaded(name, topSongsOf);
 

@@ -842,11 +842,32 @@ button.th:not(:disabled):hover { color: var(--text); }
 .card.round .card-link > * { max-width: 100%; }
 .card.current .card-link strong { color: var(--accent-ink); }
 /* Home with an empty library: where to start. */
-.home-empty { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 4px 0 28px; padding: 18px 20px; }
-.home-empty strong { font-size: 16px; }
-.home-empty p { margin-top: 4px; max-width: 60ch; }
-.home-empty .btn { flex: none; }
-@media (max-width: 680px) { .home-empty { flex-direction: column; align-items: flex-start; } }
+/* A new listener's first steps: a search box to start from, then how Home learns. */
+.home-start { margin: 4px 0 32px; }
+.home-start h2 { font-size: 22px; font-weight: 750; letter-spacing: -0.01em; margin: 0 0 14px; }
+.home-start-row { display: flex; gap: 10px; align-items: stretch; }
+.home-start-search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 22px; border-radius: 999px; background: var(--raised); border: 1px solid var(--line-strong); color: var(--text-2); text-align: left; transition: background 160ms, border-color 160ms, box-shadow 200ms; }
+.home-start-search:hover { background: var(--press); border-color: color-mix(in oklab, var(--accent) 55%, transparent); box-shadow: 0 0 0 4px var(--accent-soft); color: var(--text); }
+.home-start-search .icon { flex: none; color: var(--accent-ink); }
+.home-start-prompt { flex: 1; min-width: 0; font-size: 15px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-start-sources { flex: none; font-size: 12px; font-weight: 650; color: var(--text-3); }
+.btn.home-start-files { height: 56px; padding: 0 22px; flex: none; }
+.home-start-note { margin: 8px 0 0 22px; font-size: 12.5px; color: var(--text-3); }
+.home-start-steps { list-style: none; margin: 18px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.home-start-steps li { display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 2px; align-items: center; align-content: center; padding: 14px 16px; border-radius: var(--r-lg); background: var(--panel-2); border: 1px solid var(--line); }
+.home-start-steps strong { font-size: 14px; }
+.home-start-steps li > span:last-child { grid-column: 2; font-size: 13px; color: var(--text-2); line-height: 1.4; }
+.home-start-icon { grid-row: span 2; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-ink); }
+@media (max-width: 900px) { .home-start-sources { display: none; } }
+@media (max-width: 680px) {
+  .home-start-row { flex-direction: column; }
+  .btn.home-start-files { height: 44px; align-self: flex-start; }
+  .home-start-search { flex: none; height: 52px; padding: 0 18px; }
+  .home-start-note { margin-left: 4px; }
+  .home-start-steps { grid-template-columns: 1fr; gap: 6px; margin-top: 14px; }
+  .home-start-steps li { padding: 10px 12px; }
+  .home-start-icon { width: 30px; height: 30px; }
+}
 /* Recommendations: the reason under each suggestion, and a "not interested" button on the art. */
 .rec-reason { font-size: 12px; line-height: 1.35; color: var(--text-3); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.7em; }
 .rec-dismiss { position: absolute; top: 6px; right: 6px; z-index: 3; width: 28px; height: 28px; background: rgb(0 0 0 / 0.55); color: #fff; backdrop-filter: blur(6px); opacity: 0; transition: opacity 180ms; }
@@ -2419,9 +2440,6 @@ button.th:not(:disabled):hover { color: var(--text); }
 
 /* ───────────────────────── First run ───────────────────────── */
 
-.home-steps { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; color: var(--text-2); font-size: 13.5px; max-width: 62ch; }
-.home-steps strong { color: var(--text); font-size: inherit; }
-.home-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; flex: none; }
 .btn-note { color: var(--text-3); font-weight: 500; }
 .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .empty-actions.start { justify-content: flex-start; margin-top: 10px; }

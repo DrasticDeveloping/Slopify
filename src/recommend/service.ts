@@ -1,4 +1,5 @@
-import { discoveryKey, discoveryQueries, fetchRelated, pickDiscoveries, relatedLinks, type DiscoveredSong, type DiscoveryBatch, type DiscoveryQuery, type Related, type Seed } from "./discover";
+import { discoveryKey, discoveryQueries, fetchRelated, MIN_QUERIES, pickDiscoveries, popularQueries, relatedLinks, type DiscoveredSong, type DiscoveryBatch, type DiscoveryQuery, type Related, type Seed } from "./discover";
+import { chartSongs } from "./popular";
 import { meaningfulArtist } from "./taste";
 import { rememberSongLinks } from "../state/actions";
 import { searchDiscovery, searchMore, type MediaKind, type Resolution } from "../state/importer";
@@ -197,6 +198,11 @@ export interface DiscoverOptions {
   onSongs?: (songs: DiscoveredSong[]) => void;
   /** Keep songs already in the library (marked `owned`), for lists like an artist's popular songs. */
   withOwned?: boolean;
+  /**
+   * For suggestions across your whole taste (Home, Discover Weekly): when your music gives too little to go on,
+   * songs popular right now fill in, starting this far down the chart (so two surfaces don't show the same ones).
+   */
+  popular?: number;
 }
 
 export interface Discovery {
@@ -207,7 +213,7 @@ export interface Discovery {
 }
 
 /** Songs outside the library for these seeds, searched three at a time until there are enough. */
-export async function discover({ seeds, signal, refresh = 0, exclude = new Set(), limit = 30, budget = 48, queries: fixed, onSongs, withOwned = false }: DiscoverOptions): Promise<Discovery> {
+export async function discover({ seeds, signal, refresh = 0, exclude = new Set(), limit = 30, budget = 48, queries: fixed, onSongs, withOwned = false, popular }: DiscoverOptions): Promise<Discovery> {
   let related: Related | null = null;
   let note = "";
   if (!fixed && (seeds.songs.length || seeds.artists.length)) {
@@ -218,7 +224,15 @@ export async function discover({ seeds, signal, refresh = 0, exclude = new Set()
     }
   }
   signal.throwIfAborted();
-  const queries = (fixed ?? discoveryQueries(related, seeds, getState(), refresh)).slice(0, budget);
+  let queries = fixed ?? discoveryQueries(related, seeds, getState(), refresh);
+  // Few searches from your own music (a new listener, or artists with few relationships): popular songs fill in.
+  if (!fixed && popular !== undefined && queries.filter((q) => q.artist).length < MIN_QUERIES) {
+    const chart = await chartSongs().catch(() => []);
+    signal.throwIfAborted();
+    const start = chart.length ? popular % chart.length : 0;
+    if (chart.length) queries = discoveryQueries(related, seeds, getState(), refresh, Date.now(), popularQueries([...chart.slice(start), ...chart.slice(0, start)]));
+  }
+  queries = queries.slice(0, budget);
   const batches: DiscoveryBatch[] = [];
   // Fixed searches are all about one artist, so that artist may fill the list.
   const perArtist = fixed ? limit : 2;

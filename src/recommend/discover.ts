@@ -30,6 +30,8 @@ export interface DiscoveryQuery {
   because: string;
   /** The reason line as is, instead of one built from `because`. */
   reason?: string;
+  /** The song's cover, when the query knows it (popular songs, from the catalog). */
+  artwork?: string;
   affinity: number;
 }
 
@@ -54,7 +56,8 @@ const SEEDS = 5;
 /** First-wave searches. A related-song search yields its one exact match; an artist search up to two songs. */
 const SONG_QUERIES = 14;
 const ARTIST_QUERIES = 6;
-const MIN_QUERIES = 12;
+/** Fewer searches than this from your own music means there's little to go on, and popular songs fill in. */
+export const MIN_QUERIES = 12;
 /** Reserve searches, run only while the shelf is short of SHELF_TARGET (many searches find nothing usable). */
 const MAX_QUERIES = 48;
 /** The shelf keeps searching until it has this many suggestions, and shows at most SHELF_SIZE. */
@@ -162,12 +165,20 @@ export function relatedLinks(related: Related, at = Date.now()): SongLink[] {
   return related.songs.flatMap((r) => r.songs.map((s) => ({ from: songKey(r.seed.name, r.seed.title), to: songKey(s.artist, s.title), affinity: s.affinity, at }))).slice(0, 150);
 }
 
+/** Searches for songs popular right now (most popular first), each of which must find that very song. */
+export const popularQueries = (songs: Array<{ artist: string; title: string; artwork?: string }>): DiscoveryQuery[] =>
+  songs.map((song, i) => ({
+    text: `${song.artist} ${song.title}`, kind: "discover-song", artist: song.artist, title: song.title, artwork: song.artwork,
+    because: "the charts", reason: "Popular right now", affinity: 0.3 * (1 - i / songs.length),
+  }));
+
 /**
  * The searches to run: enough related songs and related artists to fill a
  * shelf, strongest first (at most two songs per artist), rotated by `refresh`
  * so "Find more" shows something new. Kinds you have kept more often rank higher.
+ * `popular` (popularQueries), when given, comes after them, one song per artist.
  */
-export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]; artists: Seed[] }, input: TasteInput, refresh = 0, now = Date.now()): DiscoveryQuery[] {
+export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]; artists: Seed[] }, input: TasteInput, refresh = 0, now = Date.now(), popular: DiscoveryQuery[] = []): DiscoveryQuery[] {
   // Streamed suggestions are not in the library, so they never count as owned or known.
   const library = Object.values(input.tracks).filter((t) => !t.stream);
   const owned = ownedIndex(input);
@@ -236,8 +247,9 @@ export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]
     const q: DiscoveryQuery = { text, kind: "discover-search", artist: seed.name, because: `More from ${seed.name}`, affinity: 0 };
     if (!picked.some((x) => x.kind === "discover-search" && sameArtist(x, q))) picked.push(q);
   }
-  // Imported songs have no real genre, so a genre search only happens for demo-song taste or a cold start.
-  if (picked.length < MIN_QUERIES) {
+  // Imported songs have no real genre, so a genre search only happens for demo-song taste or a cold start
+  // without popular songs to go on.
+  if (picked.length < MIN_QUERIES && !popular.length) {
     const genre = [...tasteProfile(input, now).genres].sort((a, b) => b[1] - a[1])[0]?.[0];
     if (genre || !seeds.artists.length) {
       // A cold start with no genre to go on tries a different one each refresh.
@@ -250,6 +262,7 @@ export function discoveryQueries(related: Related | null, seeds: { songs: Seed[]
     take(songPool, MAX_QUERIES - picked.length, 2);
     take(artistPool, MAX_QUERIES - picked.length, 1);
   }
+  take(popular, MAX_QUERIES - picked.length, 1);
   return picked.slice(0, MAX_QUERIES);
 }
 
@@ -270,8 +283,10 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
   const sources = new Set<string>();
   const results: Array<DiscoveredSong & { score: number; provider: string }> = [];
   for (const { query, candidates } of batches) {
+    /** A song search is for one song: its best match, not other uploads of it credited differently ("A, B" and "A"). */
+    let found = false;
     candidates.forEach((candidate, index) => {
-      if (!discoverable(candidate)) return;
+      if (!discoverable(candidate) || (found && query.kind === "discover-song")) return;
       const meta = candidate.importMetadata ?? candidate;
       let title = (meta.title || candidate.title || "").replace(DECORATION, " ").trim();
       let artist = artistName(meta.artist || candidate.artist || "Unknown artist");
@@ -294,6 +309,7 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       const copies = [...owned.find({ artist, title, sources: links }), ...owned.find(raw)];
       if (copies.length && !withOwned) return;
       seen.add(key);
+      found = true;
       ids.forEach((id) => sources.add(id));
       const reason = query.reason ? query.reason
         : query.kind === "discover-song" ? `Listeners of ${query.because} also play this · ListenBrainz`
@@ -304,7 +320,7 @@ export function pickDiscoveries(batches: DiscoveryBatch[], input: TasteInput, li
       results.push({
         key, candidate, title, artist, reason, kind: query.kind, score,
         ...(copies.length ? { owned: copies[0] } : {}),
-        artwork: candidate.importMetadata?.artworkURL || candidate.thumbnailURL || undefined,
+        artwork: query.artwork || candidate.importMetadata?.artworkURL || candidate.thumbnailURL || undefined,
         provider: candidate.searchProvider ?? candidate.sourceProvider ?? "unknown",
       });
     });
