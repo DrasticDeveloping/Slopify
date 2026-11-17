@@ -57,7 +57,7 @@ const notes = [
   "Download the **Setup** EXE to install Slopify (it updates itself), or the **Portable** EXE to run it without installing.",
   "",
   ...changesSincePreviousRelease(),
-  // The scheduled nightly build reads this to skip a build when nothing has changed.
+  // The commit this release was built from (its tag points there too).
   build.commit ? `Source: ${build.commit}` : "",
 ].join("\n");
 const files = build.files.map((name) => path.join(releaseDir, build.folder, name));

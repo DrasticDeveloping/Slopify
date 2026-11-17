@@ -89,7 +89,7 @@ Build an older and a newer version with any `updateRepo` set (for example `SLOPI
 
 `.github/workflows/release.yml` builds Slopify on GitHub's Windows machines:
 
-- **Every 6 hours** (00:17, 06:17, 12:17 and 18:17 UTC), once nightlies are switched on, it builds a nightly of `master` and publishes it. GitHub often starts scheduled runs late. It skips the build when `master` hasn't changed since the last nightly, using the `Source:` commit in each release's notes.
+- **At most every 6 hours**, once nightlies are switched on, it builds a nightly of `master` and publishes it. Like T3 Code's, the schedule checks twice an hour (at :08 and :38), because GitHub often starts scheduled runs late or skips them; when it skips one, there's another chance 30 minutes later instead of 6 hours later. Each check runs on a small Linux machine and starts the Windows build only when the last nightly was published at least 6 hours ago and `master` has commits it doesn't (compared with that nightly's tag, so a manual nightly of another branch doesn't hold up the next one of `master`). Otherwise the run ends in a few seconds. After a release of `master` fails once it has been built (a failed cloud check and rollback, say, or a failed publish), scheduled checks wait 6 hours before building again, rather than redeploying every 30 minutes, and say so in a warning on each skipped run; run the workflow by hand to ship a fix sooner.
 - **On demand**, from Actions → Release → Run workflow, it builds a nightly or stable release from any branch.
 
 Each release's notes list the commits since the previous release on the same channel (the last Nightly for a Nightly, the last Stable for a Stable), newest first, with their pull request numbers and a full-changelog link. Merge commits are left out. If GitHub can't supply the list, the release is published without it.
@@ -104,7 +104,7 @@ Nightlies are off until you switch them on, so nothing is published on a schedul
 gh variable set SLOPIFY_PUBLISH_NIGHTLIES --repo DrasticDeveloping/Slopify --body true
 ```
 
-Once on, the schedule can publish the first Nightly without a previous release: an empty release list does not skip the build. Later runs skip packaging while `master` is unchanged. Releases are tagged at the exact clean source commit recorded in `build.json`, rather than whichever commit happens to be the default branch tip when publishing. Local publishing rejects dirty builds; commit and push the source, then rebuild before publishing.
+Once on, the schedule can publish the first Nightly without a previous release: an empty release list does not skip the build. Later runs skip packaging while `master` is unchanged or the last nightly is under 6 hours old. Releases are tagged at the exact clean source commit recorded in `build.json`, rather than whichever commit happens to be the default branch tip when publishing. Local publishing rejects dirty builds; commit and push the source, then rebuild before publishing.
 
 ## Build again after changes
 
