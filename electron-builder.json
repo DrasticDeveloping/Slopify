@@ -11,15 +11,27 @@
     "dist/**/*",
     "package.json",
     "release.config.json",
-    "!node_modules/ffmpeg-static/ffmpeg.exe"
-  ],
-  "extraResources": [
-    { "from": "node_modules/ffmpeg-static/ffmpeg.exe.LICENSE", "to": "licenses/FFmpeg-LICENSE.txt" },
-    { "from": "node_modules/ffmpeg-static/ffmpeg.exe.README", "to": "licenses/FFmpeg-build-and-source.txt" }
+    "!node_modules/ffmpeg-static/{ffmpeg,ffmpeg.exe}"
   ],
   "npmRebuild": false,
   "protocols": [{ "name": "Slopify", "schemes": ["slopify"] }],
+  "mac": {
+    "category": "public.app-category.music",
+    "icon": "public/icons/icon-512.png",
+    "identity": "-",
+    "notarize": false,
+    "artifactName": "Slopify-${version}-mac-${arch}.${ext}",
+    "extraResources": [
+      { "from": "node_modules/ffmpeg-static/ffmpeg", "to": "bin/ffmpeg" },
+      { "from": "node_modules/ffmpeg-static/ffmpeg.LICENSE", "to": "licenses/FFmpeg-LICENSE.txt" },
+      { "from": "node_modules/ffmpeg-static/ffmpeg.README", "to": "licenses/FFmpeg-build-and-source.txt" }
+    ]
+  },
   "win": {
+    "extraResources": [
+      { "from": "node_modules/ffmpeg-static/ffmpeg.exe.LICENSE", "to": "licenses/FFmpeg-LICENSE.txt" },
+      { "from": "node_modules/ffmpeg-static/ffmpeg.exe.README", "to": "licenses/FFmpeg-build-and-source.txt" }
+    ],
     "target": [{ "target": "portable", "arch": ["x64"] }, { "target": "nsis", "arch": ["x64"] }],
     "icon": "build/desktop/icon.ico",
     "signAndEditExecutable": true
