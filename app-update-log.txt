@@ -1,0 +1,9 @@
+[updates] Checking for update
+[updates] checking (startup, nightly)
+[updates] Update for version 0.0.4-nightly.20261117.2109.12628 is not available (latest version: 0.0.4-nightly.20261117.2109.12628, downgrade is allowed).
+[updates] Checking for update
+[updates] checking (manual, nightly)
+[updates] Update for version 0.0.4-nightly.20261117.2109.12628 is not available (latest version: 0.0.4-nightly.20261117.2109.12628, downgrade is allowed).
+[updates] Checking for update
+[updates] checking (manual, nightly)
+[updates] Found version 0.0.4-nightly.20261118.700.1 (url: Slopify-0.0.4-nightly.20261118.700.1-x64-Setup.exe)

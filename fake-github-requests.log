@@ -1,0 +1,7 @@
+2026-11-17T21:14:30.193Z fake GitHub listening on 8443; installed 0.0.4-nightly.20261117.2109.12628; phone-only 0.0.4-nightly.20261118.100.1; desktop 0.0.4-nightly.20261118.700.1
+2026-11-17T21:14:45.101Z api.github.com GET /repos/DrasticDeveloping/Slopify/releases?per_page=100&page=1 [scenario phone]
+2026-11-17T21:14:49.506Z api.github.com GET /repos/DrasticDeveloping/Slopify/releases?per_page=100&page=1 [scenario phone]
+2026-11-17T21:14:53.111Z --- scenario: desktop (v0.0.4-nightly.20261118.700.1, v0.0.4-nightly.20261118.100.1, v0.0.4-nightly.20261117.2109.12628)
+2026-11-17T21:14:54.645Z api.github.com GET /repos/DrasticDeveloping/Slopify/releases?per_page=100&page=1 [scenario desktop]
+2026-11-17T21:14:54.652Z github.com GET /DrasticDeveloping/Slopify/releases/download/v0.0.4-nightly.20261118.700.1/nightly.yml [scenario desktop]
+2026-11-17T21:14:54.679Z api.github.com GET /repos/DrasticDeveloping/Slopify/releases?per_page=60 [scenario desktop]

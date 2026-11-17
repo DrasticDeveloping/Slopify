@@ -1,0 +1,47 @@
+Dry runs of scripts/publish-release.mjs (PR #70 head 967c74e) on 2026-11-17, against the real
+DrasticDeveloping/Slopify on GitHub. Read-only gh calls went to GitHub; the release check and
+create were answered by harness/dry-run-publish.mjs, so nothing was published (both tags confirmed
+absent afterwards). Previous nightly: v0.0.4-nightly.20261117.943.52774 (commit 006f28c).
+
+===== Nightly built from 71c1844 (PR #63: desktop/updates.cjs only)
+gh calls: release list; compare <previous>...71c1844 (commit list);
+          compare 006f28c...71c1844 (files of that one change)
+----- notes it would publish:
+A nightly build of Slopify: the newest changes, before they reach Stable.
+
+Download the **Setup** EXE to install Slopify (it updates itself), or the **Portable** EXE to run it without installing.
+
+Only changes the Windows app.
+
+<!-- Platforms: desktop -->
+
+### What's changed since v0.0.4-nightly.20261117.943.52774
+
+- Update card keeps What's new after a connection blip 71c1844
+
+**Full changelog:** https://github.com/DrasticDeveloping/Slopify/compare/v0.0.4-nightly.20261117.943.52774...71c1844bf2f7
+
+Source: 71c1844bf2f797128ab07c618e59669c9f04c390
+
+===== Nightly built from 967c74e (this PR: desktop/, scripts/, docs/ and package.json)
+gh calls: release list; compare <previous>...967c74e; then one compare per commit on the branch
+          (967c74e, 816200e, 1797f60, cb611ab, 8c3c0ce, 48704ef) for its files
+----- notes it would publish (both apps, because package.json counts for both):
+A nightly build of Slopify: the newest changes, before they reach Stable.
+
+Download the **Setup** EXE to install Slopify (it updates itself), or the **Portable** EXE to run it without installing.
+
+<!-- Platforms: desktop mobile -->
+
+### What's changed since v0.0.4-nightly.20261117.943.52774
+
+- Test: a deleted release's successor is found 967c74e
+- A release found further back that's since gone is looked for again 816200e
+- Updates read the whole list once per release, and pass over lower versions 1797f60
+- Updates read releases back to the installed version, not a fixed number of pages cb611ab
+- Stable finds its release past the nightlies; Nightly never goes back for a passed-over build 8c3c0ce
+- Updates only show on the apps they change 48704ef
+
+**Full changelog:** https://github.com/DrasticDeveloping/Slopify/compare/v0.0.4-nightly.20261117.943.52774...967c74e9595d
+
+Source: 967c74e9595dabd3bbf9d47dc1ccd599ebf31b99
