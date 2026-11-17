@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useCoverPalette } from "../lib/art-colors";
 import { useMediaQuery } from "../lib/hooks";
@@ -6,6 +6,7 @@ import { closeMenu, takeMenuOpener } from "../state/actions";
 import { useStore, type MenuArt, type MenuItem } from "../state/store";
 import { BlurredTrackArt, PlaylistArt, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
+import { useSheetDrag } from "../lib/mobile";
 
 /** The cover at the top of a menu, so it's clear at a glance what the menu acts on (as Spotify's and Apple Music's do). */
 function MenuArtView({ art }: { art: MenuArt }) {
@@ -55,7 +56,7 @@ function splitQuick(items: MenuItem[], sub?: boolean) {
   return { quick, list };
 }
 
-function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet, plain }: { items: MenuItem[]; x: number; y: number; flipX?: number; title?: string; subtitle?: ReactNode; art?: MenuArt; onDone: () => void; sub?: boolean; sheet?: boolean; plain?: boolean }) {
+function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet, plain, closing = false }: { items: MenuItem[]; x: number; y: number; flipX?: number; title?: string; subtitle?: ReactNode; art?: MenuArt; onDone: () => void; sub?: boolean; sheet?: boolean; plain?: boolean; closing?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y, ready: false, origin: "top left" });
   const coverTrack = useMenuCoverTrack(sub ? undefined : art);
@@ -67,10 +68,25 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
   const [openSub, setOpenSub] = useState<{ index: number; x: number; y: number; flipX: number } | null>(null);
   /** The item to focus once its submenu has closed (in a sheet the menu is hidden until then). */
   const [returnTo, setReturnTo] = useState<number | null>(null);
+  useSheetDrag(ref, onDone, Boolean(sheet && !openSub && !closing));
+  useLayoutEffect(() => {
+    if (!closing) { setOpenSub(null); setReturnTo(null); }
+  }, [closing]);
   useLayoutEffect(() => {
     if (returnTo === null || openSub) return;
     // Indexes count separators too, so the item is found by its place among all the list's children.
-    (ref.current?.querySelector(":scope > .menu-items")?.children[returnTo] as HTMLElement | undefined)?.focus();
+    const item = ref.current?.querySelector(":scope > .menu-items")?.children[returnTo] as HTMLElement | undefined;
+    item?.focus();
+    // The menu was uncovered in this same commit, and with Reduce Motion (every element gets a 1ms transition) its
+    // items stay hidden for a few milliseconds, which can't take focus: keep trying for a few frames, unless focus
+    // has gone somewhere else meanwhile.
+    const retry = (frames: number) => requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (!item?.isConnected || active === item || (active && active !== document.body)) return;
+      item.focus();
+      if (document.activeElement !== item && frames > 1) retry(frames - 1);
+    });
+    if (item && document.activeElement !== item) retry(10);
     setReturnTo(null);
   }, [returnTo, openSub]);
 
@@ -79,7 +95,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
     if (!el) return;
     if (sheet) {
       setPos({ left: 0, top: 0, ready: true, origin: "bottom center" });
-      el.querySelector<HTMLButtonElement>(".menu-items button:not(:disabled)")?.focus({ preventScroll: true });
+      el.focus({ preventScroll: true });
       return;
     }
     const r = el.getBoundingClientRect();
@@ -99,7 +115,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
     // The submenu is portalled but React still bubbles its events to the parent menu.
     e.stopPropagation();
     // The header's own controls (a hidden email to reveal) come first, so arrows reach them too: Tab is held below.
-    const buttons = [...(ref.current?.querySelectorAll<HTMLElement>(":scope > .menu-head [role=button][tabindex='0'], :scope > .menu-quick > button:not(:disabled), :scope > .menu-items > button:not(:disabled)") ?? [])];
+    const buttons = [...(ref.current?.querySelectorAll<HTMLElement>(":scope > .menu-head [role=button][tabindex='0'], :scope > .menu-quick > button:not(:disabled), :scope > .menu-items > button:not(:disabled), :scope > .sheet-cancel, :scope > .sheet-close") ?? [])];
     const i = buttons.indexOf(document.activeElement as HTMLElement);
     const tiles = [...(ref.current?.querySelectorAll<HTMLButtonElement>(":scope > .menu-quick > button:not(:disabled)") ?? [])];
     const tile = tiles.indexOf(document.activeElement as HTMLButtonElement);
@@ -112,7 +128,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
       buttons[(i + 1) % buttons.length]?.focus();
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      buttons[(i - 1 + buttons.length) % buttons.length]?.focus();
+      buttons[i < 0 ? buttons.length - 1 : (i - 1 + buttons.length) % buttons.length]?.focus();
     } else if (e.key === "ArrowRight") {
       const el = document.activeElement as HTMLButtonElement;
       if (el?.dataset.sub) {
@@ -130,6 +146,8 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
       else closeMenu();
     } else if (e.key === "Tab") {
       e.preventDefault();
+      const next = i < 0 ? (e.shiftKey ? buttons.length - 1 : 0) : (i + (e.shiftKey ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[next]?.focus();
     }
   };
 
@@ -139,13 +157,14 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
       className={`menu${pos.ready ? " ready" : ""}${sub ? " sub" : ""}${sheet ? " sheet" : ""}${art ? " has-art" : ""}${quick.length ? " has-quick" : ""}${isPlain ? " plain" : ""}${sheet && openSub ? " covered" : ""}`}
       style={{ ...(sheet ? {} : { left: pos.left, top: pos.top, transformOrigin: pos.origin }), ...(tint ? { "--menu-tint": tint } : {}) } as CSSProperties}
       role="menu"
+      tabIndex={-1}
       aria-label={title}
       onKeyDown={key}
       onContextMenu={(e) => e.preventDefault()}
     >
       {/* The cover, blurred, behind the header: the menu takes on the look of what it's about (drawn once, never animated). */}
       {coverTrack ? <BlurredTrackArt trackId={coverTrack} className="menu-backdrop" /> : null}
-      {sheet ? <span className="sheet-grip" aria-hidden="true" /> : null}
+      {sheet ? <div className="sheet-handle"><span className="sheet-grip" aria-hidden="true" /></div> : null}
       {title ? (
         <div className="menu-head">
           {sheet && sub ? (
@@ -230,6 +249,9 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
           ),
         )}
       </div>
+      {/* A sheet closes by a tap outside it or a pull down, as in iOS; a submenu keeps its way back to the menu. */}
+      {sheet && sub ? <button type="button" className="sheet-cancel" onClick={onDone}>Back</button> : null}
+      {sheet && !sub ? <button type="button" className="sr-only sheet-close" onClick={onDone}>Close menu</button> : null}
       {openSub && list[openSub.index]?.submenu ? createPortal(
         <MenuList
           items={list[openSub.index].submenu!}
@@ -238,6 +260,7 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
           flipX={openSub.flipX}
           sub
           sheet={sheet}
+          closing={closing}
           plain={isPlain}
           // A sheet's submenu replaces it on screen, so it says where you are and has a way back.
           title={sheet ? list[openSub.index].label : undefined}
@@ -255,14 +278,24 @@ function MenuList({ items, x, y, flipX, title, subtitle, art, onDone, sub, sheet
 
 export function ContextMenu() {
   const menu = useStore((s) => s.menu);
+  const overlay = useStore((s) => Boolean(s.modal || s.confirm));
   // On a phone a menu is a sheet from the bottom, within thumb reach, as in Spotify's and Apple Music's apps.
   const sheet = useMediaQuery("(max-width: 680px)");
+  const [shown, setShown] = useState(menu);
+  const closing = !menu && Boolean(shown);
+  useEffect(() => {
+    if (menu) { setShown(menu); return; }
+    if (!shown) return;
+    const delay = sheet && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 180 : 0;
+    const timer = window.setTimeout(() => setShown(null), delay);
+    return () => clearTimeout(timer);
+  }, [menu, shown, sheet]);
   const wasOpen = useRef(false);
 
   // Hand focus back to whatever opened the menu (captured in openMenu, before the
   // menu focused its first item), unless something else, like a dialog, has taken it.
   useLayoutEffect(() => {
-    if (menu) {
+    if (shown) {
       wasOpen.current = true;
       return;
     }
@@ -271,12 +304,13 @@ export function ContextMenu() {
     const el = takeMenuOpener();
     const active = document.activeElement;
     if (el?.isConnected && el !== document.body && (!active || active === document.body)) el.focus();
-  }, [menu]);
+  }, [shown]);
 
-  if (!menu) return null;
+  const visible = menu ?? shown;
+  if (!visible || (overlay && !menu)) return null;
   return (
-    <div className={`menu-layer${sheet ? " sheet" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && closeMenu()} onContextMenu={(e) => { e.preventDefault(); closeMenu(); }}>
-      <MenuList key={`${menu.x},${menu.y},${menu.title}`} items={menu.items} x={menu.x} y={menu.y} title={menu.title} subtitle={menu.subtitle} art={menu.art} sheet={sheet} onDone={closeMenu} />
+    <div className={`menu-layer${sheet ? " sheet" : ""}${closing ? " closing" : ""}`} inert={closing} onPointerDown={(e) => e.target === e.currentTarget && closeMenu()} onContextMenu={(e) => { e.preventDefault(); closeMenu(); }}>
+      <MenuList key={`${visible.x},${visible.y},${visible.title}`} items={visible.items} x={visible.x} y={visible.y} title={visible.title} subtitle={visible.subtitle} art={visible.art} sheet={sheet} closing={closing} onDone={closeMenu} />
     </div>
   );
 }

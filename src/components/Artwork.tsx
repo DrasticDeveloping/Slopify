@@ -1,7 +1,8 @@
-import { memo, useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useContext, useEffect, useRef, useState, type CSSProperties } from "react";
+import { PeekContext } from "../lib/peek";
 import type { Artist, Palette, Playlist } from "../data/types";
 import { useKeptPicture } from "../state/pictures";
-import { useCurrentVideo } from "../audio/video";
+import { requestVideoBackdrop, useCurrentVideo } from "../audio/video";
 import { onLiveFrame } from "../lib/live";
 import { useStore } from "../state/store";
 import { Icon } from "./Icon";
@@ -33,13 +34,24 @@ interface ArtProps {
   image?: string;
 }
 
-function CoverImage({ src }: { src: string }) {
-  const [failed, setFailed] = useState(false);
-  if (failed) return null;
-  return <img className="art-img" src={src} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} />;
+function CoverImage({ src, onFail }: { src: string; onFail: () => void }) {
+  // On the page kept under the one showing (never painted until a back swipe uncovers it), a cover is decoded as soon
+  // as it loads, so the swipe shows it at once rather than blank for its first frames, without decoding during it.
+  const under = useContext(PeekContext);
+  return (
+    <img
+      className="art-img" src={src} alt="" loading="lazy" decoding="async" draggable={false} onError={onFail}
+      onLoad={under ? (e) => void e.currentTarget.decode().catch(() => undefined) : undefined}
+    />
+  );
 }
 
 export const Art = memo(function Art({ palette, glyph = 0, className, round, label, style, icon, image }: ArtProps) {
+  // The generated glyph is drawn only when there's no cover to show (each is dozens of SVG shapes, under every row's cover).
+  const [failed, setFailed] = useState<string | null>(null);
+  // Another song's cover: forget the failure, so this one is tried again when it comes back (offline, say).
+  if (failed && image && failed !== image) setFailed(null);
+  const cover = image && failed !== image ? image : null;
   return (
     <div
       className={`art${round ? " round" : ""}${className ? ` ${className}` : ""}`}
@@ -50,10 +62,10 @@ export const Art = memo(function Art({ palette, glyph = 0, className, round, lab
     >
       {icon ? (
         <Icon name={icon} className="art-icon" />
-      ) : (
+      ) : cover ? null : (
         <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">{glyphs[glyph % glyphs.length]}</svg>
       )}
-      {image ? <CoverImage key={image} src={image} /> : null}
+      {cover ? <CoverImage key={cover} src={cover} onFail={() => setFailed(cover)} /> : null}
     </div>
   );
 });
@@ -79,6 +91,47 @@ const VIDEO_BACKDROP_FPS = 10;
 const EARLY_FRAME = 4;
 
 /** Draws `source` over the whole canvas and `pad` past each edge, cropped from its middle to fit (as object-fit: cover). */
+let canvasBlur: boolean | undefined;
+/** Whether canvas drawing honours ctx.filter (iOS WebKit ignores it, so the art would draw sharp). */
+function canvasBlurWorks() {
+  if (canvasBlur !== undefined) return canvasBlur;
+  try {
+    const probe = document.createElement("canvas");
+    probe.width = probe.height = 5;
+    const c = probe.getContext("2d");
+    if (!c) return (canvasBlur = false);
+    c.filter = "blur(1px)";
+    c.fillStyle = "#fff";
+    c.fillRect(2, 2, 1, 1);
+    canvasBlur = c.getImageData(1, 2, 1, 1).data[3] > 0;
+  } catch {
+    canvasBlur = false;
+  }
+  return canvasBlur;
+}
+
+let soften: [HTMLCanvasElement, HTMLCanvasElement] | null = null;
+/** Without ctx.filter: blur by shrinking the picture and scaling it back up smoothly, which reads the same at this size. */
+function softenCanvas(ctx: CanvasRenderingContext2D) {
+  const { width: w, height: h } = ctx.canvas;
+  soften ??= [document.createElement("canvas"), document.createElement("canvas")];
+  const [mid, small] = soften;
+  mid.width = Math.max(2, Math.round(w / 4));
+  mid.height = Math.max(2, Math.round(h / 4));
+  small.width = Math.max(2, Math.round(w / 10));
+  small.height = Math.max(2, Math.round(h / 10));
+  const m = mid.getContext("2d");
+  const sm = small.getContext("2d");
+  if (!m || !sm) return;
+  for (const c of [m, sm, ctx]) { c.imageSmoothingEnabled = true; c.imageSmoothingQuality = "high"; }
+  m.drawImage(ctx.canvas, 0, 0, mid.width, mid.height);
+  sm.drawImage(mid, 0, 0, small.width, small.height);
+  m.clearRect(0, 0, mid.width, mid.height);
+  m.drawImage(small, 0, 0, mid.width, mid.height);
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(mid, 0, 0, w, h);
+}
+
 function drawCovered(ctx: CanvasRenderingContext2D, source: CanvasImageSource, sw: number, sh: number, pad: number) {
   const w = ctx.canvas.width + pad * 2;
   const h = ctx.canvas.height + pad * 2;
@@ -111,6 +164,7 @@ export function BlurredTrackArt({ trackId, className, video = false }: { trackId
     // Blurred past its edges as well as inside, so the wash stays solid to the canvas edge.
     const pad = height * 0.25;
     const filter = `blur(${height / 18}px) saturate(1.4)`;
+    const blurs = canvasBlurWorks();
     let showingVideo = false;
     const paint = (cover?: HTMLImageElement) => {
       // Once the video shows, a cover that loads late doesn't cover it up again.
@@ -145,9 +199,11 @@ export function BlurredTrackArt({ trackId, className, video = false }: { trackId
       // Cropped from its middle, as the cover shows elsewhere.
       if (cover) drawCovered(ctx, cover, cover.naturalWidth, cover.naturalHeight, pad);
       ctx.filter = "none";
+      if (!blurs) softenCanvas(ctx);
     };
     paint();
 
+    const stopDemand = source ? requestVideoBackdrop(source) : undefined;
     let last = -Infinity;
     const frame = () => {
       if (!source || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !source.videoWidth) return;
@@ -156,6 +212,7 @@ export function BlurredTrackArt({ trackId, className, video = false }: { trackId
       ctx.filter = filter;
       drawCovered(ctx, source, source.videoWidth, source.videoHeight, pad);
       ctx.filter = "none";
+      if (!blurs) softenCanvas(ctx);
     };
     // Follows playback on the shared frame loop, taking every few frames; a seek or a first frame shows at once.
     const stopFrames = source
@@ -179,6 +236,7 @@ export function BlurredTrackArt({ trackId, className, video = false }: { trackId
     return () => {
       live = false;
       if (cover) cover.onload = null;
+      stopDemand?.();
       stopFrames?.();
       source?.removeEventListener("loadeddata", frame);
       source?.removeEventListener("seeked", frame);

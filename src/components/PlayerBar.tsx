@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef } from "react";
 import { engine } from "../audio/engine";
 import { formatTime } from "../lib/format";
+import { focusFirstVisible, focusIsVisible } from "../lib/focus";
 import { pollPosition, useCurrent, useLiveText } from "../lib/hooks";
 import { onLiveFrame } from "../lib/live";
 import { cycleRepeat, isLiked, navigate, next, trackSongRoute, openMenu, positionOf, previous, seek, setSpeed, setVolume, toggleLike, toggleMute, togglePlay, cycleShuffle } from "../state/actions";
-import { setState, useStore } from "../state/store";
+import { getState, setState, useStore } from "../state/store";
 import { ArtistLinks } from "./ArtistLinks";
 import { BlurredTrackArt, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
@@ -80,11 +81,13 @@ export function SeekRow({ big }: { big?: boolean }) {
       <div className="seek-wrap">
         {clipped ? <span className="clip-mark" style={{ left: `${(range.start / duration) * 100}%`, right: `${100 - (range.end / duration) * 100}%` }} title="Clip range" /> : null}
         <Slider
+          key={track?.id}
           className="seek"
           max={duration || 1}
           poll={track ? pollPosition : undefined}
           value={track ? undefined : 0}
-          onCommit={seek}
+          // Replacing the slider drops its pointer capture; guard a late release from the old song too.
+          onCommit={(position) => { if (track && getState().currentId === track.id) seek(position); }}
           label="Seek"
           format={fmt}
           disabled={!track || !duration || locked}
@@ -111,6 +114,25 @@ export function VolumeControl() {
   );
 }
 
+/** Hardware volume cannot undo software silence, so phones always offer a way back. */
+export function UnmuteButton({ className = "" }: { className?: string }) {
+  const silent = useStore((s) => s.muted || s.volume === 0);
+  const volume = useStore((s) => s.volume);
+  if (!silent) return null;
+  return (
+    <button type="button" className={`icon-btn touch-unmute ${className}`} onClick={(e) => {
+      const root = e.currentTarget.closest(".full-player, .playerbar");
+      setVolume(volume > 0 ? volume : 0.5);
+      // This button disappears after use; keep keyboard focus with the remaining player controls.
+      requestAnimationFrame(() => {
+        if (root && !focusIsVisible()) focusFirstVisible("[data-pane-hide]", root) || focusFirstVisible(".fp-head button, .play-main", root);
+      });
+    }} aria-label="Unmute" title="Unmute">
+      <Icon name="volumeMute" size={20} />
+    </button>
+  );
+}
+
 export function PlayerBar() {
   const { id, track } = useCurrent();
   const liked = useStore((s) => (id ? isLiked(id, s) : false));
@@ -121,6 +143,8 @@ export function PlayerBar() {
   return (
     <footer className="playerbar" aria-label="Player">
       {track ? <BlurredTrackArt trackId={track.id} className="pb-wash" /> : null}
+      {/* Phones: the whole bar opens Now Playing (its song and artist links are there); only the controls keep their own taps. */}
+      {track ? <button type="button" className="pb-hit" tabIndex={-1} aria-hidden="true" onClick={() => setState({ fullPlayer: true })} /> : null}
       <div className="pb-left">
         {track ? (
           <>
@@ -129,7 +153,7 @@ export function PlayerBar() {
               <span className="pb-art-expand"><Icon name="expand" size={18} /></span>
             </button>
             <div className="pb-meta" key={track.id}>
-              <button type="button" className="link pb-title" onClick={() => navigate(trackSongRoute(track.id))}>
+              <button type="button" className="link pb-title" onClick={() => window.matchMedia("(max-width: 680px)").matches ? setState({ fullPlayer: true }) : navigate(trackSongRoute(track.id))}>
                 {track.title}
               </button>
               <span className="pb-artist"><ArtistLinks track={track} /></span>
@@ -147,6 +171,7 @@ export function PlayerBar() {
       </div>
 
       <div className="pb-center">
+        <UnmuteButton className="pb-unmute" />
         <Transport />
         <SeekRow />
       </div>
@@ -179,9 +204,10 @@ export function PlayerBar() {
 function MiniProgress() {
   const { track, range } = useCurrent();
   const ref = useRef<HTMLSpanElement>(null);
+  const start = range.start;
   const end = range.end || track?.duration || 1;
   useEffect(() => onLiveFrame(() => {
-    if (ref.current) ref.current.style.transform = `scaleX(${track ? Math.min(1, positionOf(track.id) / end) : 0})`;
-  }), [track, end]);
+    if (ref.current) ref.current.style.transform = `scaleX(${track ? Math.max(0, Math.min(1, (positionOf(track.id) - start) / Math.max(0.001, end - start))) : 0})`;
+  }), [track, start, end]);
   return <span className="mini-progress" aria-hidden="true"><span ref={ref} /></span>;
 }

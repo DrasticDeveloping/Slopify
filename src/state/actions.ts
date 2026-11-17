@@ -1,4 +1,8 @@
+import { prepareNavigationFocus } from "../lib/navigation-focus";
 import { engine } from "../audio/engine";
+import { explainPlaybackFailure } from "../audio/playback-error";
+import { isNativeApp } from "../lib/native";
+import { newPageEntry, type PageEntry } from "../lib/page-state";
 import { hashString, likedPlaylist, paletteFromSeed } from "../data/library";
 import type { ClipRange, Genre, Playlist, Track } from "../data/types";
 import { todayKey } from "../lib/format";
@@ -8,8 +12,9 @@ import { recommend, type RankOptions } from "../recommend/rank";
 import {
   countReason, emptyTaste, ListeningCollector, noteLikes, noteSaves, recordListen, setLinks, type Listen, type ReasonKind, type SongLink,
 } from "../recommend/taste";
-import { deviceUrl, dropFromDevice } from "./device";
+import { deviceUrl, dropFromDevice, rebuildDeviceUrl } from "./device";
 import { deleteSong, saveSongChanges } from "./song-api";
+import { cancelCloudSongDeletion, markCloudSongDeleted } from "./cloud-sync";
 import { defaultSettings, flushPersist, getState, setState, snoozedUntil, type AppState, type MenuState, type Modal, type Route, type Settings, type Toast, type ConfirmState } from "./store";
 
 /* ───────────────────────── selectors ───────────────────────── */
@@ -178,6 +183,8 @@ function prefetchNext() {
 }
 /** The streamed song waiting for its audio, if any. */
 let pendingStream: string | null = null;
+/** A failed device file being repaired before it can be loaded again. */
+let pendingDeviceRecovery: string | null = null;
 
 /* ───────────────────────── recommendations ───────────────────────── */
 
@@ -325,48 +332,128 @@ let readScroll: () => number = () => 0;
 const backScroll: number[] = [];
 let forwardScroll: number[] = [];
 let scrollToRestore: number | null = null;
+let pageEntry = newPageEntry();
+const backEntries: PageEntry[] = [];
+let forwardEntries: PageEntry[] = [];
+export const currentPageEntry = () => pageEntry;
+export const backPageEntry = () => backEntries[backEntries.length - 1];
+// Changes even when a tab has the same route, or search replaces its current entry.
+export let navigationRevision = 0;
 /** The page's scroll position, read when you leave it (App.tsx). */
 export function trackScroll(read: () => number) {
   readScroll = read;
 }
 /** Where the page just opened should be scrolled to, if it's one you came back to. Read once. */
+/** How far down the page Back returns to was scrolled (to draw it under a back swipe as it was left). */
+export function backScrollTop() {
+  return backScroll[backScroll.length - 1] ?? 0;
+}
+
+/** Whether the page about to open will scroll back to where it was (so it needs all of its rows at once). */
+export function hasScrollRestore() {
+  return Boolean(scrollToRestore);
+}
+
 export function takeScrollRestore() {
   const top = scrollToRestore;
   scrollToRestore = null;
   return top;
 }
 
+/** How the page last changed, so phones can animate it the iOS way: pushed, popped, or switched by a tab (not at all). */
+export let lastNavigation: "push" | "back" | "tab" = "tab";
+/** Clears a selection only when there is one (a fresh empty list would count as a change and re-render everything). */
+const unselect = (s: AppState) => (s.selection.length ? { selection: [] as string[] } : {});
+
 export function navigate(route: Route) {
   const s = getState();
   if (sameRoute(s.route, route)) return;
   // Typing in search replaces the current search entry instead of stacking history.
   if (route.name === "search" && s.route.name === "search") {
+    lastNavigation = "tab";
+    navigationRevision++;
+    scrollToRestore = null;
     setState({ route });
     return;
   }
+  prepareNavigationFocus(s.route, route);
   backScroll.push(readScroll());
+  backEntries.push(pageEntry);
+  if (backEntries.length > 50) backEntries.shift();
+  pageEntry = newPageEntry();
+  forwardEntries = [];
+  navigationRevision++;
   if (backScroll.length > 50) backScroll.shift();
   forwardScroll = [];
   scrollToRestore = null;
-  setState({ route, back: [...s.back, s.route].slice(-50), forward: [], selection: [], menu: null, ...closeFloatingPanel() });
+  lastNavigation = "push";
+  setState({ route, back: [...s.back, s.route].slice(-50), forward: [], ...unselect(s), menu: null, ...closeFloatingPanel() });
+}
+
+// Tabs own their navigation stacks, including scroll positions, for this session.
+const tabStacks = new Map<string, { route: Route; back: Route[]; forward: Route[]; scroll: number; backScroll: number[]; forwardScroll: number[]; entry: PageEntry; backEntries: PageEntry[]; forwardEntries: PageEntry[] }>();
+let activeTab = "home";
+export function mobileTabIsActive(name: string) { return activeTab === name; }
+export function selectMobileTab(root: Route) {
+  const s = getState();
+  navigationRevision++;
+  if (activeTab === root.name) {
+    scrollToRestore = null;
+    backScroll.length = 0;
+    forwardScroll = [];
+    pageEntry = newPageEntry();
+    backEntries.length = 0;
+    forwardEntries = [];
+    lastNavigation = "tab";
+    setState({ route: root, back: [], forward: [], ...unselect(s), ...closeFloatingPanel() });
+    document.querySelector(".main-scroll:not(.back-page)")?.scrollTo({ top: 0 });
+    return;
+  }
+  tabStacks.set(activeTab, { route: s.route, back: s.back, forward: s.forward, scroll: readScroll(), backScroll: [...backScroll], forwardScroll: [...forwardScroll], entry: pageEntry, backEntries: [...backEntries], forwardEntries: [...forwardEntries] });
+  activeTab = root.name;
+  const saved = tabStacks.get(activeTab);
+  pageEntry = saved?.entry ?? newPageEntry();
+  backEntries.splice(0, backEntries.length, ...(saved?.backEntries ?? []));
+  forwardEntries = saved?.forwardEntries ?? [];
+  backScroll.splice(0, backScroll.length, ...(saved?.backScroll ?? []));
+  forwardScroll = saved?.forwardScroll ?? [];
+  scrollToRestore = saved?.scroll ?? null;
+  lastNavigation = "tab";
+  setState({ route: saved?.route ?? root, back: saved?.back ?? [], forward: saved?.forward ?? [], ...unselect(s), menu: null, ...closeFloatingPanel() });
 }
 
 export function goBack() {
   const s = getState();
   const prev = s.back[s.back.length - 1];
   if (!prev) return;
+  forwardEntries.unshift(pageEntry);
+  pageEntry = backEntries.pop() ?? newPageEntry();
+  navigationRevision++;
+  prepareNavigationFocus(s.route, prev, true);
   forwardScroll.unshift(readScroll());
   scrollToRestore = backScroll.pop() ?? null;
-  setState({ route: prev, back: s.back.slice(0, -1), forward: [s.route, ...s.forward], selection: [], ...closeFloatingPanel() });
+  lastNavigation = "back";
+  setState({ route: prev, back: s.back.slice(0, -1), forward: [s.route, ...s.forward], ...unselect(s), ...closeFloatingPanel() });
+}
+
+/** Back by an edge swipe: the previous page is already on screen when it lands, so it has no entrance of its own. */
+export function goBackBySwipe() {
+  goBack();
+  lastNavigation = "tab";
 }
 
 export function goForward() {
   const s = getState();
   const next = s.forward[0];
   if (!next) return;
+  backEntries.push(pageEntry);
+  pageEntry = forwardEntries.shift() ?? newPageEntry();
+  navigationRevision++;
+  prepareNavigationFocus(s.route, next);
   backScroll.push(readScroll());
   scrollToRestore = forwardScroll.shift() ?? null;
-  setState({ route: next, forward: s.forward.slice(1), back: [...s.back, s.route], selection: [], ...closeFloatingPanel() });
+  lastNavigation = "push";
+  setState({ route: next, forward: s.forward.slice(1), back: [...s.back, s.route], ...unselect(s), ...closeFloatingPanel() });
 }
 
 /* ───────────────────────── toasts / menus / modals ───────────────────────── */
@@ -520,6 +607,14 @@ const collector = new ListeningCollector();
 let previewing = false;
 /** The server song whose playback failed and was tried again; a second failure moves on. */
 let retriedError: string | null = null;
+const rebuiltDeviceSongs = new Set<string>();
+let playbackLoadGeneration = 0;
+let playbackRequestGeneration = 0;
+/** Claim a playback intent before resolving a catalog song asynchronously. */
+export function beginPlaybackRequest() {
+  const request = ++playbackRequestGeneration;
+  return () => request === playbackRequestGeneration;
+}
 /** Songs that failed one after another, with nothing played in between; coming back round to one stops playback. */
 const failedInRow = new Set<string>();
 let lastListenSave = 0;
@@ -572,20 +667,25 @@ export function connectSlipIns(hooks: SlipInHooks) {
 let slippedIn: string | null = null;
 
 /** `end` says how the previous song's playback ended. */
-function load(id: string, { autoplay = true, crossfade = 0, remember = true, end = "changed" as Listen["end"], preview = false, slip = false } = {}) {
+function load(id: string, { autoplay = true, crossfade = 0, remember = true, end = "changed" as Listen["end"], preview = false, slip = false, position = undefined as number | undefined } = {}) {
+  playbackRequestGeneration++;
+  const generation = ++playbackLoadGeneration;
   const s = getState();
   const t = s.tracks[id];
   if (!t) return;
   if (end !== "error") failedInRow.clear();
   pendingStream = null;
+  pendingDeviceRecovery = null;
   if (s.buffering) setState({ buffering: null });
   engine.captureProgress();
   // Any new start ends a slipped-in playback, including choosing that same song yourself.
   if (slippedIn && s.currentId === slippedIn) slipHooks?.ended(slippedIn, end, collector.listen);
   finishListening(end);
   if (t.stream && !streamReady(id)) {
-    // The song shows as current (buffering) while its audio is fetched, then plays from the start.
-    engine.unload();
+    // Keep the outgoing song audible while a crossfade target is fetched.
+    // Its end callback must not advance the queue past this pending target.
+    if (!crossfade || !autoplay) engine.unload();
+    cued = { id, position: position ?? (cued?.id === id ? cued.position : effectiveRange(id, s).start) };
     pendingStream = id;
     setState((st) => ({
       currentId: id,
@@ -596,17 +696,24 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
     updateMediaSession();
     fetchStream(id).then(
       () => {
-        if (pendingStream !== id) return;
+        if (generation !== playbackLoadGeneration || pendingStream !== id || getState().currentId !== id) return;
         pendingStream = null;
         setState({ buffering: null });
-        load(id, { autoplay, remember: false, preview, slip });
+        load(id, { autoplay: getState().isPlaying, crossfade: engine.playing ? crossfade : 0, remember: false, preview, slip, end, position: cued?.id === id ? cued.position : position });
       },
       (error: { message?: string } | null) => {
-        if (pendingStream !== id) return;
+        if (generation !== playbackLoadGeneration || pendingStream !== id || getState().currentId !== id) return;
+        const wasPlaying = getState().isPlaying;
         pendingStream = null;
-        setState({ buffering: null, isPlaying: false });
+        setState({ buffering: null });
         toast(`Couldn't play “${t.title}”`, { tone: "error", detail: error?.message || "Its source isn't available right now." });
-        advance({ auto: true, end: "error" });
+        failedInRow.add(id);
+        const st = getState();
+        const n = peekNext(st);
+        if (preview || !wasPlaying || (n && failedInRow.has(n.id))) {
+          finishListening("error");
+          stopAtEnd(st);
+        } else advance({ auto: true, end: "error" });
       },
     );
     return;
@@ -623,8 +730,7 @@ function load(id: string, { autoplay = true, crossfade = 0, remember = true, end
   const readyStream = streamUrls.get(id);
   if (t.stream && readyStream) readyStream.usable = false;
   const range = effectiveRange(id, s);
-  engine.load(engineTrack(id), { start: range.start, end: range.end || t.duration || 1e9, fadeIn: range.fadeIn, fadeOut: range.fadeOut, fadeShape: range.fadeShape, autoplay, crossfade });
-  if (cued?.id === id) engine.seek(cued.position);
+  engine.load(engineTrack(id), { start: range.start, position: cued?.id === id ? cued.position : position, end: range.end || t.duration || 1e9, fadeIn: range.fadeIn, fadeOut: range.fadeOut, fadeShape: range.fadeShape, autoplay, crossfade });
   cued = null;
   startListening(id);
   const prev = s.currentId;
@@ -710,18 +816,30 @@ let cued: { id: string; position: number } | null = null;
  * Puts a song where it was left, paused, with the list it was playing from, so
  * Play carries on from there. Nothing is loaded (or counted as a play) until then.
  */
-export function cueSong(id: string, position: number, ctx?: { label: string; route?: Route; ids: string[]; fromTop?: boolean }) {
+export function cueSong(id: string, position: number, ctx?: { label: string; route?: Route; ids: string[]; fromTop?: boolean; order?: string[]; index?: number; upNext?: string[] }) {
   const s = getState();
   if (s.isPlaying || listenLocked() || !isPlayable(s.tracks[id], s)) return false;
+  playbackRequestGeneration++;
+  playbackLoadGeneration++;
+  pendingStream = null;
+  pendingDeviceRecovery = null;
   if (s.currentId && s.currentId !== id) finishListening("changed");
-  const listed = (ctx?.ids ?? []).filter((x) => isPlayable(s.tracks[x], s));
+  // Retain temporarily unavailable songs: the server may reconnect before their turn.
+  const listed = (ctx?.ids ?? []).filter((x) => Boolean(s.tracks[x]));
   // A song from outside its list (queued, or a playlist switched to after it), or one the list was
   // waiting to start after, keeps the list, which plays from the top after it (index -1).
   const ids = listed.length ? listed : [id];
   const lead = ids.includes(id) && !ctx?.fromTop;
-  const order = s.shuffle ? shuffled(ids, lead ? id : undefined, id) : ids;
+  const restoredOrder = ctx?.order?.filter((x) => Boolean(s.tracks[x]));
+  const order = restoredOrder?.length ? restoredOrder : s.shuffle ? shuffled(ids, lead ? id : undefined, id) : ids;
+  // A manually queued current song need not be in collection order: index still points to
+  // the previous collection entry, so advancing returns to the right place afterward.
+  const restoredIndex = ctx?.index !== undefined && ctx.order
+    ? ctx.order.slice(0, ctx.index + 1).filter((x) => Boolean(s.tracks[x])).length - 1
+    : undefined;
+  const index = restoredIndex ?? (lead ? order.indexOf(id) : -1);
   cued = { id, position: Math.max(0, position) };
-  setState({ currentId: id, isPlaying: false, context: { label: ctx?.label ?? "Library", route: ctx?.route, ids }, order, index: lead ? order.indexOf(id) : -1 });
+  setState({ currentId: id, isPlaying: false, buffering: null, context: { label: ctx?.label ?? "Library", route: ctx?.route, ids }, order, index, upNext: (ctx?.upNext ?? []).filter((x) => Boolean(s.tracks[x])) });
   updateMediaSession();
   return true;
 }
@@ -763,9 +881,19 @@ export function playTrackNow(id: string) {
 export function togglePlay() {
   const s = getState();
   if (listenLocked()) return;
-  if (pendingStream && pendingStream === s.currentId) {
+  playbackRequestGeneration++;
+  if ((pendingStream && pendingStream === s.currentId) || (pendingDeviceRecovery && pendingDeviceRecovery === s.currentId)) {
+    if (!s.isPlaying) {
+      setState({ isPlaying: true });
+      updateMediaSession();
+      return;
+    }
     // Paused before its audio arrived: stop waiting. Play fetches it again (quickly, from the server's copy).
+    playbackLoadGeneration++;
+    if (pendingDeviceRecovery) rebuiltDeviceSongs.delete(pendingDeviceRecovery);
     pendingStream = null;
+    pendingDeviceRecovery = null;
+    engine.pause();
     setState({ isPlaying: false, buffering: null });
     updateMediaSession();
     return;
@@ -784,6 +912,7 @@ export function togglePlay() {
     return;
   }
   if (s.isPlaying) {
+    playbackLoadGeneration++;
     engine.pause();
     saveListening();
   } else {
@@ -800,7 +929,7 @@ export function togglePlay() {
     engine.play();
     if (!collector.listen) startListening(s.currentId);
   }
-  setState({ isPlaying: !s.isPlaying });
+  setState({ isPlaying: !s.isPlaying, ...(!s.isPlaying ? {} : { buffering: null }) });
   updateMediaSession();
 }
 
@@ -838,7 +967,8 @@ export function playPreviewedNext() {
 }
 
 function stopAtEnd(s: AppState) {
-  engine.pause();
+  // Stop before rewinding: the ordinary pause fade would expose the opening.
+  engine.pause(true);
   engine.seek(effectiveRange(s.currentId ?? "", s).start);
   setState({ isPlaying: false });
   updateMediaSession();
@@ -933,7 +1063,10 @@ export function seek(seconds: number) {
   if (cued && cued.id === s.currentId) {
     cued = { ...cued, position: Math.max(0, seconds) };
     // Nothing of it is loaded yet (another song may be): it starts from here when played.
-    if (engine.loadedTrackId !== cued.id) return wakeLive();
+    if (engine.loadedTrackId !== cued.id) {
+      updatePositionState();
+      return wakeLive();
+    }
     cued = null;
   }
   engine.seek(seconds);
@@ -1231,6 +1364,47 @@ export function moveInPlaylist(playlistId: string, id: string, beforeId: string 
 const pendingRevokes = new Map<string, number>();
 /** Imported songs whose server copy is deleted once the undo window closes, keyed by server id. */
 const pendingServerDeletes = new Map<string, number>();
+const PENDING_REMOVALS_KEY = "slopify.pending-removals.v1";
+type Removals = { server: Record<string, number>; device: Record<string, number> };
+let removalMemory: Removals = { server: {}, device: {} };
+function pendingRemovals(): Removals {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PENDING_REMOVALS_KEY) ?? "null") as Removals | null;
+    if (saved?.server && saved?.device) removalMemory = saved;
+  } catch { /* Keep this session's intent if storage is unavailable. */ }
+  return removalMemory;
+}
+function rememberRemoval(kind: keyof Removals, id: string, deadline?: number) {
+  const saved = pendingRemovals();
+  if (deadline === undefined) delete saved[kind][id];
+  else saved[kind][id] = deadline;
+  try { localStorage.setItem(PENDING_REMOVALS_KEY, JSON.stringify(saved)); } catch { /* Still attempted this session. */ }
+}
+
+/** A new download owns this song's files from now on; an earlier removal must leave them alone. */
+export function cancelDeviceRemoval(id: string) {
+  clearTimeout(pendingRevokes.get(id));
+  pendingRevokes.delete(id);
+  rememberRemoval("device", id);
+}
+function scheduleDeviceRemoval(id: string, deadline: number, revoke?: () => void) {
+  clearTimeout(pendingRevokes.get(id));
+  rememberRemoval("device", id, deadline);
+  const timer = window.setTimeout(() => {
+    if (pendingRevokes.get(id) !== timer) return;
+    pendingRevokes.delete(id);
+    revoke?.();
+    void dropFromDevice(id).then(() => {
+      if (pendingRemovals().device[id] === deadline) rememberRemoval("device", id);
+    }).catch(() => toast("Couldn't remove the saved file", { tone: "error", detail: "Its cleanup will be retried when the music server is available." }));
+  }, Math.max(0, deadline - Date.now()));
+  pendingRevokes.set(id, timer);
+}
+function scheduleServerDelete(id: string, deadline: number) {
+  clearTimeout(pendingServerDeletes.get(id));
+  rememberRemoval("server", id, deadline);
+  pendingServerDeletes.set(id, window.setTimeout(() => deleteOnServer(id), Math.max(0, deadline - Date.now())));
+}
 
 /** Server deletes not yet confirmed, kept across reloads so a failed one is retried instead of the song coming back. */
 const UNCONFIRMED_DELETES_KEY = "slopify.unconfirmedServerDeletes";
@@ -1256,6 +1430,7 @@ function deleteOnServer(serverId: string) {
   pendingServerDeletes.delete(serverId);
   // Recorded first: on page exit the response may never be seen.
   setUnconfirmedDeletes([...new Set([...unconfirmedDeletes(), serverId])]);
+  rememberRemoval("server", serverId);
   void deleteSong(serverId, { keepalive: true })
     .then(() => setUnconfirmedDeletes(unconfirmedDeletes().filter((id) => id !== serverId)))
     .catch(() => undefined);
@@ -1264,16 +1439,25 @@ function deleteOnServer(serverId: string) {
 /** Retries server deletes that never got confirmed (run once the import API answers at startup). */
 export function retryServerDeletes() {
   for (const serverId of unconfirmedDeletes()) deleteOnServer(serverId);
+  const saved = pendingRemovals();
+  for (const [id, deadline] of Object.entries(saved.server)) if (!pendingServerDeletes.has(id)) scheduleServerDelete(id, deadline);
+  retryDeviceRemovals();
+}
+function retryDeviceRemovals() {
+  const saved = pendingRemovals();
+  for (const [id, deadline] of Object.entries(saved.device)) if (!pendingRevokes.has(id)) scheduleDeviceRemoval(id, deadline);
 }
 
 export function isServerDeletePending(serverId: string) {
-  return pendingServerDeletes.has(serverId) || unconfirmedDeletes().includes(serverId);
+  return pendingServerDeletes.has(serverId) || pendingRemovals().server[serverId] !== undefined || unconfirmedDeletes().includes(serverId);
 }
 
 /** A re-import of a song that is waiting to be deleted keeps the server copy. */
 export function cancelServerDelete(serverId: string) {
   clearTimeout(pendingServerDeletes.get(serverId));
   pendingServerDeletes.delete(serverId);
+  rememberRemoval("server", serverId);
+  cancelCloudSongDeletion(serverId);
   const unconfirmed = unconfirmedDeletes();
   if (unconfirmed.includes(serverId)) setUnconfirmedDeletes(unconfirmed.filter((id) => id !== serverId));
 }
@@ -1310,6 +1494,16 @@ function removeSongs(affected: Track[], demoted: string[], text: { one: (t: Trac
   if (!affected.length && !demoted.length) return;
   const removed = new Set(affected.map((t) => t.id));
   const keep = (id: string) => !removed.has(id);
+  const deadline = Date.now() + 15_000;
+  // Record intent before hiding anything: iOS may terminate without pagehide or a timer firing.
+  for (const t of affected) {
+    if (t.serverId) {
+      markCloudSongDeleted(t.serverId);
+      rememberRemoval("server", t.serverId, deadline);
+    }
+    if (t.storage === "downloads") rememberRemoval("device", t.id, deadline);
+  }
+  for (const id of demoted) rememberRemoval("device", id, deadline);
 
   const record = {
     tracks: affected,
@@ -1350,21 +1544,19 @@ function removeSongs(affected: Track[], demoted: string[], text: { one: (t: Trac
     pendingRevokes.delete(id);
   }, 15_000));
   for (const t of record.tracks) {
-    later(t.id, () => {
-      if (t.fileUrl) URL.revokeObjectURL(t.fileUrl);
-      if (t.storage === "downloads") void dropFromDevice(t.id);
-    });
+    const revoke = () => { if (t.fileUrl) URL.revokeObjectURL(t.fileUrl); };
+    if (t.storage === "downloads") scheduleDeviceRemoval(t.id, deadline, revoke);
+    else later(t.id, revoke);
     if (!t.serverId) continue;
     const serverId = t.serverId;
-    clearTimeout(pendingServerDeletes.get(serverId));
-    pendingServerDeletes.set(serverId, window.setTimeout(() => deleteOnServer(serverId), 15_000));
+    scheduleServerDelete(serverId, deadline);
   }
-  for (const id of demoted) later(id, () => void dropFromDevice(id));
+  for (const id of demoted) scheduleDeviceRemoval(id, deadline);
+  flushPersist();
 
   const undo = () => {
     for (const id of [...removed, ...demoted]) {
-      clearTimeout(pendingRevokes.get(id));
-      pendingRevokes.delete(id);
+      cancelDeviceRemoval(id);
     }
     for (const t of record.tracks) if (t.serverId) cancelServerDelete(t.serverId);
     setState((st) => {
@@ -1515,6 +1707,10 @@ export function followHost(id: string | null, position: number, playing: boolean
   if (getState().speed !== rate) setSpeed(rate);
   const s = getState();
   if (!id) {
+    playbackLoadGeneration++;
+    pendingStream = null;
+    pendingDeviceRecovery = null;
+    setState({ buffering: null });
     if (s.isPlaying) {
       engine.pause();
       setState({ isPlaying: false });
@@ -1524,22 +1720,26 @@ export function followHost(id: string | null, position: number, playing: boolean
   }
   if (s.currentId !== id) {
     setState({ context: { label, ids: [id] }, order: [id], index: 0, upNext: [] });
-    load(id, { autoplay: playing, remember: false });
+    load(id, { autoplay: playing, remember: false, position });
     return;
   }
   // Still fetching this song's audio: it plays when it arrives (or stays paused).
-  if (pendingStream === id) {
+  if (pendingStream === id || pendingDeviceRecovery === id) {
+    cued = { id, position };
     if (s.isPlaying !== playing) setState({ isPlaying: playing });
     return;
   }
   if (engine.loadedTrackId !== id) {
-    load(id, { autoplay: playing, remember: false });
+    load(id, { autoplay: playing, remember: false, position });
     return;
   }
   if (Math.abs(engine.position - position) > 2) engine.seek(position);
   if (playing !== s.isPlaying) {
     if (playing) engine.play();
-    else engine.pause();
+    else {
+      playbackLoadGeneration++;
+      engine.pause();
+    }
     setState({ isPlaying: playing });
     updateMediaSession();
   }
@@ -1556,9 +1756,91 @@ function updateMediaSession() {
     title: t.title,
     artist: s.artists[t.artistId]?.name,
     album: s.albums[t.albumId]?.title,
+    artwork: mediaArtwork(s.albums[t.albumId]?.artworkUrl),
   });
   navigator.mediaSession.playbackState = s.isPlaying ? "playing" : "paused";
   updatePositionState();
+  // iOS reads which lock-screen buttons work (next/previous song) when a song becomes the one playing, not when the
+  // handlers were first set at startup, before anything played: set them again for it.
+  if (s.isPlaying) registerMediaActions();
+}
+
+/**
+ * The song's cover for the lock screen and Control Center. The app's own covers are served behind its session cookie,
+ * which iOS's Now Playing artwork fetch doesn't send, and iOS also drops some sizes and shapes: so the page loads the
+ * cover itself and hands over a square JPEG. Until that's drawn, the address is offered as it is.
+ */
+function mediaArtwork(url: string | undefined): MediaImage[] {
+  if (!url) return [];
+  let src: string;
+  try {
+    src = new URL(url, location.href).href;
+  } catch {
+    return [];
+  }
+  const drawn = lockScreenCovers.get(src);
+  if (drawn) return [{ src: drawn, sizes: `${LOCK_SCREEN_COVER}x${LOCK_SCREEN_COVER}`, type: "image/jpeg" }];
+  void drawLockScreenCover(src);
+  return [{ src, sizes: `${LOCK_SCREEN_COVER}x${LOCK_SCREEN_COVER}` }];
+}
+
+const LOCK_SCREEN_COVER = 512;
+const lockScreenCovers = new Map<string, string>();
+const drawingCovers = new Set<string>();
+
+async function drawLockScreenCover(src: string) {
+  if (drawingCovers.has(src) || typeof fetch !== "function" || typeof createImageBitmap !== "function" || typeof document === "undefined") return;
+  drawingCovers.add(src);
+  try {
+    const sameOrigin = new URL(src).origin === location.origin;
+    const response = await fetch(src, { credentials: sameOrigin ? "include" : "omit" });
+    if (!response.ok) return;
+    const bitmap = await createImageBitmap(await response.blob());
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = LOCK_SCREEN_COVER;
+    const context = canvas.getContext("2d");
+    if (!context || !bitmap.width || !bitmap.height) return;
+    // Wide video thumbnails are cropped to their middle square, as the app shows them.
+    const side = Math.min(bitmap.width, bitmap.height);
+    context.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, LOCK_SCREEN_COVER, LOCK_SCREEN_COVER);
+    bitmap.close();
+    lockScreenCovers.set(src, canvas.toDataURL("image/jpeg", 0.86));
+    if (lockScreenCovers.size > 8) lockScreenCovers.delete(lockScreenCovers.keys().next().value!);
+    // Still this song's cover: show it now rather than at the next play or pause.
+    const s = getState();
+    const t = s.currentId ? s.tracks[s.currentId] : null;
+    const current = t && s.albums[t.albumId]?.artworkUrl;
+    if (current && new URL(current, location.href).href === src) updateMediaSession();
+  } catch {
+    // Offline or not an image: the plain address stays.
+  } finally {
+    drawingCovers.delete(src);
+  }
+}
+
+/** The lock screen's and Control Center's controls; see updateMediaSession for why they're set again. */
+function registerMediaActions() {
+  if (!("mediaSession" in navigator)) return;
+  const handlers: Array<[MediaSessionAction, MediaSessionActionHandler]> = [
+    ["play", () => {
+      const st = getState();
+      if (!st.isPlaying) togglePlay();
+      // OS controls are an explicit request, even if an interruption's
+      // pause/statechange event hasn't reached the store yet.
+      else if (!pendingStream && !pendingDeviceRecovery && engine.loadedTrackId === st.currentId) engine.play();
+    }],
+    ["pause", () => getState().isPlaying && togglePlay()],
+    ["nexttrack", () => next()],
+    ["previoustrack", () => previous()],
+    ["seekto", (d) => d.seekTime !== undefined && seek(d.seekTime)],
+  ];
+  for (const [action, handler] of handlers) {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch {
+      // Unsupported action in this browser.
+    }
+  }
 }
 
 function updatePositionState() {
@@ -1566,7 +1848,7 @@ function updatePositionState() {
   const t = s.currentId ? s.tracks[s.currentId] : null;
   if (!t || !t.duration || !("mediaSession" in navigator)) return;
   try {
-    navigator.mediaSession.setPositionState({ duration: t.duration, playbackRate: s.speed, position: Math.min(engine.position, t.duration) });
+    navigator.mediaSession.setPositionState({ duration: t.duration, playbackRate: s.speed, position: Math.min(positionOf(t.id), t.duration) });
   } catch {
     // Some browsers reject position state for streams; it is only a nicety.
   }
@@ -1576,10 +1858,19 @@ let wired = false;
 export function wireEngine() {
   if (wired) return;
   wired = true;
+  // Cache cleanup also runs when the music server is offline at startup.
+  retryDeviceRemovals();
   const s = getState();
   engine.setVolume(s.volume, s.muted);
   engine.setRate(s.speed);
   applyEngineSettings();
+  if (isNativeApp) {
+    const resume = () => {
+      if (document.visibilityState === "visible" && getState().isPlaying) engine.resumeAfterInterruption();
+    };
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("pageshow", resume);
+  }
   engine.onProgress = (position, clock, rate, audible) => {
     const st = getState();
     if (st.listen.mode === "guest" || st.clipDraft || previewing) {
@@ -1597,6 +1888,10 @@ export function wireEngine() {
   engine.onDiscontinuity = () => collector.resetAnchor();
   engine.onEnded = () => {
     const st = getState();
+    if (pendingStream && engine.loadedTrackId !== st.currentId) {
+      engine.pause(true);
+      return;
+    }
     if (previewing) {
       // A clip preview stops at its end instead of moving on through the queue.
       stopAtEnd(st);
@@ -1613,6 +1908,7 @@ export function wireEngine() {
   };
   engine.onNearEnd = () => {
     const st = getState();
+    if (pendingStream) return;
     if (previewing || st.repeat === "one" || !peekNext(st)) return;
     advance({ crossfade: engine.crossfadeSeconds, auto: true, end: "finished" });
   };
@@ -1620,19 +1916,84 @@ export function wireEngine() {
     if (retriedError === id) retriedError = null;
     setTrackDuration(id, d);
   };
+  // Every start waits a moment (iOS wakes its audio, the file opens), so the spinner shows only for a real wait:
+  // a song on this device starts well within it (60-100ms on an iPhone); one fetched from the web may not.
+  let waiting: { id: string; timer: number } | null = null;
+  engine.onWaiting = (id) => {
+    if (waiting?.id === id) return;
+    if (waiting) clearTimeout(waiting.timer);
+    const timer = window.setTimeout(() => {
+      if (waiting?.timer !== timer) return;
+      waiting = null;
+      const st = getState();
+      if (st.currentId === id && st.isPlaying && st.buffering !== id) setState({ buffering: id });
+    }, 400);
+    waiting = { id, timer };
+  };
+  engine.onStarted = (id) => {
+    if (waiting?.id === id) {
+      clearTimeout(waiting.timer);
+      waiting = null;
+    }
+    const st = getState();
+    if (st.currentId === id && st.buffering === id) setState({ buffering: null });
+    if (st.currentId === id) updateMediaSession();
+  };
   engine.onBlocked = (id) => {
     const st = getState();
     if (st.currentId !== id || !st.isPlaying) return;
     // Keep the play button honest: the song is not actually playing.
     engine.pause();
+    playbackLoadGeneration++;
     saveListening();
-    setState({ isPlaying: false });
+    setState({ isPlaying: false, buffering: null });
     updateMediaSession();
     toast("Playback didn't start", { detail: "Press play to try again." });
   };
-  engine.onError = (id) => {
+  engine.onInterrupted = (id) => {
+    const st = getState();
+    if (st.currentId !== id && !(pendingStream && engine.loadedTrackId === id)) return;
+    playbackLoadGeneration++;
+    pendingStream = null;
+    pendingDeviceRecovery = null;
+    saveListening();
+    setState({ isPlaying: false, buffering: null });
+    updateMediaSession();
+  };
+  engine.onError = (id, mediaError) => {
     const st = getState();
     const t = st.tracks[id];
+    if (isNativeApp) {
+      if (st.currentId !== id) return;
+      const url = mediaUrlOf(id);
+      if (url && url === deviceUrl(id) && !rebuiltDeviceSongs.has(id)) {
+        rebuiltDeviceSongs.add(id);
+        const generation = playbackLoadGeneration;
+        pendingDeviceRecovery = id;
+        // Capture before unload clears the voice. A host update or user scrub
+        // during recovery may replace this cued position before it reloads.
+        cued = { id, position: positionOf(id) };
+        engine.unload();
+        setState({ buffering: id });
+        void rebuildDeviceUrl(id, () => playbackLoadGeneration === generation && getState().currentId === id && deviceUrl(id) === url).catch(() => false).then((rebuilt) => {
+          if (playbackLoadGeneration !== generation || getState().currentId !== id) return;
+          pendingDeviceRecovery = null;
+          setState({ buffering: null });
+          if (rebuilt) load(id, { autoplay: getState().isPlaying, remember: false, end: "error", preview: previewing });
+          else engine.onError(id, mediaError);
+        });
+        return;
+      }
+      finishListening("error");
+      engine.unload();
+      setState({ isPlaying: false, buffering: null });
+      updateMediaSession();
+      const notice = toast(`Couldn't play “${t?.title ?? "file"}”`, {
+        tone: "error", sticky: true, detail: "Checking whether the song file is available…",
+      });
+      void explainPlaybackFailure(url, mediaError).then((detail) => updateToast(notice, { detail }));
+      return;
+    }
     // A song streamed from the music server is fetched from its source first, which
     // occasionally fails once; try it again before moving on.
     if (!previewing && t?.storage === "server" && retriedError !== id) {
@@ -1651,29 +2012,21 @@ export function wireEngine() {
     } else advance({ auto: true, end: "error" });
   };
 
-  if ("mediaSession" in navigator) {
-    const handlers: Array<[MediaSessionAction, MediaSessionActionHandler]> = [
-      ["play", () => !getState().isPlaying && togglePlay()],
-      ["pause", () => getState().isPlaying && togglePlay()],
-      ["nexttrack", () => next()],
-      ["previoustrack", () => previous()],
-      ["seekto", (d) => d.seekTime !== undefined && seek(d.seekTime)],
-    ];
-    for (const [action, handler] of handlers) {
-      try {
-        navigator.mediaSession.setActionHandler(action, handler);
-      } catch {
-        // Unsupported action in this browser.
-      }
-    }
-  }
+  registerMediaActions();
 
-  // Leaving the page ends the undo window, so finish pending deletes now.
-  window.addEventListener("pagehide", () => {
-    // Keep what was heard of the current song, and save without waiting for the usual delay.
+  const savePlayback = () => {
     engine.captureProgress();
     saveListening();
     flushPersist();
+  };
+  document.addEventListener("visibilitychange", () => {
+    // Mobile suspension can happen without pagehide.
+    if (document.visibilityState === "hidden") savePlayback();
+  });
+  // Leaving the page ends the undo window, so finish pending deletes now.
+  window.addEventListener("pagehide", () => {
+    // Keep what was heard of the current song, and save without waiting for the usual delay.
+    savePlayback();
     for (const serverId of [...pendingServerDeletes.keys()]) deleteOnServer(serverId);
   });
 

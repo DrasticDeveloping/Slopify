@@ -178,5 +178,5 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
     wanted.current = edition + 1;
     setEdition((n) => n + 1);
   };
-  return { songs: visible, loading, note, refresh };
+  return { songs: visible, hasResults: songs.length > 0, loading, note, refresh };
 }

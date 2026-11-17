@@ -137,9 +137,9 @@ function SyncedLyrics({ trackId, lines }: { trackId: string; lines: LyricLine[] 
         {lines.map((line, i) => {
           const playable = line.time - adjust >= range.start && line.time - adjust < range.end;
           return (
-            <p key={i} data-i={i} className={`ly-line${line.text ? "" : " gap"}${playable ? "" : " out"}`} onClick={playable ? () => playFrom(line.time) : undefined}>
+            <button type="button" key={i} data-i={i} className={`ly-line${line.text ? "" : " gap"}${playable ? "" : " out"}`} disabled={!playable} onClick={() => playFrom(line.time)}>
               {line.text || "♪"}
-            </p>
+            </button>
           );
         })}
         <Credit />

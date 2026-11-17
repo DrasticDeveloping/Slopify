@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { thisDevice } from "../lib/native";
+import { scrollBehavior } from "../lib/motion";
 import { goBack, goForward, navigate, openMenu, openModal, playList, togglePlay } from "../state/actions";
 import { getState, useStore, type MenuState } from "../state/store";
 import { installApp, usePwa } from "../state/pwa";
@@ -9,12 +10,17 @@ import { spotifySongLinks } from "../state/importer";
 import { HiddenEmail } from "./HiddenEmail";
 import { Icon } from "./Icon";
 import { useContextPlaying } from "./Shelf";
+import { pageTitle } from "../lib/page-title";
+
+/** The last search-focus request carried out (see TopBar). */
+let focusedSearchFor = 0;
 
 export function TopBar({ scrolled }: { scrolled: boolean }) {
   const pwa = usePwa();
   const back = useStore((s) => s.back.length);
   const forward = useStore((s) => s.forward.length);
   const route = useStore((s) => s.route);
+  const title = useStore((s) => pageTitle(s.route, s));
   const header = useStore((s) => s.header);
   const nonce = useStore((s) => s.searchFocusNonce);
   const name = useStore((s) => s.settings.profileName);
@@ -23,14 +29,18 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
   const avatar = account.status === "signedIn" ? account.profile?.avatarUrl : null;
   const input = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState(route.name === "search" ? route.q : "");
+  const [editingSearch, setEditingSearch] = useState(false);
   const playState = useContextPlaying(header?.play?.route);
 
   useEffect(() => {
     setDraft(route.name === "search" ? route.q : "");
   }, [route]);
 
+  // Each request to focus search (Ctrl+K, "/", Find music) is carried out once: a top bar built later (on a phone each
+  // page has its own) mustn't take the focus again for a request that was already met.
   useEffect(() => {
-    if (nonce) {
+    if (nonce > focusedSearchFor) {
+      focusedSearchFor = nonce;
       input.current?.focus();
       input.current?.select();
     }
@@ -67,13 +77,16 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
       items: [
         ...(account.status === "signedOut" ? [{ label: "Sign in", icon: "user", accent: true, run: signIn }, { separator: true }] : []),
         ...(cloudEnabled ? [{ label: "Friends", icon: "users", run: () => navigate({ name: "friends" }) }] : []),
+        // Phones hide the top bar's Listen along button, so it's here instead.
+        ...(window.matchMedia("(max-width: 680px)").matches ? [{ label: "Listen along", icon: "radio", run: () => openModal({ type: "listenAlong" }) }] : []),
         { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
         { label: "Song storage", icon: "storage", run: () => navigate({ name: "storage" }) },
         { label: "Music server", icon: "server", run: () => navigate({ name: "server" }) },
         { separator: true },
         ...(pwa.canInstall ? [{ label: "Install Slopify", icon: "download", run: () => void installApp() }] : []),
         { label: "Settings", icon: "settings", hint: "Ctrl ,", run: () => openModal({ type: "settings" }) },
-        { label: "Keyboard shortcuts", icon: "keyboard", hint: "?", run: () => openModal({ type: "settings", tab: "shortcuts" }) },
+        // Touch screens have no keyboard for shortcuts.
+        ...(window.matchMedia("(hover: none) and (pointer: coarse)").matches ? [] : [{ label: "Keyboard shortcuts", icon: "keyboard", hint: "?", run: () => openModal({ type: "settings", tab: "shortcuts" }) }]),
         ...(account.status === "signedIn" ? [{ separator: true }, { label: "Manage account", icon: "user", run: manageAccount }, { label: "Sign out", icon: "logout", run: () => void signOut() }] : []),
       ],
     };
@@ -88,7 +101,9 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
   const showTitle = Boolean(header?.visible);
 
   return (
-    <div className={`topbar${scrolled ? " scrolled" : ""}${showTitle ? " titled" : ""}`} style={header ? ({ "--tint": header.tint } as CSSProperties) : undefined}>
+    <div className={`topbar${route.name === "search" ? " searching" : ""}${editingSearch ? " editing-search" : ""}${scrolled ? " scrolled" : ""}${showTitle ? " titled" : ""}`} style={header ? ({ "--tint": header.tint } as CSSProperties) : undefined} onBlur={(e) => {
+      if (!(e.relatedTarget instanceof Element) || !e.relatedTarget.closest("[data-search-control]")) setEditingSearch(false);
+    }}>
       <div className="topbar-start">
         <div className="history-btns">
           <button type="button" className="icon-btn round" onClick={goBack} disabled={!back} aria-label="Go back" title="Back (Alt ←)">
@@ -115,7 +130,8 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
         </div>
       </div>
 
-      <label className={`search-box${route.name === "search" ? " active" : ""}`}>
+      <button type="button" className="mobile-page-title" aria-label="Scroll to top" onClick={() => document.querySelector(".main-scroll:not(.back-page)")?.scrollTo({ top: 0, behavior: scrollBehavior() })}>{header?.title || title}</button>
+      <label className={`search-box${route.name === "search" ? " active" : ""}`} data-search-control>
         <Icon name="search" size={19} />
         <input
           ref={input}
@@ -128,7 +144,9 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
             e.preventDefault();
             onSearch(songs.join(" "));
           }}
+          onFocus={() => setEditingSearch(true)}
           onKeyDown={(e) => {
+            if (e.key === "Enter") input.current?.blur();
             if (e.key === "Escape") {
               if (draft) onSearch("");
               else input.current?.blur();
@@ -136,6 +154,8 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
           }}
           placeholder="What do you want to play?"
           aria-label="Search songs, artists, albums, and playlists"
+          type="search"
+          enterKeyHint="search"
           spellCheck={false}
           autoComplete="off"
         />
@@ -149,6 +169,11 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
       </label>
 
       <div className="topbar-actions">
+        {editingSearch ? <button type="button" className="search-cancel" data-search-control onPointerDown={(e) => e.preventDefault()} onClick={() => {
+          input.current?.blur();
+          setEditingSearch(false);
+          document.querySelector<HTMLElement>(".main")?.focus({ preventScroll: true });
+        }}>Cancel</button> : null}
         <button type="button" className={`icon-btn round${listen !== "idle" ? " on" : ""}`} onClick={() => openModal({ type: "listenAlong" })} aria-label="Listen along" title="Listen along">
           <Icon name="users" size={19} />
         </button>

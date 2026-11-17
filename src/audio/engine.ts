@@ -1,10 +1,14 @@
-import { releaseVideo, setCurrentVideo } from "./video";
+import { hasVideoDemand, parkMedia, releaseVideo, setCurrentVideo } from "./video";
 import { fadeLevel, type FadeShape } from "../data/types";
+import { activateNativeAudio, isNativeApp } from "../lib/native";
 
 interface Voice {
   position(): number;
-  play(): void;
-  pause(): void;
+  play(): Promise<void>;
+  paused(): boolean;
+  ended(): boolean;
+  syncPresentation(): void;
+  pause(immediate?: boolean): void;
   seek(position: number): void;
   setRate(rate: number): void;
   fadeOut(seconds: number): void;
@@ -24,15 +28,28 @@ function retire(ctx: AudioContext, node: GainNode, seconds: number) {
 }
 
 class MediaVoice implements Voice {
+  onPaused: () => void = () => undefined;
+  onWaiting: () => void = () => undefined;
+  onPlaying: () => void = () => undefined;
   private el: HTMLMediaElement;
   private out: GainNode;
   /** The clip's fade in/out, ahead of `out` (which crossfades and retiring use). */
   private env: GainNode;
+  /** Pause/play declicking: pausing fades this out before the element stops, and starting fades it back in. */
+  private gate: GainNode;
+  /** A pause waiting for its fade to finish. Playing again in that window cancels it, so quick toggles never stop the media. */
+  private pauseTimer = 0;
   private level = 1;
   private ctx: AudioContext;
   private retired = false;
   /** Playback was asked for and not since paused. */
   private wanted = false;
+  private playRequest = 0;
+  private pendingSeek: number | null = null;
+  private awaitingMetadata = true;
+  /** On iPhone the audible owner stays an audio element. The optional muted
+   * picture may be suspended by iOS without interrupting listening. */
+  private picture: HTMLVideoElement | null = null;
 
   private onEnded: () => void;
   private onBlocked: () => void;
@@ -40,40 +57,137 @@ class MediaVoice implements Voice {
   /** `hold`: silent and out of sight until `takeOver` (a copy getting ready to replace the playing one). */
   constructor(
     ctx: AudioContext, dest: AudioNode, url: string, video: boolean, start: number, rate: number, fadeIn: number,
-    onDuration: (d: number) => void, onError: () => void, onEnded: () => void, onBlocked: () => void, hold = false,
+    onDuration: (d: number) => void, onError: (error?: MediaError | null) => void, onEnded: () => void, onBlocked: () => void, hold = false,
   ) {
     this.onEnded = onEnded;
     this.onBlocked = onBlocked;
     this.ctx = ctx;
-    if (video) {
+    if (video && !isNativeApp) {
       const el = document.createElement("video");
       el.playsInline = true;
       el.className = "player-video";
       this.el = el;
-      if (!hold) setCurrentVideo(el);
+      if (video && !hold) setCurrentVideo(el);
+      else parkMedia(el);
     } else this.el = new Audio();
+    if (isNativeApp) parkMedia(this.el);
+    this.out = ctx.createGain();
+    this.out.gain.setValueAtTime(0, ctx.currentTime);
+    if (!hold) this.out.gain.linearRampToValueAtTime(1, ctx.currentTime + Math.max(0.02, fadeIn));
+    this.env = ctx.createGain();
+    this.gate = ctx.createGain();
+    ctx.createMediaElementSource(this.el).connect(this.env);
+    this.env.connect(this.gate);
+    this.gate.connect(this.out);
+    // WebKit can replay a few stale milliseconds when a paused element starts again; it opens under a short fade.
+    this.el.onplaying = () => {
+      if (!this.wanted || this.retired) return;
+      this.openGate();
+      this.onPlaying();
+    };
+    this.el.onpause = () => {
+      // Our own pause/source changes clear wanted first. A remaining pause is
+      // WebKit or the listener's audio route stopping playback, not a retry.
+      if (!this.wanted || this.retired || !this.el.paused || this.el.ended) return;
+      this.wanted = false;
+      this.playRequest++;
+      this.onPaused();
+    };
+    this.el.onwaiting = this.el.onstalled = () => {
+      if (this.wanted && !this.retired && !this.el.paused) this.onWaiting();
+    };
+    this.out.connect(dest);
+    this.setSource(url, start, rate, onDuration, onError, onEnded, onBlocked);
+    this.present(url, video, hold);
+  }
+
+  private present(url: string, video: boolean, hold = false) {
+    if (!isNativeApp) return;
+    if (this.picture) {
+      this.picture.onloadedmetadata = null;
+      this.picture.pause();
+      this.picture.removeAttribute("src");
+      releaseVideo(this.picture, 0);
+      this.picture = null;
+    }
+    if (!video) return;
+    const picture = document.createElement("video");
+    picture.playsInline = true;
+    picture.muted = true;
+    picture.defaultMuted = true;
+    picture.disableRemotePlayback = true;
+    picture.className = "player-video";
+    picture.src = url;
+    picture.preload = "metadata";
+    picture.playbackRate = this.el.playbackRate;
+    picture.onloadedmetadata = () => this.syncPresentation();
+    picture.addEventListener("presentationchange", () => this.syncPresentation());
+    this.picture = picture;
+    if (hold) parkMedia(picture);
+    else setCurrentVideo(picture);
+  }
+
+  syncPresentation() {
+    const picture = this.picture;
+    if (!picture) return;
+    if (document.visibilityState === "hidden" || !hasVideoDemand(picture)) {
+      if (!picture.paused) picture.pause();
+      return;
+    }
+    if (Math.abs(picture.currentTime - this.el.currentTime) > 0.3) {
+      try { picture.currentTime = this.el.currentTime; } catch { /* Metadata will align it. */ }
+    }
+    if (this.wanted && !this.retired && picture.paused) void picture.play().catch(() => undefined);
+  }
+
+  private setSource(url: string, start: number, rate: number, onDuration: (d: number) => void, onError: (error?: MediaError | null) => void, onEnded: () => void, onBlocked: () => void) {
+    this.onEnded = onEnded;
+    this.onBlocked = onBlocked;
+    this.awaitingMetadata = true;
     this.el.src = url;
     this.el.preload = "auto";
     this.el.playbackRate = rate;
-    this.el.currentTime = start;
+    this.seek(start);
     this.el.onloadedmetadata = () => {
+      // A restored position or a user seek may have replaced the clip start
+      // while metadata was loading. Apply the latest request exactly once.
+      const position = this.pendingSeek;
+      this.pendingSeek = null;
+      this.awaitingMetadata = false;
+      if (position !== null) this.el.currentTime = position;
       if (Number.isFinite(this.el.duration)) onDuration(this.el.duration);
-      if (start) this.el.currentTime = start;
     };
     this.el.onerror = () => {
-      if (!this.retired) onError();
+      if (!this.retired) onError(this.el.error);
     };
     // The file can end before the expected duration; treat that as the end of the song.
     this.el.onended = () => {
       if (!this.retired) this.onEnded();
     };
-    this.out = ctx.createGain();
-    this.out.gain.setValueAtTime(0, ctx.currentTime);
-    if (!hold) this.out.gain.linearRampToValueAtTime(1, ctx.currentTime + Math.max(0.02, fadeIn));
-    this.env = ctx.createGain();
-    ctx.createMediaElementSource(this.el).connect(this.env);
-    this.env.connect(this.out);
-    this.out.connect(dest);
+  }
+
+  /** Native ordinary handoffs retain the element/source node that owns the
+   * playback session. A retired voice is never reusable: it has cleanup queued.
+   */
+  replace(url: string, video: boolean, start: number, rate: number, onDuration: (d: number) => void, onError: (error?: MediaError | null) => void, onEnded: () => void, onBlocked: () => void) {
+    if (this.retired) return false;
+    this.playRequest++;
+    this.wanted = false;
+    clearTimeout(this.pauseTimer);
+    this.pauseTimer = 0;
+    const now = this.ctx.currentTime;
+    this.gate.gain.cancelScheduledValues(now);
+    // Shut until the new song plays (play() opens it), so a pause still fading out can't blip the old one at full level.
+    this.gate.gain.setValueAtTime(0, now);
+    this.out.gain.cancelScheduledValues(now);
+    this.out.gain.setValueAtTime(1, now);
+    this.env.gain.cancelScheduledValues(now);
+    this.env.gain.setValueAtTime(1, now);
+    this.level = 1;
+    this.setSource(url, start, rate, onDuration, onError, onEnded, onBlocked);
+    this.present(url, video);
+    if (this.el instanceof HTMLVideoElement) setCurrentVideo(video ? this.el : null);
+    return true;
   }
 
   /** Calls `ready` once a held voice is playing (silently), or, if it isn't to play, once it could. */
@@ -83,14 +197,15 @@ class MediaVoice implements Voice {
     };
     if (play) {
       this.el.addEventListener("playing", done, { once: true });
-      this.play();
+      void this.play().catch(() => { if (!this.retired && this.wanted) this.onBlocked(); });
     } else if (this.el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) queueMicrotask(done);
     else this.el.addEventListener("canplay", done, { once: true });
   }
 
   /** A held voice becomes the one heard (and seen). */
   takeOver(fadeIn: number) {
-    if (this.el instanceof HTMLVideoElement) setCurrentVideo(this.el);
+    if (this.picture) setCurrentVideo(this.picture);
+    else if (this.el instanceof HTMLVideoElement) setCurrentVideo(this.el);
     const now = this.ctx.currentTime;
     this.out.gain.cancelScheduledValues(now);
     this.out.gain.setValueAtTime(0, now);
@@ -100,34 +215,95 @@ class MediaVoice implements Voice {
   position() {
     return this.el.currentTime;
   }
-  /** `retry` is the one automatic second attempt after an interrupted start; it never retries again. */
-  play(retry = false) {
-    this.wanted = true;
-    this.el.play().catch((error: unknown) => {
-      // Unsupported files are reported via onerror.
-      const name = error instanceof DOMException ? error.name : "";
-      if (this.retired || name === "NotSupportedError") return;
-      if (name !== "AbortError") return this.onBlocked();
-      // AbortError: something interrupted the start before the file was ready (a file
-      // whose length isn't known yet, say). If playing is still wanted, start again
-      // once it can play, rather than sitting silent at 0:00.
-      if (retry) return;
-      const again = () => {
-        if (this.wanted && !this.retired && this.el.paused) this.play(true);
-      };
-      if (this.el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) queueMicrotask(again);
-      else this.el.addEventListener("canplay", again, { once: true });
-    });
+  paused() { return this.el.paused; }
+  ended() { return this.el.ended; }
+
+  private openGate() {
+    const now = this.ctx.currentTime;
+    this.gate.gain.cancelScheduledValues(now);
+    this.gate.gain.setValueAtTime(this.gate.gain.value, now);
+    this.gate.gain.linearRampToValueAtTime(1, now + 0.04);
   }
-  pause() {
+
+  /** A canceled start can never report failure against a later Play request. */
+  play(): Promise<void> {
+    this.wanted = true;
+    const request = ++this.playRequest;
+    if (this.pauseTimer) {
+      // Still fading out from a pause: the element never stopped, so it just fades back in.
+      clearTimeout(this.pauseTimer);
+      this.pauseTimer = 0;
+      this.openGate();
+    } else if (this.el.paused) {
+      // Held shut until the element is actually playing (onplaying opens it).
+      const now = this.ctx.currentTime;
+      this.gate.gain.cancelScheduledValues(now);
+      this.gate.gain.setValueAtTime(0, now);
+    }
+    const current = () => this.wanted && !this.retired && this.playRequest === request;
+    const start = async (retry: boolean): Promise<void> => {
+      try {
+        await this.el.play();
+        // In case "playing" fired before this request (or not at all), never leave a started song silent.
+        if (current()) this.openGate();
+      } catch (error) {
+        if (!current()) return;
+        // Seeking or updating metadata may interrupt a start. A fresh play()
+        // waits for readiness itself; don't wait for a canplay event that may
+        // already have fired, or leave the second failure silently pending.
+        if (!retry && error instanceof DOMException && error.name === "AbortError") {
+          await Promise.resolve();
+          if (current()) return start(true);
+          return;
+        }
+        throw error;
+      }
+    };
+    const playing = start(false);
+    this.syncPresentation();
+    return playing;
+  }
+  pause(immediate = false) {
+    this.playRequest++;
     this.wanted = false;
+    if (immediate) {
+      clearTimeout(this.pauseTimer);
+      this.pauseTimer = 0;
+      const now = this.ctx.currentTime;
+      this.gate.gain.cancelScheduledValues(now);
+      this.gate.gain.setValueAtTime(0, now);
+      this.stopMedia();
+      return;
+    }
+    if (this.pauseTimer) return;
+    // A suspended graph can't run the fade, and a hidden page's timers may be held back: stop at once.
+    if (this.el.paused || this.ctx.state !== "running" || document.visibilityState === "hidden") {
+      this.stopMedia();
+      return;
+    }
+    const now = this.ctx.currentTime;
+    this.gate.gain.cancelScheduledValues(now);
+    this.gate.gain.setValueAtTime(this.gate.gain.value, now);
+    this.gate.gain.linearRampToValueAtTime(0, now + 0.045);
+    this.pauseTimer = window.setTimeout(() => {
+      this.pauseTimer = 0;
+      if (!this.wanted) this.stopMedia();
+    }, 60);
+  }
+  private stopMedia() {
     this.el.pause();
+    this.picture?.pause();
   }
   seek(position: number) {
-    this.el.currentTime = position;
+    this.pendingSeek = this.awaitingMetadata || this.el.readyState === HTMLMediaElement.HAVE_NOTHING ? position : null;
+    // Some engines cannot apply a seek before metadata; loadedmetadata will
+    // apply the latest position if this initial assignment is not yet legal.
+    try { this.el.currentTime = position; } catch { this.pendingSeek = position; }
+    this.syncPresentation();
   }
   setRate(rate: number) {
     this.el.playbackRate = rate;
+    if (this.picture) this.picture.playbackRate = rate;
   }
   rampLevel(curve: Float32Array, seconds: number) {
     const t = this.ctx.currentTime;
@@ -145,20 +321,29 @@ class MediaVoice implements Voice {
     else this.env.gain.setTargetAtTime(level, t, 0.03);
   }
   fadeOut(seconds: number) {
+    this.playRequest++;
+    clearTimeout(this.pauseTimer);
+    this.pauseTimer = 0;
     this.retired = true;
     this.wanted = false;
     retire(this.ctx, this.out, seconds);
     if (this.el instanceof HTMLVideoElement) releaseVideo(this.el, seconds * 1000 + 300);
+    if (this.picture) releaseVideo(this.picture, seconds * 1000 + 300);
     setTimeout(() => {
       this.el.pause();
       this.el.removeAttribute("src");
-      this.el.load();
+      this.picture?.pause();
+      this.picture?.removeAttribute("src");
+      // Explicit load() on an outgoing element creates a fresh empty media
+      // session in WebKit, which can reclaim Now Playing from the next song.
     }, seconds * 1000 + 200);
   }
 }
 
 export interface LoadOptions {
   start?: number;
+  /** Initial playhead, independent of the clip's start boundary. */
+  position?: number;
   end: number;
   /** The clip's fade in and out, in song seconds (0 for none). */
   fadeIn?: number;
@@ -221,7 +406,7 @@ export class AudioEngine {
   onEnded: () => void = () => undefined;
   onNearEnd: () => void = () => undefined;
   onDuration: (trackId: string, seconds: number) => void = () => undefined;
-  onError: (trackId: string) => void = () => undefined;
+  onError: (trackId: string, error?: MediaError | null) => void = () => undefined;
   /** The browser refused to start playback (e.g. autoplay rules), so nothing is audible. */
   onBlocked: (trackId: string) => void = () => undefined;
   /** Position samples for listening credit: where playback is, when, at what rate, and whether it can be heard. */
@@ -232,6 +417,14 @@ export class AudioEngine {
   onChange: () => void = () => undefined;
   /** Suspends the audio graph a little after pausing, so an idle app isn't processing silence. */
   private sleepTimer = 0;
+  private playRequest = 0;
+  private nativeSessionActive = false;
+  private nativeActivation: Promise<void> | null = null;
+  private starting = false;
+  /** An OS interruption or external media pause requires an explicit Play. */
+  onInterrupted: (trackId: string) => void = () => undefined;
+  onWaiting: (trackId: string) => void = () => undefined;
+  onStarted: (trackId: string) => void = () => undefined;
 
   private jumped() {
     this.onDiscontinuity();
@@ -246,7 +439,7 @@ export class AudioEngine {
       if (this.playing || ctx?.state !== "running") return;
       void ctx.suspend().catch(() => undefined).then(() => {
         // Played again while it was going to sleep (ensure() still saw it running): wake it back up.
-        if (this.playing && ctx.state === "suspended") void ctx.resume();
+        if (this.playing && ctx.state !== "running" && ctx.state !== "closed") void ctx.resume().catch(() => undefined);
       });
     }, 3000);
   }
@@ -259,7 +452,7 @@ export class AudioEngine {
     if (id !== this.trackId || !this.playing || this.firedEnd) return;
     if (this.looping) {
       this.seek(this.start);
-      this.voice?.play();
+      this.play();
       this.onChange();
       return;
     }
@@ -269,6 +462,12 @@ export class AudioEngine {
   }
 
   private ensure() {
+    // WebKit's Web Audio background policy uses the web session type as well
+    // as the containing app's AVAudioSession category.
+    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (session && session.type !== "playback") {
+      try { session.type = "playback"; } catch { /* Older engines may expose a read-only implementation. */ }
+    }
     if (!this.ctx) {
       const ctx = new AudioContext({ latencyHint: "playback" });
       const mix = ctx.createGain();
@@ -294,6 +493,15 @@ export class AudioEngine {
       this.eq = { pre, bass, mid, treble, pan };
       mix.connect(pre).connect(bass).connect(mid).connect(treble).connect(comp).connect(pan).connect(master).connect(analyser).connect(ctx.destination);
       this.ctx = ctx;
+      ctx.addEventListener("statechange", () => {
+        if (ctx.state !== "running") {
+          this.nativeSessionActive = false;
+          // While a start is in progress, its own handshake rides out (and finally checks) this state: activating the
+          // native session can briefly interrupt WebKit's graph, and treating that as an OS interruption cancelled
+          // the start it was part of.
+          if (this.playing && !this.starting) this.interrupted();
+        }
+      });
       this.mix = mix;
       this.master = master;
       this.analyser = analyser;
@@ -302,7 +510,6 @@ export class AudioEngine {
       this.applyTone();
     }
     clearTimeout(this.sleepTimer);
-    if (this.ctx.state === "suspended") void this.ctx.resume();
     // Loaded without playing (a restored song, say): sleep again unless playback starts.
     this.sleepSoon();
     return this.ctx;
@@ -393,6 +600,24 @@ export class AudioEngine {
     this.swapping = null;
   }
 
+  private interrupted() {
+    const id = this.trackId;
+    if (!this.playing || !id) return;
+    this.nativeSessionActive = false;
+    this.pause(true);
+    this.onInterrupted(id);
+  }
+
+  private watchVoice(voice: MediaVoice, id: string) {
+    const current = () => this.voice === voice && this.trackId === id && this.playing;
+    // (A start in progress replays a paused element itself; see startVoice.)
+    voice.onPaused = () => { if (current() && !this.starting) this.interrupted(); };
+    voice.onWaiting = () => { if (current()) this.onWaiting(id); };
+    voice.onPlaying = () => {
+      if (current() && !this.starting && this.ctx?.state === "running") this.onStarted(id);
+    };
+  }
+
   /**
    * Switches the loaded song to another copy of it (a streamed video, once its
    * picture is ready, in place of its audio) without a break: the new copy gets
@@ -409,7 +634,7 @@ export class AudioEngine {
       ctx, this.mix!, url, Boolean(track.video), old.position(), this.rate, 0,
       (d) => this.onDuration(id, d),
       // The old copy is still fine, so a copy that fails before taking over is just dropped.
-      () => (this.voice === next ? this.onError(id) : this.swapping === next && this.dropSwap()),
+      (error) => (this.voice === next ? this.onError(id, error) : this.swapping === next && this.dropSwap()),
       () => {
         if (this.voice === next) this.mediaEnded(id);
       },
@@ -418,6 +643,7 @@ export class AudioEngine {
       },
       true,
     );
+    this.watchVoice(next, id);
     this.swapping = next;
     next.prepare(this.playing, () => {
       if (this.swapping !== next) return;
@@ -427,8 +653,7 @@ export class AudioEngine {
       if (Math.abs(next.position() - old.position()) > 0.25) next.seek(old.position());
       // Paused, played or sped up meanwhile: the new copy follows.
       next.setRate(this.rate);
-      if (this.playing) next.play();
-      else next.pause();
+      if (!this.playing) next.pause();
       this.captureProgress();
       this.jumped();
       this.retireVoice(0.2);
@@ -436,15 +661,23 @@ export class AudioEngine {
       this.url = url;
       this.applyLevel(true);
       next.takeOver(0.2);
+      // Transfer startup verification to the replacement, including a native
+      // activation that is still pending when the video picture becomes ready.
+      if (this.playing) this.startVoice();
     });
   }
 
   load(track: EngineTrack, options: LoadOptions) {
+    this.playRequest++;
     this.jumped();
     this.dropSwap();
     const ctx = this.ensure();
     const crossfade = options.crossfade ?? 0;
-    this.retireVoice(crossfade > 0 ? crossfade : 0.12);
+    // A new handoff replaces the previous overlap, including when the native
+    // audio owner itself can be reused for the next song.
+    this.killRetiring();
+    const reusable = isNativeApp && crossfade <= 0 && track.fileUrl && this.voice instanceof MediaVoice ? this.voice : null;
+    if (!reusable) this.retireVoice(crossfade > 0 ? crossfade : 0.12);
     const start = options.start ?? 0;
     this.start = start;
     this.end = options.end;
@@ -456,6 +689,7 @@ export class AudioEngine {
     this.trackId = track.id;
     this.url = track.fileUrl ?? null;
     const id = track.id;
+    const position = Math.max(start, Math.min(options.position ?? start, Math.max(start, options.end - 0.05)));
     if (!track.fileUrl) {
       // Every song is a real file or stream; one without audio can only fail.
       this.voice = null;
@@ -463,15 +697,19 @@ export class AudioEngine {
       queueMicrotask(() => this.onError(id));
       return;
     }
-    this.voice = new MediaVoice(
-      ctx, this.mix!, track.fileUrl, Boolean(track.video), start, this.rate, crossfade,
-      (d) => this.onDuration(id, d),
-      () => this.onError(id),
-      () => this.mediaEnded(id),
-      () => this.onBlocked(id),
-    );
+    const onDuration = (d: number) => this.onDuration(id, d);
+    const onError = (error?: MediaError | null) => this.onError(id, error);
+    const onEnded = () => this.mediaEnded(id);
+    const onBlocked = () => this.onBlocked(id);
+    if (reusable?.replace(track.fileUrl, Boolean(track.video), position, this.rate, onDuration, onError, onEnded, onBlocked)) this.voice = reusable;
+    else this.voice = new MediaVoice(ctx, this.mix!, track.fileUrl, Boolean(track.video), position, this.rate, crossfade, onDuration, onError, onEnded, onBlocked);
+    this.watchVoice(this.voice as MediaVoice, id);
     if (options.autoplay) this.play();
-    else this.playing = false;
+    else {
+      this.playing = false;
+      this.nativeActivation = null;
+      clearInterval(this.monitor);
+    }
   }
 
   /** Updates the playable range; playback outside the new range snaps to its start. */
@@ -511,20 +749,98 @@ export class AudioEngine {
 
   play() {
     if (!this.voice) return;
-    this.ensure();
     this.jumped();
     if (this.position >= this.end - 0.05 || this.position < this.start - 0.05) this.seek(this.start);
+    this.startVoice();
+  }
+
+  /** Start the media and graph in the caller's gesture, then verify both. */
+  private startVoice() {
+    if (!this.voice) return;
+    const ctx = this.ensure();
     this.applyLevel(true);
-    this.voice.play();
     this.playing = true;
+    this.starting = true;
+    const voice = this.voice;
+    const id = this.trackId;
+    const request = ++this.playRequest;
+    const current = () => this.playing && this.voice === voice && this.playRequest === request;
+    queueMicrotask(() => { if (current() && id) this.onWaiting(id); });
+    let activation = Promise.resolve();
+    if (isNativeApp && (!this.nativeSessionActive || ctx.state !== "running")) {
+      if (!this.nativeActivation) {
+        const pending = activateNativeAudio().then(() => {
+          if (this.nativeActivation === pending) this.nativeSessionActive = true;
+        }).finally(() => {
+          if (this.nativeActivation === pending) this.nativeActivation = null;
+        });
+        this.nativeActivation = pending;
+      }
+      activation = this.nativeActivation;
+    }
+    // These must happen before awaiting the bridge: awaiting first loses the
+    // listener's user activation, particularly on a newly created media element.
+    const media = voice.play();
+    const resume = ctx.state === "running" ? Promise.resolve() : ctx.resume().catch(() => undefined);
+    void (async () => {
+      await activation;
+      await resume;
+      if (!current()) return;
+      // Native activation can interrupt WebKit's first resume. Confirm the
+      // final graph state rather than swallowing the resume failure.
+      if (ctx.state !== "running") await ctx.resume();
+      await media;
+      if (!current()) return;
+      if (ctx.state !== "running") await ctx.resume();
+      if (!current()) return;
+      if (ctx.state !== "running") throw new Error("The audio session didn't resume.");
+      if (voice.paused() && !voice.ended()) await voice.play();
+      if (current() && id) {
+        this.starting = false;
+        this.onStarted(id);
+      }
+    })().catch((error: unknown) => {
+      if (!current() || !id) return;
+      // A decode/source error has its own diagnostic and recovery path.
+      if (error instanceof DOMException && error.name === "NotSupportedError") return;
+      this.starting = false;
+      this.onBlocked(id);
+    });
+    // Install a rejection observer immediately, including if activation fails
+    // before the start task reaches this promise.
+    void media.catch(() => undefined);
     clearInterval(this.monitor);
     this.monitor = window.setInterval(this.check, 60);
   }
 
-  pause() {
+  /** Foregrounding must not start a song the listener paused. */
+  resumeAfterInterruption() {
+    if (!this.playing || !this.voice || !this.ctx || this.ctx.state === "closed") return;
+    const voice = this.voice;
+    // A real ended event still advances once. Merely reaching a clip boundary
+    // on a voice the OS paused is not permission to start the next song.
+    if (!voice.ended() && (this.ctx.state !== "running" || voice.paused())) {
+      this.interrupted();
+      return;
+    }
+    // Foregrounding is not an explicit replay. An end event delayed while
+    // suspended must advance the queue before anything can rewind this voice.
+    if (voice.ended() || voice.position() >= this.end - 0.02) {
+      if (this.trackId) this.mediaEnded(this.trackId);
+      return;
+    }
+    this.check();
+    if (this.voice !== voice || !this.playing) return;
+    voice.syncPresentation();
+  }
+
+  pause(immediate = false) {
+    this.playRequest++;
+    this.starting = false;
+    this.nativeActivation = null;
     this.captureProgress();
     this.jumped();
-    this.voice?.pause();
+    this.voice?.pause(immediate);
     this.killRetiring();
     this.playing = false;
     clearInterval(this.monitor);
@@ -586,6 +902,7 @@ export class AudioEngine {
 
   private check = () => {
     if (!this.voice || !this.playing) return;
+    this.voice.syncPresentation();
     this.captureProgress();
     const pos = this.voice.position();
     // Editing a clip: round again from its start rather than ending (or crossfading into the next song).

@@ -12,7 +12,7 @@ import { ownedIndex } from "../recommend/owned";
 import { formatPopularity, fullTitle, notableVersion, POPULARITY_MAX, useSongStats, type SongStats } from "../recommend/popular";
 import { resolveSong } from "../recommend/releases";
 import { openTrackMenu } from "../lib/menus";
-import { isLiked, navigate, playList, songRoute, startRadio, toast, toggleLike, togglePlay } from "../state/actions";
+import { beginPlaybackRequest, isLiked, navigate, playList, songRoute, startRadio, toast, toggleLike, togglePlay } from "../state/actions";
 import { getState, useStore } from "../state/store";
 
 const TYPES: Record<string, string> = { album: "album", single: "single", ep: "EP", compile: "compilation" };
@@ -62,12 +62,14 @@ export function SongView({ artist, title, id }: { artist: string; title: string;
   };
   const play = async () => {
     if (current) return togglePlay();
+    const stillRequested = beginPlaybackRequest();
     const found = await playable();
-    if (found) playList([found], found, { label: title, route });
+    if (found && stillRequested()) playList([found], found, { label: title, route });
   };
   const radio = async () => {
+    const stillRequested = beginPlaybackRequest();
     const found = await playable();
-    if (found) startRadio(found);
+    if (found && stillRequested()) startRadio(found);
   };
 
   const origin = s?.origin;

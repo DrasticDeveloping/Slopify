@@ -197,7 +197,13 @@ function plannedMixes(now: Date): Mix[] {
  * Starts any edition that is due. A current edition stays as it is, except that
  * one still waiting for its new songs follows library changes until its search starts.
  */
+let planned: { trackIds: unknown; tracks: unknown; taste: unknown; artists: unknown; playlists: unknown; day: string; mixes: Mix[] } | null = null;
 export function ensureMixes(now = new Date()) {
+  // Planning sorts and filters the whole library; with the same library, taste, day and mixes it plans the same.
+  const s = getState();
+  const day = boundaries(now).day;
+  // (Playlists count too: a song's likes and saves only count while it's still in them.)
+  if (planned && planned.trackIds === s.trackIds && planned.tracks === s.tracks && planned.taste === s.taste && planned.artists === s.artists && planned.playlists === s.playlists && planned.day === day && planned.mixes === mixes) return;
   const next = mixes.filter((m) => m.expires > now.getTime());
   for (const plan of plannedMixes(now)) {
     const index = next.findIndex((m) => m.id === plan.id);
@@ -207,6 +213,8 @@ export function ensureMixes(now = new Date()) {
     }
   }
   if (JSON.stringify(next) !== JSON.stringify(mixes)) publish(next);
+  // Recorded after publishing, so the mixes it just made don't count as a change next time.
+  planned = { trackIds: s.trackIds, tracks: s.tracks, taste: s.taste, artists: s.artists, playlists: s.playlists, day, mixes };
 }
 
 /* ───────────────────────── finding new songs ───────────────────────── */

@@ -54,8 +54,19 @@ export function luminance(hex: string) {
 /** Dark text on light accents, light text on dark ones. */
 export const onAccent = (accent: string) => (luminance(accent) > 0.33 ? "#0b0a10" : "#ffffff");
 
-/** Backgrounds this light make the app's light text hard to read. */
-export const tooLight = (background: string) => luminance(background) > 0.12;
+/** Keep the dark surfaces readable, including their secondary text, while preserving the chosen hue. */
+export function readableBackground(background: string) {
+  if (luminance(background) <= 0.03) return background;
+  const scaled = (amount: number) => `#${[1, 3, 5].map((at) => Math.floor(channel(background, at) * 255 * amount).toString(16).padStart(2, "0")).join("")}`;
+  let low = 0;
+  let high = 1;
+  for (let i = 0; i < 16; i++) {
+    const mid = (low + high) / 2;
+    if (luminance(scaled(mid)) <= 0.03) low = mid;
+    else high = mid;
+  }
+  return scaled(low);
+}
 
 const hex = (n: number) => Math.round(Math.max(0, Math.min(255, n))).toString(16).padStart(2, "0");
 function hsl(h: number, s: number, l: number) {
@@ -102,6 +113,7 @@ export function updateTheme(id: string, patch: Partial<Omit<CustomTheme, "id">>)
   const mine = customThemes(getState().settings);
   const clean = Object.fromEntries(Object.entries(patch).filter(([key, v]) => (key === "name" ? typeof v === "string" : typeof v === "string" && HEX.test(v))));
   if ("name" in clean) clean.name = (clean.name as string).slice(0, 32);
+  if (typeof clean.background === "string") clean.background = readableBackground(clean.background);
   updateSettings({ customThemes: mine.map((t) => (t.id === id ? { ...t, ...clean } : t)) });
 }
 

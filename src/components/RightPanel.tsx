@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useId, useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { formatTime, plural } from "../lib/format";
 import { useCurrent } from "../lib/hooks";
 import { usePlays } from "../lib/plays";
@@ -6,7 +6,8 @@ import { openTrackMenu } from "../lib/menus";
 import { focusFirstVisible } from "../lib/focus";
 import { rovingKey } from "../lib/roving";
 import { clearUpNext, isLiked, togglePlay, jumpToOrderIndex, jumpToUpNext, navigate, nextTrackId, openModal, playTrackNow, removeFromUpNext, toggleLike, trackSongRoute } from "../state/actions";
-import { setState, useStore } from "../state/store";
+import { setState, useStore, type Route } from "../state/store";
+import { useKeptPicture } from "../state/pictures";
 import { ArtistLinks } from "./ArtistLinks";
 import { Art, TrackArt } from "./Artwork";
 import { Bars, Icon } from "./Icon";
@@ -22,12 +23,12 @@ import type { Artist } from "../data/types";
  * The artist of the song playing, with their picture. The picture is looked up
  * online the first time (as on the artist page, and kept from there on).
  */
-function ArtistCard({ artist, detail }: { artist: Artist; detail: string }) {
+function ArtistCard({ artist, detail, go = navigate }: { artist: Artist; detail: string; go?: (route: Route) => void }) {
   const metadata = useArtistMetadata(artist.id, artist.name, artist.musicBrainzId);
   const profile = !metadata.result?.collaboration && metadata.result?.profiles.length === 1 ? metadata.result.profiles[0] : undefined;
-  const image = profile?.image || artist.image;
+  const image = useKeptPicture(profile?.image || artist.image);
   return (
-    <button type="button" className="artist-card" style={{ "--a": artist.palette.a, "--b": artist.palette.b, "--c": artist.palette.c } as CSSProperties} onClick={() => navigate({ name: "artist", id: artist.id })}>
+    <button type="button" className="artist-card" style={{ "--a": artist.palette.a, "--b": artist.palette.b, "--c": artist.palette.c } as CSSProperties} onClick={() => go({ name: "artist", id: artist.id })}>
       <span className="artist-card-bg"><Art palette={artist.palette} glyph={4} image={image} /></span>
       <span className="artist-card-label">About the artist</span>
       <span className="artist-card-body">
@@ -65,7 +66,7 @@ function QueueRow({ id, onPlay, onRemove, current, index }: { id: string; onPlay
   );
 }
 
-export function QueueView() {
+export function QueueView({ go = navigate }: { go?: (route: Route) => void }) {
   const currentId = useStore((s) => s.currentId);
   const upNext = useStore((s) => s.upNext);
   const order = useStore((s) => s.order);
@@ -125,7 +126,7 @@ export function QueueView() {
           {rest.length || wrap.length ? (
             <section>
               <h3 className="q-head">
-                Next from: <button type="button" className="link strong" onClick={() => context?.route && navigate(context.route)}>{context?.label}</button>
+                Next from: <button type="button" className="link strong" onClick={() => context?.route && go(context.route)}>{context?.label}</button>
               </h3>
               {rest.map(({ id, at }, i) => (
                 <QueueRow key={`${id}-${at}`} id={id} index={i} onPlay={() => jumpToOrderIndex(at)} />
@@ -146,15 +147,12 @@ export function QueueView() {
 }
 
 function DetailsView() {
-  const { id, track, artist, album, range } = useCurrent();
+  const { id, track, artist, album } = useCurrent();
   const liked = useStore((s) => (id ? isLiked(id, s) : false));
-  const plays = usePlays(id ?? undefined);
   const slipped = useSlippedIn();
   const nextId = useStore((s) => (s.currentId ? nextTrackId() : null));
   const nextTrack = useStore((s) => (nextId ? s.tracks[nextId] : null));
   const nextArtist = useStore((s) => (nextTrack ? s.artists[nextTrack.artistId] : null));
-  const albumCount = useStore((s) => (album ? Object.values(s.tracks).filter((t) => t.albumId === album.id).length : 0));
-  const clipped = Boolean(track && (range.start > 0 || range.end < track.duration - 0.5));
   if (!track || !artist || !album) {
     return (
       <div className="np-empty">
@@ -206,21 +204,40 @@ function DetailsView() {
         )}
       </div>
 
-      <ArtistCard key={artist.id} artist={artist} detail={`${plural(albumCount, "song")} on “${album.title}”`} />
+      <NowPlayingArtist />
+      <NowPlayingDetails />
+    </div>
+  );
+}
 
-      <div className="info-card">
-        <h3>Details</h3>
-        <dl className="kv">
-          <dt>Album</dt><dd><button type="button" className="link" onClick={() => navigate({ name: "album", id: album.id })}>{album.title}</button>{album.year ? ` · ${album.year}` : ""}</dd>
-          <dt>Format</dt><dd>{track.kind === "video" ? "Video" : "Audio"} · {track.stream ? "Streaming online" : track.storage === "server" ? "From your music server" : track.storage === "downloads" ? "Downloaded" : "File on this device"}</dd>
-          <dt>Plays</dt><dd>{plays.toLocaleString("en")}</dd>
-          <dt>Clip</dt>
-          <dd>
-            {clipped ? `${formatTime(range.start)} – ${formatTime(range.end)}` : "Full song"}{" "}
-            <button type="button" className="text-btn" onClick={() => openModal({ type: "clipEditor", trackId: track.id })}>Edit</button>
-          </dd>
-        </dl>
-      </div>
+/** The playing song's artist, as a card that opens their page (here, and under the phone's full player). */
+export function NowPlayingArtist({ go = navigate }: { go?: (route: Route) => void }) {
+  const { artist, album } = useCurrent();
+  const tracks = useStore((s) => s.tracks);
+  const albumCount = useMemo(() => (album ? Object.values(tracks).filter((t) => t.albumId === album.id).length : 0), [tracks, album?.id]);
+  if (!artist || !album) return null;
+  return <ArtistCard key={artist.id} artist={artist} detail={`${plural(albumCount, "song")} on “${album.title}”`} go={go} />;
+}
+
+/** The playing song's details: its album, where it plays from, how often it's been played, and its clip. */
+export function NowPlayingDetails({ go = navigate }: { go?: (route: Route) => void }) {
+  const { id, track, album, range } = useCurrent();
+  const plays = usePlays(id ?? undefined);
+  if (!track || !album) return null;
+  const clipped = range.start > 0 || range.end < track.duration - 0.5;
+  return (
+    <div className="info-card">
+      <h3>Details</h3>
+      <dl className="kv">
+        <dt>Album</dt><dd><button type="button" className="link" onClick={() => go({ name: "album", id: album.id })}>{album.title}</button>{album.year ? ` · ${album.year}` : ""}</dd>
+        <dt>Format</dt><dd>{track.kind === "video" ? "Video" : "Audio"} · {track.stream ? "Streaming online" : track.storage === "server" ? "From your music server" : track.storage === "downloads" ? "Downloaded" : "File on this device"}</dd>
+        <dt>Plays</dt><dd>{plays.toLocaleString("en")}</dd>
+        <dt>Clip</dt>
+        <dd>
+          {clipped ? `${formatTime(range.start)} – ${formatTime(range.end)}` : "Full song"}{" "}
+          <button type="button" className="text-btn" onClick={() => openModal({ type: "clipEditor", trackId: track.id })}>Edit</button>
+        </dd>
+      </dl>
     </div>
   );
 }

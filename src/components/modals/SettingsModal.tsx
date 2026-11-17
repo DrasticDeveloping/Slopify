@@ -2,6 +2,7 @@ import { useEffect, useId, useState, type CSSProperties, type ReactNode, useRef 
 import { isNativeApp, ThisDevice, thisDevice } from "../../lib/native";
 import { plural } from "../../lib/format";
 import { rovingKey } from "../../lib/roving";
+import { useMediaQuery } from "../../lib/hooks";
 import { qualified, reasonWeight, type ReasonKind, type TasteState } from "../../recommend/taste";
 import { resetAppData, resetRecommendations, showHiddenRecommendations, updateSettings, ask } from "../../state/actions";
 import { checkForUpdates, installUpdate, isDesktopApp, setDesktopSetting, setUpdateChannel, useDesktopSettings, useDesktopUpdates, type DesktopUpdates, type UpdateChannel } from "../../state/desktop";
@@ -12,7 +13,7 @@ import { deleteAccount, linkComputer } from "../../state/sync";
 import { installApp, installationHelp, updateApp, usePwa } from "../../state/pwa";
 import { snoozedSongs, snoozeEnds, wake } from "../../state/snooze";
 import { defaultSettings, useStore, type CustomTheme, type Settings, type SettingsTab, type Theme } from "../../state/store";
-import { activeCustomTheme, builtinThemes, createTheme, customThemes, deleteTheme, MAX_CUSTOM_THEMES, randomColours, tooLight, updateTheme } from "../../state/themes";
+import { activeCustomTheme, builtinThemes, createTheme, customThemes, deleteTheme, MAX_CUSTOM_THEMES, randomColours, updateTheme } from "../../state/themes";
 import { HiddenEmail } from "../HiddenEmail";
 import { Icon } from "../Icon";
 import { Slider } from "../Slider";
@@ -137,7 +138,7 @@ function ThemeEditor({ theme }: { theme: CustomTheme }) {
   const colours: Array<[keyof Pick<CustomTheme, "accent" | "accent2" | "background">, string, string]> = [
     ["accent", "Accent", "Buttons, sliders and what's playing."],
     ["accent2", "Second accent", "Blends with the accent in gradients and the glow."],
-    ["background", "Background", tooLight(theme.background) ? "This is light enough to make text hard to read. Darker backgrounds work best." : "Panels and menus are mixed from it."],
+    ["background", "Background", "Light colours are darkened to keep text readable. Panels and menus are mixed from it."],
   ];
   return (
     <>
@@ -461,7 +462,10 @@ function installDescription(pwa: { installed: boolean; canInstall: boolean }) {
 }
 
 export function SettingsModal({ initial }: { initial?: SettingsTab }) {
-  const [tab, setTab] = useState<SettingsTab>(initial ?? "general");
+  // A touch screen has no keyboard to use shortcuts with, so it has no Shortcuts tab.
+  const touch = useMediaQuery("(hover: none) and (pointer: coarse)");
+  const shownTabs = touch ? tabs.filter(([id]) => id !== "shortcuts") : tabs;
+  const [tab, setTab] = useState<SettingsTab>(initial && !(touch && initial === "shortcuts") ? initial : "general");
   const nav = useRef<HTMLElement>(null);
   // On a phone the tabs are one scrolling row: the open one is kept in view (only the row scrolls).
   useEffect(() => {
@@ -489,7 +493,7 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
     <Shell title="Settings" subtitle="Kept in step through your music server" size="xl" className="settings-modal">
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings sections" ref={nav}>
-          {tabs.map(([id, label, icon]) => (
+          {shownTabs.map(([id, label, icon]) => (
             <button
               key={id}
               type="button"
@@ -505,6 +509,8 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
         <div className="settings-content" key={tab}>
           {tab === "general" ? (
             <>
+              {/* The iPhone app is the installed app: there's nothing to install, so no section unless an update waits. */}
+              {isNativeApp && !pwa.updateReady ? null : (<>
               <h3 className="set-section">Slopify app</h3>
               <div className="set-group">
                 {isDesktopApp ? (
@@ -512,7 +518,7 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                     <DesktopUpdateRows />
                     <DesktopBehaviourRows />
                   </>
-                ) : (
+                ) : isNativeApp ? null : (
                   <Row icon="download" title={pwa.installed ? "Slopify is installed" : "Install Slopify"} desc={installDescription(pwa)}>
                     {pwa.canInstall || pwa.installing ? (
                       <button type="button" className="btn primary" disabled={pwa.installing} onClick={() => void installApp()}>
@@ -527,6 +533,7 @@ export function SettingsModal({ initial }: { initial?: SettingsTab }) {
                   </Row>
                 ) : null}
               </div>
+              </>)}
               <h3 className="set-section">Data & privacy</h3>
               <div className="set-group">
                 <Row icon="sync" title="Reset app data" desc="Clears your playlists, likes, recently played, settings and recommendations, wherever your library syncs. Your songs and play counts stay.">

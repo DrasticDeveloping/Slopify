@@ -39,7 +39,7 @@ export type SongChanges = Partial<Pick<ServerSong, "title" | "artist" | "album" 
 const songUrl = (id: string) => `/api/songs/${encodeURIComponent(id)}`;
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { cache: "no-store", ...init });
+  const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(15000), ...init });
   const body = await res.json().catch(() => null);
   if (!res.ok || !body?.ok) throw Object.assign(new Error(body?.error?.message || `Music server error (HTTP ${res.status}).`), { status: res.status });
   return body as T;

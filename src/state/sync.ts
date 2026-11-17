@@ -636,7 +636,7 @@ function readBase(): Base {
 let agreedBase = readBase();
 let tallies = startTallies();
 // Saved with the app data, so this device's counts and what it knows of others' always match it.
-connectLibrarySync(() => ({ ...agreedBase, tallies }));
+connectLibrarySync(() => ({ ...agreedBase, tallies, cloud: cloudAgreed }));
 /** The base as last asked to be saved, so a sync that found nothing new doesn't save the whole app record again. */
 let savedBase: { rev: number; text: string } | null = null;
 function writeBase(base: Base) {
@@ -653,7 +653,7 @@ function writeBase(base: Base) {
 }
 
 async function request(init?: RequestInit) {
-  const res = await fetch("/api/state", { cache: "no-store", ...init });
+  const res = await fetch("/api/state", { cache: "no-store", signal: AbortSignal.timeout(15000), ...init });
   const body = await res.json().catch(() => null);
   if ((!res.ok && res.status !== 409) || !Number.isSafeInteger(body?.rev)) throw new Error(body?.error?.message || `Music server error (HTTP ${res.status}).`);
   return { conflict: res.status === 409, rev: body.rev as number, data: body.data as LibraryData | null };
@@ -667,12 +667,13 @@ type Remote = { conflict: boolean; rev: number; data: LibraryData | null };
  * someone else saved first. `fromAccount`: the copy is the account's, so what
  * it changes here isn't news to send back to the account (see `adopting`).
  */
-async function mergeWith(remoteNow: Remote, save: (baseRev: number, data: LibraryData) => Promise<Remote>, base: () => Base, setBase: (b: Base) => void, fromAccount = false) {
+async function mergeWith(remoteNow: Remote, save: (baseRev: number, data: LibraryData) => Promise<Remote>, base: () => Base, setBase: (b: Base) => void, fromAccount = false, stillCurrent = () => true) {
   // What a merge takes in is already safe in the copy it came from, so the app saves it within a minute
   // (see savingLater); changes made here are saved at once when they're made.
   const taking = <T>(take: () => T): T => savingLater(() => (fromAccount ? adopt(take) : take()));
   let remote = remoteNow;
   for (let tries = 0; tries < 4; tries++) {
+    if (!stillCurrent()) return;
     const merged = taking(() => {
       catchUp(remote.data);
       const agreed = base();
@@ -687,6 +688,7 @@ async function mergeWith(remoteNow: Remote, save: (baseRev: number, data: Librar
       return;
     }
     const saved = await save(remote.rev, merged);
+    if (!stillCurrent()) return;
     if (!saved.conflict) {
       setBase({ rev: saved.rev, data: merged });
       taking(showTotals);
@@ -703,13 +705,16 @@ async function mergeWith(remoteNow: Remote, save: (baseRev: number, data: Librar
 
 const cloudBaseKey = (userId: string) => `${CLOUD_BASE}${userId}`;
 function cloudBase(userId: string): Base {
-  try {
-    const base = JSON.parse(localStorage.getItem(cloudBaseKey(userId)) || "null") as Base | null;
-    if (base && Number.isSafeInteger(base.rev) && (base.data === null || base.data?.version === 1)) return base;
-  } catch { /* Start afresh: the first merge keeps both sides. */ }
+  const saved = (initialLibrarySync() as { cloud?: { userId: string; base: Base } } | undefined)?.cloud;
+  const base = saved?.userId === userId ? saved.base : null;
+  if (base && Number.isSafeInteger(base.rev) && (base.data === null || base.data?.version === 1)) return base;
+  // Older bases were saved separately from their library. Starting afresh keeps both sides;
+  // trusting one after an interrupted save could mistake another device's playlist for a deletion.
   return { rev: 0, data: null };
 }
-let cloudAgreed: { userId: string; base: Base } | null = null;
+const savedCloudAccount = (initialLibrarySync() as { cloud?: { userId?: unknown } } | undefined)?.cloud?.userId;
+// A local edit may be saved before the first account sync. Preserve its loaded base in that save too.
+let cloudAgreed: { userId: string; base: Base } | null = typeof savedCloudAccount === "string" ? { userId: savedCloudAccount, base: cloudBase(savedCloudAccount) } : null;
 
 async function cloudState(userId: string): Promise<Remote> {
   const { rev, data } = await cloudCall<{ rev: number; data: LibraryData | null }>("/v1/library/state", { as: userId });
@@ -823,7 +828,10 @@ export async function deleteAccount(): Promise<string | null> {
   try {
     localStorage.removeItem(cloudBaseKey(userId));
   } catch { /* Nothing kept. */ }
-  if (cloudAgreed?.userId === userId) cloudAgreed = null;
+  if (cloudAgreed?.userId === userId) {
+    cloudAgreed = null;
+    persistLater();
+  }
   const notes: string[] = [];
   if (!unlinked) notes.push(`${ThisDevice}'s library is still marked as that account's; Slopify tries again next time it starts.`);
   try {
@@ -886,37 +894,45 @@ function forgetBlip() {
 async function syncWithAccount() {
   const { status, userId } = getAccount();
   if (status !== "signedIn" || !userId || userId === deletingAccount) return;
+  const stillCurrent = () => getAccount().status === "signedIn" && getAccount().userId === userId;
   try {
     // Before anything reads whose library this is.
     await retryPendingUnlink();
+    if (!stillCurrent()) return;
     // Another account's library lives here: leave both alone until the listener chooses.
     const link = await computerLink();
+    if (!stillCurrent()) return;
     if (link && link.userId !== userId) {
       setState((s) => ({ server: { ...s.server, linkedElsewhere: link.email || link.name || "another account", cloudError: undefined } }));
       return;
     }
     if (!link && !(await linkComputer())) return;
     // Another account signed in while that was checked: its own sync starts afresh.
-    if (getAccount().userId !== userId) return;
+    if (!stillCurrent()) return;
     if (getState().server.linkedElsewhere) setState((s) => ({ server: { ...s.server, linkedElsewhere: undefined } }));
     if (cloudAgreed?.userId !== userId) cloudAgreed = { userId, base: cloudBase(userId) };
     const mine = cloudAgreed;
     const poll = await pollAccount(userId, mine.base);
-    if (await syncCloudSongs(userId, poll?.songs)) await syncServerLibrary();
+    if (!stillCurrent()) return;
+    const songsChanged = await syncCloudSongs(userId, poll?.songs);
+    if (!stillCurrent()) return;
+    if (songsChanged) await syncServerLibrary(stillCurrent);
     // Signed out, or into another account, while that was fetched: its document mustn't be merged here.
     if (getAccount().status !== "signedIn" || getAccount().userId !== userId) return;
-    await mergeWith(poll?.state ?? await cloudState(userId), (rev, data) => saveCloudState(userId, rev, data), () => mine.base, (base) => {
+    const remote = poll?.state ?? await cloudState(userId);
+    if (!stillCurrent()) return;
+    await mergeWith(remote, (rev, data) => saveCloudState(userId, rev, data), () => mine.base, (base) => {
       mine.base = base;
-      try {
-        localStorage.setItem(cloudBaseKey(userId), JSON.stringify(base));
-      } catch { /* Kept for this session. */ }
-    }, true);
+      // The account base and the library it describes must survive (or be lost) together.
+      persistLater();
+    }, true, stillCurrent);
+    if (!stillCurrent()) return;
     setState((s) => ({ server: { ...s.server, cloudSyncedAt: Date.now(), cloudError: undefined } }));
     toldAccountError = "";
     forgetBlip();
   } catch (error) {
     // Another account signed in partway through: its own sync starts afresh.
-    if (getAccount().userId !== userId) return;
+    if (!stillCurrent()) return;
     // Didn't get through: most often a moment without a connection, so try again soon before saying anything.
     if (error instanceof CloudError && error.transient && accountBlipped !== userId) {
       forgetBlip();
@@ -1093,8 +1109,8 @@ export function watchLibraryData() {
   window.setInterval(() => void syncLibraryData().catch(() => undefined), POLL);
   // Back at the window: catch up with your other devices.
   const back = () => {
-    if (!inFront() || Date.now() - accountCheckedAt < CLOUD_ON_FOCUS) return;
-    wantAccount(0);
+    if (!inFront()) return;
+    if (Date.now() - accountCheckedAt >= CLOUD_ON_FOCUS) wantAccount(0);
     schedule(QUICK);
   };
   window.addEventListener("focus", back);

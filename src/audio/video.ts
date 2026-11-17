@@ -29,10 +29,16 @@ function place() {
   for (const h of hosts) if (!best || h.priority >= best.priority) best = h;
   const target = best?.el ?? parking();
   if (current.parentElement !== target) target.appendChild(current);
+  current.dispatchEvent(new Event("presentationchange"));
 }
 
 function notify() {
   listeners.forEach((l) => l());
+}
+
+/** Keep listening audio or a preparing video attached without presenting it. */
+export function parkMedia(el: HTMLMediaElement) {
+  parking().appendChild(el);
 }
 
 /** Makes `el` the visible video (or clears it). Called by the engine. */
@@ -64,6 +70,23 @@ export function attachVideoHost(el: HTMLElement, priority: number) {
     if (current?.parentElement === el) parking().appendChild(current);
     place();
   };
+}
+
+const backdropDemand = new Set<HTMLVideoElement>();
+/** A visible blurred backdrop also needs decoded pictures on wide screens. */
+export function requestVideoBackdrop(el: HTMLVideoElement) {
+  backdropDemand.add(el);
+  el.dispatchEvent(new Event("presentationchange"));
+  return () => {
+    backdropDemand.delete(el);
+    el.dispatchEvent(new Event("presentationchange"));
+  };
+}
+/** Only the native muted picture may stop; the element that owns audible web playback must keep playing. */
+export function hasVideoDemand(el: HTMLVideoElement) {
+  return current === el && (backdropDemand.has(el) || hosts.some((host) =>
+    el.parentElement === host.el && host.el.getClientRects().length > 0 && !host.el.closest("[inert], [aria-hidden=true]"),
+  ));
 }
 
 export function currentVideo() {

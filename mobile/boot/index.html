@@ -36,26 +36,43 @@
 
     async function answering() {
       try {
-        // From this page the answer can't be read (another origin), only whether there was one.
-        await fetch(`${SERVER}/api/health`, { mode: "no-cors", cache: "no-store" });
-        return true;
+        // Native checks its own server's readiness and authenticated health response. An unrelated
+        // listener on the port must never make us navigate to its page or receive our cookie.
+        return await window.webkit.messageHandlers.slopifyServer.postMessage("status");
       } catch {
-        return false;
+        return { ready: false, error: "Couldn't check the music server." };
       }
     }
 
+    // One checking loop at a time: Try again starts a fresh one in place of whatever is running.
+    let run = 0;
     async function open() {
+      const mine = ++run;
       const started = Date.now();
       retry.hidden = true;
       ring.hidden = false;
       status.textContent = "Starting Slopify…";
-      while (Date.now() - started < GIVE_UP_AFTER) {
-        if (await answering()) return location.replace(`${SERVER}/`);
+      while (mine === run) {
+        const result = await answering();
+        if (mine !== run) return;
+        if (result.ready) return location.replace(`${SERVER}/`);
+        if (result.error) {
+          // A recoverable failure (another app holding the port, say): the server keeps retrying, so this keeps
+          // checking and opens the app as soon as it's up. Try again is there too.
+          ring.hidden = true;
+          status.textContent = `${result.error} Slopify will retry automatically. You can also try again.`;
+          retry.hidden = false;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        if (Date.now() - started >= GIVE_UP_AFTER) {
+          ring.hidden = true;
+          status.textContent = "Slopify's music server didn't start. Try again in a moment.";
+          retry.hidden = false;
+          return;
+        }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
-      ring.hidden = true;
-      status.textContent = "Slopify's music server didn't start. Close the app and open it again.";
-      retry.hidden = false;
     }
 
     retry.addEventListener("click", open);

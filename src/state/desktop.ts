@@ -97,16 +97,33 @@ const subscribe = (listener: () => void) => {
 };
 export const useDesktopUpdates = () => useSyncExternalStore(subscribe, () => state);
 
+function openSharedLink(link: { type?: unknown; id?: unknown } | null | undefined) {
+  if (link?.type === "shared" && typeof link.id === "string" && link.id.length === 16 && /^[a-z0-9]{16}$/.test(link.id)) navigate({ name: "shared", id: link.id });
+}
+
+let nativeLinksStarted = false;
+function startNativeLinks() {
+  const nativeWindow = window as Window & {
+    webkit?: { messageHandlers?: { slopifyLinks?: { postMessage(message: string): void } } };
+    slopifyNativeLinksReady?: boolean;
+  };
+  const links = nativeWindow.webkit?.messageHandlers?.slopifyLinks;
+  if (!links || nativeLinksStarted) return;
+  nativeLinksStarted = true;
+  window.addEventListener("slopifySharedLink", (event) => openSharedLink((event as CustomEvent).detail));
+  nativeWindow.slopifyNativeLinksReady = true;
+  links.postMessage("ready");
+}
+
 export function startDesktopUpdates() {
+  startNativeLinks();
   if (!bridge || state) return;
   bridge.updates.onChange(set);
   void bridge.updates.get().then((s) => (state ? undefined : set(s)));
   void bridge.settings.get().then(setSettings);
   startNowPlaying(bridge);
   // A shared playlist's link (slopify://p/<id>) opens the playlist.
-  bridge.onLink?.((link) => {
-    if (link.type === "shared" && /^[a-z0-9]{16}$/.test(link.id)) navigate({ name: "shared", id: link.id });
-  });
+  bridge.onLink?.(openSharedLink);
 }
 
 /* ───────────────────────── tray and Discord ───────────────────────── */

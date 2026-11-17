@@ -1,6 +1,7 @@
-import { createContext, useContext, useEffect, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { closeModal, modalOpenerElement } from "../../state/actions";
 import { Icon } from "../Icon";
+import { useSheetDrag } from "../../lib/mobile";
 
 export const ClosingContext = createContext(false);
 
@@ -29,6 +30,7 @@ interface ShellProps {
 export function Shell({ title, eyebrow, subtitle, children, size = "md", footer, icon, art, tint, className, onClose = closeModal, layer = "modal" }: ShellProps) {
   const closing = useContext(ClosingContext);
   const ref = useRef<HTMLDivElement>(null);
+  useSheetDrag(ref, onClose, !closing);
 
   useEffect(() => {
     const recorded = layer === "modal" ? modalOpenerElement() : null;
@@ -37,7 +39,8 @@ export function Shell({ title, eyebrow, subtitle, children, size = "md", footer,
     // React handles autoFocus itself (no attribute is left), so a dialog marks its default with data-autofocus.
     // That comes first (one selector list would take whichever is first on the page), then the first text field.
     const first = el?.querySelector<HTMLElement>("[data-autofocus]") ?? el?.querySelector<HTMLElement>("input:not([type=checkbox]):not([type=radio]):not([type=range])") ?? el?.querySelector<HTMLElement>(FOCUSABLE);
-    first?.focus();
+    if (window.matchMedia("(pointer: coarse)").matches) el?.focus({ preventScroll: true });
+    else first?.focus();
     return () => {
       if (layer === "confirm") return;
       if (previous?.isConnected && previous !== document.body) previous.focus();
@@ -55,7 +58,7 @@ export function Shell({ title, eyebrow, subtitle, children, size = "md", footer,
       if (!items.length) return;
       const first = items[0];
       const last = items[items.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) {
         e.preventDefault();
         last.focus();
       } else if (!e.shiftKey && document.activeElement === last) {
@@ -72,11 +75,12 @@ export function Shell({ title, eyebrow, subtitle, children, size = "md", footer,
         className={`modal ${size}${art ? " has-art" : ""}${tint ? " tinted" : ""}${className ? ` ${className}` : ""}`}
         style={tint ? ({ "--modal-tint": tint } as CSSProperties) : undefined}
         role={layer === "confirm" ? "alertdialog" : "dialog"}
+        tabIndex={-1}
         aria-modal="true"
         aria-label={title}
         onKeyDown={onKey}
       >
-        <span className="sheet-grip" aria-hidden="true" />
+        <div className="sheet-handle"><span className="sheet-grip" aria-hidden="true" /></div>
         <header className="modal-head">
           {art ? <span className="modal-art">{art}</span> : icon ? <span className="modal-icon"><Icon name={icon} size={22} /></span> : null}
           <div>
@@ -96,9 +100,10 @@ export function Shell({ title, eyebrow, subtitle, children, size = "md", footer,
 }
 
 export function Toggle({ checked, onChange, label, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+  const [interacted, setInteracted] = useState(false);
   return (
-    <button type="button" role="switch" aria-checked={checked} aria-label={label} className={`toggle${checked ? " on" : ""}`} onClick={() => onChange(!checked)} disabled={disabled}>
-      <span className="toggle-thumb" />
+    <button type="button" role="switch" aria-checked={checked} aria-label={label} data-on={checked} className={`toggle t-toggle${checked ? " on" : ""}${interacted ? " is-init" : ""}`} onClick={() => { setInteracted(true); onChange(!checked); }} disabled={disabled}>
+      <span className="toggle-thumb t-toggle-thumb" />
     </button>
   );
 }

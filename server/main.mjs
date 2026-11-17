@@ -33,6 +33,10 @@ import { parseArgs } from "node:util";
 import { createImportApi } from "./api.mjs";
 import { LibraryInUseError, lockLibrary } from "./library-lock.mjs";
 import dataDirs from "./data-dir.cjs";
+import { authenticated, embedded, embeddedSecret, reportStartup } from "./embedded.mjs";
+
+// Never serve an embedded library without its native launch credential.
+if (embedded && !embeddedSecret) fail("The app's server credential is missing.");
 
 const appDir = fileURLToPath(new URL("../", import.meta.url));
 const dist = path.join(appDir, "dist");
@@ -214,14 +218,14 @@ function acceptPresence(req, socket) {
   } catch {
     // No origin, or not a URL: not one of Slopify's pages.
   }
-  if (!stopsWhenClosed || typeof key !== "string" || !sameSite) {
+  if ((!stopsWhenClosed && !embedded) || typeof key !== "string" || !sameSite || !authenticated(req, embeddedSecret)) {
     socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     return;
   }
   const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
   socket.setNoDelay(true);
-  pageOpened(socket);
+  if (stopsWhenClosed) pageOpened(socket);
   // The page never sends anything but a close frame (opcode 8), answered by closing.
   socket.on("data", (frame) => (frame[0] & 0x0f) === 8 && socket.end(Buffer.from([0x88, 0x00])));
   socket.on("error", () => socket.destroy());
@@ -251,7 +255,7 @@ function knownHost(req) {
 
 // The online service the built app calls through this server (written by vite.config.ts); none in older builds.
 const cloudUrl = await fs.readFile(path.join(dist, "cloud.json"), "utf8").then((text) => String(JSON.parse(text).url || ""), () => "");
-const api = createImportApi({ dataDir, owned, stopsWhenClosed, cloudUrl });
+const api = createImportApi({ dataDir, owned, stopsWhenClosed, cloudUrl, embeddedSecret });
 const server = http.createServer((req, res) => {
   if (!knownHost(req)) return void res.writeHead(421, { "Content-Type": "text/plain; charset=utf-8" }).end("Slopify doesn't answer to that address.");
   api(req, res, () => serveApp(req, res)).catch((error) => {
@@ -265,19 +269,30 @@ const server = http.createServer((req, res) => {
 
 server.on("upgrade", (req, socket) => {
   if (!knownHost(req)) return void socket.destroy();
-  if (new URL(req.url || "/", "http://localhost").pathname === "/api/presence") acceptPresence(req, socket);
-  else socket.destroy();
+  try {
+    if (new URL(req.url || "/", "http://localhost").pathname === "/api/presence") acceptPresence(req, socket);
+    else socket.destroy();
+  } catch {
+    // An invalid absolute request target is untrusted input, not a fatal server error.
+    socket.destroy();
+  }
 });
 server.on("error", (error) => {
-  if (error.code === "EADDRINUSE") fail(`Port ${port} is already in use. Choose another with --port.`);
-  if (error.code === "EACCES") fail(`Not allowed to use port ${port}. Choose another with --port.`);
-  fail(error.message);
+  const message = error.code === "EADDRINUSE" ? `Port ${port} is already in use.`
+    : error.code === "EACCES" ? `Not allowed to use port ${port}.` : error.message;
+  if (!embedded) fail(`${message} Choose another with --port.`);
+  // nodejs-mobile shares the app's process: process.exit would terminate the UI too.
+  console.error(`Slopify couldn't start: ${message}`);
+  reportStartup("error", message);
+  setTimeout(() => server.listen(port, host), 1000);
 });
-server.listen(port, host, () => {
+server.on("listening", () => {
+  reportStartup("ready");
   console.log(`Slopify is running at ${appUrl}`);
   console.log(`Library: ${dataDir}`);
   if (stopsWhenClosed) console.log("It stops when you close the last Slopify window (--keep-running keeps it running).");
 });
+server.listen(port, host);
 
 // Finish requests in progress on Ctrl+C or a service manager's stop, then exit.
 for (const signal of ["SIGINT", "SIGTERM"]) {
@@ -291,5 +306,10 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 function fail(message) {
   console.error(`Slopify couldn't start: ${message}`);
+  if (embedded) {
+    reportStartup("error", message);
+    // mobile/node/start.mjs catches setup failures and keeps the native boot screen alive.
+    throw new Error(message);
+  }
   process.exit(1);
 }
