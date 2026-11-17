@@ -14,6 +14,8 @@ function provider(tags, allowPrerelease = true, current = "2.0.0") {
   const requested = [];
   const updater = { channel: allowPrerelease ? "nightly" : "latest", allowPrerelease, currentVersion: new UpdaterSemVer(current) };
   const releases = tags.map((entry) => (Array.isArray(entry) ? entry : [entry, "Notes"]));
+  /** Releases whose files are gone (deleted since being listed). */
+  const gone = new Set();
   /** Publishes a release, newest. */
   const publish = (tag, body = "Notes") => { releases.unshift([tag, body]); };
   const instance = new NightlyGitHubProvider({ owner: "test", repo: "releases" }, updater, {
@@ -34,10 +36,11 @@ function provider(tags, allowPrerelease = true, current = "2.0.0") {
         return JSON.stringify(listed.slice((page - 1) * size, page * size).reverse());
       }
       const tag = /\/download\/(v[^/]+)\//.exec(options.path)?.[1];
+      if (gone.has(tag)) throw Object.assign(new Error("404 Not Found"), { statusCode: 404 });
       return `version: ${tag.slice(1)}\nfiles:\n  - url: Setup.exe\n    sha512: checksum\n`;
     } },
   });
-  return { instance, requested, publish };
+  return { instance, requested, publish, gone };
 }
 
 test("Nightly receives a newer stable and resolves its installer", async () => {
@@ -160,6 +163,17 @@ test("Past the first page, the list is read once until a release is published", 
   assert.equal(pages(), 7);
   publish("v2.2.1");
   assert.equal((await instance.getLatestVersion()).version, "2.2.1");
+});
+
+test("A release found further back that has since gone is looked for again", async () => {
+  const many = (n) => Array.from({ length: n }, (_, i) => `v2.0.3-nightly.20261013.${2000 - i}`);
+  const { instance, requested, gone } = provider([["v2.2.0", phoneOnly], ...many(150), "v2.1.0", "v2.0.9"], false, "2.0.0");
+  assert.equal((await instance.getLatestVersion()).version, "2.1.0");
+  gone.add("v2.1.0");
+  await assert.rejects(instance.getLatestVersion(), /404/);
+  const before = requested.filter((path) => path.includes("/releases?")).length;
+  await assert.rejects(instance.getLatestVersion(), /404/);
+  assert.equal(requested.filter((path) => path.includes("/releases?")).length, before + 2, "the list past page 1 is read again");
 });
 
 test("A lower version published later is passed over, not where the list stops", async () => {

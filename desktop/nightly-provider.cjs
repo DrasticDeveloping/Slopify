@@ -73,7 +73,9 @@ class NightlyGitHubProvider extends GitHubProvider {
     const tag = selected.tag_name;
     const filename = semver.prerelease(tag) ? "nightly.yml" : "latest.yml";
     const url = new URL(this.getBaseDownloadPath(tag, filename), this.baseUrl);
-    const info = parseUpdateInfo(await this.httpRequest(url, null, token), filename, url);
+    // A release found further back that can't be fetched (deleted since, say) is looked for again next time.
+    const text = await this.httpRequest(url, null, token).catch((error) => { this.further = null; throw error; });
+    const info = parseUpdateInfo(text, filename, url);
     if (!semver.eq(info.version, tag)) throw newError("Update file version does not match release tag", "ERR_UPDATER_INVALID_UPDATE_INFO");
     return {
       ...info,
