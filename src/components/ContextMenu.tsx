@@ -4,7 +4,7 @@ import { useCoverPalette } from "../lib/art-colors";
 import { useMediaQuery } from "../lib/hooks";
 import { closeMenu, takeMenuOpener } from "../state/actions";
 import { useStore, type MenuArt, type MenuItem } from "../state/store";
-import { BlurredTrackArt, PlaylistArt, TrackArt } from "./Artwork";
+import { Art, BlurredTrackArt, PlaylistArt, TrackArt } from "./Artwork";
 import { Icon } from "./Icon";
 
 /** The cover at the top of a menu, so it's clear at a glance what the menu acts on (as Spotify's and Apple Music's do). */
@@ -12,6 +12,7 @@ function MenuArtView({ art }: { art: MenuArt }) {
   const playlist = useStore((s) => (art.playlistId ? s.playlists.find((p) => p.id === art.playlistId) : undefined));
   if (art.trackId) return <TrackArt trackId={art.trackId} className="menu-art" />;
   if (playlist) return <PlaylistArt playlist={playlist} className="menu-art" />;
+  if (art.palette) return <Art palette={art.palette} image={art.image} round={art.round} className="menu-art" />;
   if (art.image) return <span className={`menu-art menu-art-img${art.round ? " round" : ""}`}><img src={art.image} alt="" referrerPolicy="no-referrer" /></span>;
   if (art.initial) return <span className={`menu-art menu-art-initial${art.round ? " round" : ""}`}>{art.initial}</span>;
   if (art.icon) return <span className={`menu-art menu-art-icon${art.round ? " round" : ""}`}><Icon name={art.icon} size={20} /></span>;
