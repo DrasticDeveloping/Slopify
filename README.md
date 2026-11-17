@@ -1,0 +1,1 @@
+Proof for #63: the packaged desktop app (built from the PR branch, numbered as nightly 0.0.4-nightly.20261117.124.42407, fresh profile, no account) updating to the real 0.0.4-nightly.20261117.943.52774 from GitHub, with the What's new request cut by a local relay to imitate a connection blip. The video runs at 8x; the overlay shows real elapsed time.
