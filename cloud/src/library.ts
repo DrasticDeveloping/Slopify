@@ -287,7 +287,8 @@ export async function putState(env: LibraryEnv, userId: string, body: unknown) {
   const result = baseRev === 0
     ? await env.DB.prepare(`INSERT INTO library_state (user_id, rev, data, updated_at) SELECT ?1, 1, ?2, ?3 WHERE ${notDeleted(4)} ON CONFLICT(user_id) DO NOTHING`).bind(userId, data, now, deletedSince()).run()
     : await env.DB.prepare(`UPDATE library_state SET rev = rev + 1, data = ?2, updated_at = ?3 WHERE user_id = ?1 AND rev = ?4 AND ${notDeleted(5)}`).bind(userId, data, now, baseRev, deletedSince()).run();
-  if (!result.meta.changes) await checkNotDeleted(env, userId);
-  const current = await getState(env, userId);
-  return { conflict: result.meta.changes === 0, ...current };
+  // Written: the new rev is all the app needs back (it has the document it sent), so it isn't read and returned again.
+  if (result.meta.changes) return { conflict: false, rev: baseRev + 1 };
+  await checkNotDeleted(env, userId);
+  return { conflict: true, ...(await getState(env, userId)) };
 }
