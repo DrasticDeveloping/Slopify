@@ -14,6 +14,8 @@ function provider(tags, allowPrerelease = true, current = "2.0.0") {
   const requested = [];
   const updater = { channel: allowPrerelease ? "nightly" : "latest", allowPrerelease, currentVersion: new UpdaterSemVer(current) };
   const releases = tags.map((entry) => (Array.isArray(entry) ? entry : [entry, "Notes"]));
+  /** Publishes a release, newest. */
+  const publish = (tag, body = "Notes") => { releases.unshift([tag, body]); };
   const instance = new NightlyGitHubProvider({ owner: "test", repo: "releases" }, updater, {
     platform: "win32", executor: { request: async (options) => {
       requested.push(options.path);
@@ -35,7 +37,7 @@ function provider(tags, allowPrerelease = true, current = "2.0.0") {
       return `version: ${tag.slice(1)}\nfiles:\n  - url: Setup.exe\n    sha512: checksum\n`;
     } },
   });
-  return { instance, requested };
+  return { instance, requested, publish };
 }
 
 test("Nightly receives a newer stable and resolves its installer", async () => {
@@ -137,12 +139,32 @@ test("Stable finds its release however many nightlies came after it", async () =
   // However far back it is.
   const far = provider([["v2.2.0", phoneOnly], ...many(350), "v2.1.0", "v2.0.0"], false, "2.0.0");
   assert.equal((await far.instance.getLatestVersion()).version, "2.1.0");
-  // But never further back than the installed version: up to date, or an unpublished build in between.
-  for (const current of ["2.1.0", "2.1.5"]) {
-    const upToDate = provider([["v2.2.0", phoneOnly], ...many(150), "v2.1.0", ...many(300).map((t) => t.replace("2.0.3", "2.1.0")), "v2.0.0"], false, current);
-    assert.equal((await upToDate.instance.getLatestVersion()).version, current);
-    assert.equal(upToDate.requested.filter((path) => path.includes("/releases?")).length, 2, current);
-  }
+  // Up to date: read back to the installed version, and no further.
+  const upToDate = provider([["v2.2.0", phoneOnly], ...many(150), "v2.1.0", ...many(300).map((t) => t.replace("2.0.3", "2.1.0")), "v2.0.0"], false, "2.1.0");
+  assert.equal((await upToDate.instance.getLatestVersion()).version, "2.1.0");
+  assert.equal(upToDate.requested.filter((path) => path.includes("/releases?")).length, 2);
+});
+
+test("Past the first page, the list is read once until a release is published", async () => {
+  const many = (n) => Array.from({ length: n }, (_, i) => `v2.0.3-nightly.20261013.${2000 - i}`);
+  // An unpublished build, so the whole list is read.
+  const { instance, requested, publish } = provider([["v2.2.0", phoneOnly], ...many(250), "v2.1.0"], false, "2.1.5");
+  const pages = () => requested.filter((path) => path.includes("/releases?")).length;
+  assert.equal((await instance.getLatestVersion()).version, "2.1.5");
+  assert.equal(pages(), 3);
+  assert.equal((await instance.getLatestVersion()).version, "2.1.5");
+  assert.equal(pages(), 4, "the next check reads the first page only");
+  // A new nightly moves the first page: it's all read again. A new stable for this app is found at once.
+  publish("v2.2.1-nightly.20261014.100");
+  await instance.getLatestVersion();
+  assert.equal(pages(), 7);
+  publish("v2.2.1");
+  assert.equal((await instance.getLatestVersion()).version, "2.2.1");
+});
+
+test("A lower version published later is passed over, not where the list stops", async () => {
+  const { instance } = provider([["v2.2.0", phoneOnly], ["v1.9.5", both], "v2.1.0"], false, "2.0.0");
+  assert.equal((await instance.getLatestVersion()).version, "2.1.0");
 });
 
 test("Nightly versions sort chronologically below the next stable", () => {

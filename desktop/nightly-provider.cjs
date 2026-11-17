@@ -12,10 +12,11 @@ const { changesPlatform } = require("./platforms.cjs");
 //   latest release; switching a nightly to Stable always lands there.
 // - Otherwise a release whose notes say it doesn't change this app (desktop/platforms.cjs) is
 //   passed over for the newest one before it that does. Past the newest release, only builds
-//   newer than the installed one are taken, so the list is read no further back than the
-//   installed version, and a passed-over release never makes the app go back.
+//   newer than the installed one are taken, so a passed-over release never makes the app go
+//   back. The list is read back to the installed version (or its end): past the first page,
+//   once each time a release is published rather than at every check.
 /** A safety limit on the pages of 100 releases read. */
-const MAX_PAGES = 10;
+const MAX_PAGES = 50;
 const byPublished = (a, b) => Date.parse(b.published_at) - Date.parse(a.published_at);
 
 class NightlyGitHubProvider extends GitHubProvider {
@@ -43,15 +44,25 @@ class NightlyGitHubProvider extends GitHubProvider {
       newest ??= r;
       if (semver.eq(r.tag_name, installed)) answer = "none";
       else if (first && switching) answer = r;
-      else if (!first && !semver.gt(r.tag_name, installed)) answer = "none";
-      else if (changesPlatform(r.body, "desktop")) answer = r;
+      else if ((first || semver.gt(r.tag_name, installed)) && changesPlatform(r.body, "desktop")) answer = r;
+    };
+    const readPage = async (page) => {
+      const batch = (await releasesApi(`?per_page=100&page=${page}`)) || [];
+      batch.filter(eligible).sort(byPublished).forEach(consider);
+      return batch;
     };
     // Stable: GitHub's latest release first, however many nightlies came after it. (None yet: the list says so.)
     if (!nightly) consider(await releasesApi("/latest").catch(() => null));
-    for (let page = 1; !answer && page <= MAX_PAGES; page++) {
-      const batch = (await releasesApi(`?per_page=100&page=${page}`)) || [];
-      batch.filter(eligible).sort(byPublished).forEach(consider);
-      if (batch.length < 100) break;
+    const page1 = answer ? [] : await readPage(1);
+    // Further back (a long run of releases that don't change this app): what's there only changes when a
+    // release is published, which moves the first page's last one, so it's read once rather than at every check.
+    if (!answer && page1.length === 100) {
+      const key = [nightly, installed, newest?.tag_name, page1.at(-1).tag_name].join(" ");
+      if (this.further?.key !== key) {
+        for (let page = 2, batch = page1; !answer && batch.length === 100 && page <= MAX_PAGES; page++) batch = await readPage(page);
+        this.further = { key, answer, newest };
+      }
+      ({ answer, newest } = this.further);
     }
     if (!newest) throw newError("No published versions on GitHub", "ERR_UPDATER_NO_PUBLISHED_VERSIONS");
     // The installed version is what electron-updater reads as "no update".

@@ -111,11 +111,11 @@ Each release's notes also record which apps its changes are for: the Windows app
 
 Most changes for one app are in shared code (`src/`), so a pull request can say which app it's for with a label: **mobile only** or **desktop only**. **Without the label, a phone change in `src/` counts for both apps and PCs are offered it, as before.** The label wins over its files. Add it before the release that includes the pull request is published (a nightly can follow a merge within the hour); the notes are written then. The pull request is found from its merge commit ("Merge pull request #N") or a squashed commit ending "(#N)"; a rebase-merged one goes by its files. If GitHub can't list every change's files (more than 300 in one, say), the release counts for both.
 
-To correct a release that's already out, edit its notes on GitHub and change the hidden comment, for example to `<!-- Platforms: mobile -->`. The Windows app reads the notes at every check, so it takes effect within 10 minutes (an update it has already downloaded still installs). The labels are created once with:
+To correct a release that's already out, edit its notes on GitHub and change the hidden comment, for example to `<!-- Platforms: mobile -->`. The Windows app reads the newest releases' notes at every check, so it takes effect within 10 minutes (an update it has already downloaded still installs); for a release further back than the newest 100, from the next release or restart. The labels are created once with:
 
 ```powershell
 gh label create "mobile only" --repo DrasticDeveloping/Slopify --color 1d76db --description "Only changes the phone app: PCs don't offer the update"
-gh label create "desktop only" --repo DrasticDeveloping/Slopify --color 5319e7 --description "Only changes the Windows app: phones don't offer the update"
+gh label create "desktop only" --repo DrasticDeveloping/Slopify --color 5319e7 --description "Only changes the Windows app"
 ```
 
 Releases are still built and published as before, with Windows downloads, whichever apps they change. The phone app doesn't check for updates yet; `changesPlatform(notes, "mobile")` in desktop/platforms.cjs is what it would use.
