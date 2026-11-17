@@ -7,7 +7,7 @@ import { applyEngineSettings, setSpeed, toast, toggleShuffle } from "./actions";
 import { connectLibrarySync, defaultSettings, getState, initialLibrarySync, persistLater, savingLater, setState, subscribe, type AppState, type Settings } from "./store";
 import { adoptPlaybackSpot, device, onPlaybackSpot, playbackSpot, type PlaybackSpot } from "./resume";
 import { adoptSlipIns, allSlipIns, onSlipIns, type SlipIn } from "./slipins";
-import { fromSyncedStream, registerStreams, syncServerLibrary, syncedStream, type StreamSong } from "./importer";
+import { fromSyncedStream, registerStreams, syncServerLibrary, syncedStream, syncedStreamSong, type StreamSong } from "./importer";
 import { flushSongChanges } from "./song-api";
 import { CloudError, cloudCall, deleteSignIn, getAccount, onSignedIn, signOut } from "./cloud";
 import { leaveRoom } from "./listen";
@@ -27,8 +27,9 @@ import { claimSocial, receiveSocial, type Social } from "./social";
  *
  * Only songs on the music server (track ids "srv_…") are synced, and the
  * streamed songs of playlists made without downloading (track ids "stream_…",
- * with what's needed to stream each one: `streams`). Songs added from this
- * computer and streamed suggestions stay on this device.
+ * with what's needed to stream each one: `streams`) and of slip-ins (each
+ * slip-in keeps its own). Songs added from this computer and other streamed
+ * suggestions stay on this device.
  *
  * Signed in to a Slopify account, the same data is also merged, the same way,
  * with the account's copy (cloud/), so it follows the account to other
@@ -94,6 +95,8 @@ interface Base { rev: number; data: LibraryData | null }
 const synced = (id: string) => id.startsWith("srv_");
 /** A streamed song's track id (see importer.ts streamTrackId): the same on every device, made from its source. */
 const streamed = (id: string) => id.startsWith("stream_");
+/** Slip-ins that are synced: music-server songs, and streamed songs that keep what's needed to stream them. */
+const followed = (records: Record<string, SlipIn>) => pick(records, (id) => synced(id) || (streamed(id) && Boolean(records[id].stream)));
 /** JSON with every object's keys in one order, so copies that list the same keys differently still agree (and never re-save each other's order). */
 const stable = (value: unknown) => JSON.stringify(value, (_key, v: unknown) =>
   v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v);
@@ -214,7 +217,7 @@ function allTotal(counts: Record<string, DeviceCounts>, resetAt = 0): Counts {
 }
 
 /** This browser's counters as they stand (everything it shows as its own). */
-const localCounts = (s: AppState): Counts => ({ reasons: s.taste.reasons as Counts["reasons"], listenLog: s.listenLog, slipIns: slipsOf(pick(allSlipIns(), synced)) });
+const localCounts = (s: AppState): Counts => ({ reasons: s.taste.reasons as Counts["reasons"], listenLog: s.listenLog, slipIns: slipsOf(followed(allSlipIns())) });
 /** The baseline, without kept/rejected counts once recommendations were reset. */
 const baselineNow = (s: AppState): Counts => (s.taste.resetAt ? { ...tallies.baseline, reasons: {} } : tallies.baseline);
 
@@ -358,7 +361,7 @@ function localData(s: AppState, base: LibraryData | null): LibraryData {
     plays: Object.fromEntries(s.listens.filter((l) => synced(l.id)).map((l) => [`${l.id}@${l.at}`, l])),
     listenLog: totals.listenLog,
     settings: { ...newerSettings(base?.settings), ...listenerSettings(s.settings as unknown as Record<string, unknown>) },
-    slipIns: withUnknown(sharedSlipIns(allSlipIns(), totals.slipIns), base?.slipIns),
+    slipIns: { ...pick(base?.slipIns ?? {}, unknown), ...sharedSlipIns(followed(allSlipIns()), totals.slipIns, base?.slipIns) },
     mixes: byId(Object.fromEntries(currentMixes().map((m) => [m.id, m]))),
     // A Listen Along guest plays at the host's speed, which isn't their own setting: theirs stays as agreed.
     playback: { shuffle: s.shuffle, repeat: s.repeat, speed: s.listen.mode === "guest" ? (base?.playback ?? PLAYBACK_DEFAULTS).speed : s.speed },
@@ -386,8 +389,13 @@ function fitStreams(streams: Record<string, StreamSong>) {
   for (const [id, { artwork: _artwork, ...song }] of Object.entries(streams)) streams[id] = song;
 }
 
-/** Slip-ins as synced: with every device's counts added up, and nothing kept only for this one. */
-const sharedSlipIns = (records: Record<string, SlipIn>, totals: Record<string, Slips>) => Object.fromEntries(Object.entries(records).map(([id, { elsewhere: _here, ...r }]) => {
+/**
+ * Slip-ins as synced: with every device's counts added up, and nothing kept only for this one. A streamed one keeps
+ * only what's needed to stream it (as playlists' streamed songs do), and the record once agreed stays as it was, so
+ * devices whose own copies differ don't keep writing theirs over each other's.
+ */
+const sharedSlipIns = (records: Record<string, SlipIn>, totals: Record<string, Slips>, base: Record<string, SlipIn> = {}) => Object.fromEntries(Object.entries(records).map(([id, { elsewhere: _here, ...own }]) => {
+  const r = own.stream ? { ...own, stream: base[id]?.stream ?? syncedStreamSong(own.stream) } : own;
   const total = totals[id];
   return [id, total ? { ...r, slipped: total[0], finished: total[1], skipped: total[2] } : r];
 })) as Record<string, SlipIn>;
@@ -600,7 +608,9 @@ function apply(data: LibraryData) {
     // Which songs are slip-ins, and how they last went, come from the synced copy; this device's counts stay its own.
     const records = allSlipIns();
     const own = (id: string) => ({ slipped: records[id]?.slipped ?? 0, finished: records[id]?.finished ?? 0, skipped: records[id]?.skipped ?? 0 });
-    adoptSlipIns({ ...pick(records, (id) => !synced(id)), ...Object.fromEntries(Object.entries(data.slipIns).map(([id, r]) => [id, { ...r, ...own(id) }])) });
+    // Slip-ins that aren't synced stay as they are; synced ones (streamed ones included) go when removed elsewhere.
+    const shared = followed(records);
+    adoptSlipIns({ ...pick(records, (id) => !shared[id]), ...Object.fromEntries(Object.entries(data.slipIns).map(([id, r]) => [id, { ...r, ...own(id) }])) });
   }
   if (data.counts) applyOthers(data.counts, data.reasonsResetAt);
   if (data.mixes) {
