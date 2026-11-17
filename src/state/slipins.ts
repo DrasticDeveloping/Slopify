@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { recommend } from "../recommend/rank";
 import { reasonWeight, tasteProfile, type Listen } from "../recommend/taste";
 import { connectSlipIns, isLiked, isPlayable, toast, toggleLike } from "./actions";
-import { registerStreams, streamSong, streamTrackId, type StreamSong } from "./importer";
+import { fromSyncedStream, registerStreams, streamSong, streamTrackId, type StreamSong } from "./importer";
 import { getState, snoozedUntil, type AppState } from "./store";
 
 /*
@@ -18,10 +18,10 @@ import { getState, snoozedUntil, type AppState } from "./store";
  * The best fit plays; one with no connection to what's playing waits,
  * however much you like it.
  *
- * Kept per song, here (localStorage) and, for music-server songs, with your
- * library and account (sync.ts), so they follow you to your other devices.
- * A streamed song (a search result or suggestion) can be a slip-in without
- * being saved: it keeps what's needed to stream it again in a later session.
+ * Kept per song, here (localStorage) and with your library and account
+ * (sync.ts), so they follow you to your other devices. A streamed song (a
+ * search result or suggestion) can be a slip-in without being saved: it keeps
+ * what's needed to stream it again, in a later session or on another device.
  */
 
 export interface SlipIn {
@@ -111,10 +111,13 @@ function add(ids: string[]) {
   publish(next);
 }
 
-/** Streamed slip-ins become playable songs again (they aren't kept between sessions like library songs). */
+/**
+ * Streamed slip-ins become playable songs again (they aren't kept between sessions like library songs).
+ * One synced from another device keeps only what's needed to stream it, with its details put back as for playlists.
+ */
 export function registerStreamed() {
   const s = getState();
-  const missing = Object.values(songs).flatMap((r) => (r.stream && !s.tracks[streamId(r)] ? [r.stream] : []));
+  const missing = Object.values(songs).flatMap((r) => (r.stream && !s.tracks[streamId(r)] ? [fromSyncedStream(r.stream)] : []));
   if (missing.length) registerStreams(missing);
 }
 const streamId = (r: SlipIn) => (r.stream ? streamTrackId(r.stream.key) : "");
