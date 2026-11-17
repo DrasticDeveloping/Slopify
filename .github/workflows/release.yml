@@ -7,6 +7,11 @@
 # Releases live in this public source repository. Publishing uses GITHUB_TOKEN, and
 # only the publish job can write to the repository. Manual builds default to
 # downloadable artifacts only.
+#
+# A release that's published (nightly or stable) first deploys the online service from
+# the same source: the database's new migrations, the Worker, and the shared-playlist
+# link site (cloud/share-site/). The release isn't published if that fails. The cloud
+# job needs the secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (docs/cloud.md).
 name: Release
 
 on:
@@ -39,6 +44,8 @@ jobs:
     timeout-minutes: 45
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
+      # The commit built, so the online service is deployed from the same one.
+      source: ${{ steps.source.outputs.sha }}
     env:
       SLOPIFY_UPDATE_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -47,6 +54,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
+
+      - name: Note the commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Skip if master hasn't changed since the last Nightly
         id: changes
@@ -112,8 +124,166 @@ jobs:
             release/*/
           retention-days: 1
 
-  publish:
+  # The online service, deployed before the app that uses it is published. Every version of the app, Stable and
+  # Nightly, uses this one service, so it keeps answering older versions (see "Old versions of the app" in
+  # docs/cloud.md), and only master is deployed. The Worker is only deployed when cloud/ changed since the
+  # source that's live, so a release of the app alone doesn't restart Listen Along rooms. A deployed Worker that
+  # isn't on production's database, or doesn't answer, is rolled back, and the release isn't published.
+  cloud:
     needs: windows
+    if: needs.windows.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CHANNEL: ${{ github.event.inputs.channel || 'nightly' }}
+      SOURCE: ${{ needs.windows.outputs.source }}
+      # Production's database (wrangler.jsonc): a deployed Worker bound to any other is rolled back.
+      PRODUCTION_DB: d0512d09-5cff-4dd4-8ec0-1b157cf27f20
+      HEALTH_URL: https://slopify-cloud.gavdie01.workers.dev/v1/health
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      # Without the Cloudflare secrets (docs/cloud.md) nothing is deployed, rather than holding up the release.
+      - name: Check for the Cloudflare secrets
+        id: creds
+        shell: bash
+        # (Before the checkout, cloud/ isn't there yet.)
+        working-directory: .
+        run: |
+          if [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID isn't set, so the online service wasn't deployed."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Another branch's online service would go live for everyone, so a release from it isn't published.
+      - name: Only master goes to production
+        if: steps.creds.outputs.ok == 'true'
+        shell: bash
+        working-directory: .
+        env:
+          REF: ${{ github.ref }}
+          SCHEDULED: ${{ github.event_name == 'schedule' }}
+        run: |
+          if [[ "$SCHEDULED" != "true" && "$REF" != "refs/heads/master" ]]; then
+            echo "::error::Only a release from master deploys the online service, which every version of the app uses. Publish from master, or build with publish off."
+            exit 1
+          fi
+
+      # The commit the app was built from, with the history to compare it with what's live.
+      - uses: actions/checkout@v7
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          ref: ${{ env.SOURCE }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud/package-lock.json
+
+      - name: Install
+        if: steps.creds.outputs.ok == 'true'
+        run: npm ci
+
+      # The live version (to roll back to), and the source it was deployed from (in its message, set below).
+      - name: Compare with what's live
+        id: live
+        if: steps.creds.outputs.ok == 'true'
+        shell: bash
+        run: |
+          npx wrangler deployments list --json > "$RUNNER_TEMP/deployments.json"
+          read -r version from < <(node -e '
+            const last = require(process.argv[1]).at(-1);
+            const version = last?.versions?.length === 1 ? last.versions[0].version_id : "-";
+            const from = /release from ([0-9a-f]{40})\b/.exec(last?.annotations?.["workers/message"] ?? "")?.[1] ?? "-";
+            console.log(version, from);
+          ' "$RUNNER_TEMP/deployments.json")
+          [[ "$version" == "-" ]] && version=""
+          [[ "$from" == "-" ]] && from=""
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ -n "$from" ]] && git cat-file -e "$from^{commit}" 2>/dev/null && git diff --quiet "$from" HEAD -- . ':(exclude)share-site'; then
+            echo "The live Worker is from $from, and cloud/ hasn't changed since, so it isn't deployed again."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Live: ${version:-unknown version}, from ${from:-an unknown source}. Deploying."
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Typecheck
+        if: steps.live.outputs.deploy == 'true'
+        run: npm run typecheck
+
+      - name: Migrate the database
+        if: steps.live.outputs.deploy == 'true'
+        run: npm run db:migrate
+
+      - name: Deploy the Worker
+        id: deploy
+        if: steps.live.outputs.deploy == 'true'
+        run: npx wrangler deploy --message "$CHANNEL release from $SOURCE"
+
+      - name: Check the deployed Worker
+        if: steps.live.outputs.deploy == 'true'
+        shell: bash
+        run: |
+          npx wrangler deployments list --json > "$RUNNER_TEMP/deployed.json"
+          version=$(node -p 'require(process.argv[1]).at(-1).versions[0].version_id' "$RUNNER_TEMP/deployed.json")
+          npx wrangler versions view "$version" --json > "$RUNNER_TEMP/version.json"
+          node -e '
+            const db = require(process.argv[1]).resources.bindings.find((b) => b.name === "DB");
+            if (db?.database_id !== process.env.PRODUCTION_DB) {
+              console.log(`::error::The deployed Worker is on database ${db?.database_id}, not the production database.`);
+              process.exit(1);
+            }
+          ' "$RUNNER_TEMP/version.json"
+          for attempt in 1 2 3 4 5 6; do
+            # (The reply is read first: with pipefail, grep -q stopping early could fail curl, and the check.)
+            if reply=$(curl -fsS --max-time 10 "$HEALTH_URL") && grep -q '"ok":true' <<< "$reply"; then echo "It answers."; exit 0; fi
+            sleep 5
+          done
+          echo "::error::The deployed Worker doesn't answer $HEALTH_URL."
+          exit 1
+
+      # After a failed check, or a deploy that failed partway (wrangler may have switched versions before failing):
+      # whatever is live now, if it isn't the version from before, goes back to it.
+      - name: Roll the Worker back
+        if: failure() && steps.deploy.outcome != 'skipped' && steps.live.outputs.version != ''
+        shell: bash
+        env:
+          VERSION: ${{ steps.live.outputs.version }}
+        run: |
+          npx wrangler deployments list --json > "$RUNNER_TEMP/now.json"
+          now=$(node -p 'const v = require(process.argv[1]).at(-1).versions; v.length === 1 ? v[0].version_id : "mixed"' "$RUNNER_TEMP/now.json")
+          if [[ "$now" == "$VERSION" ]]; then
+            echo "Production is still on $VERSION: nothing to roll back."
+          else
+            npx wrangler rollback "$VERSION" --message "The $CHANNEL release's checks failed" --yes
+          fi
+
+      # From outside the repository, as it was first deployed: next to a wrangler.jsonc, wrangler would take the
+      # Worker's config for the site's.
+      - name: Deploy the shared-playlist link site
+        if: steps.creds.outputs.ok == 'true'
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          npx --prefix "$GITHUB_WORKSPACE/cloud" wrangler pages deploy "$GITHUB_WORKSPACE/cloud/share-site" --project-name slopify-app --branch master --commit-hash "$SOURCE"
+          for attempt in 1 2 3 4 5 6; do
+            if page=$(curl -fsS --max-time 10 https://slopify-app.pages.dev/p/aaaaaaaaaaaaaaaa) && grep -q "slopify://p/" <<< "$page"; then echo "It answers."; exit 0; fi
+            sleep 5
+          done
+          echo "::error::https://slopify-app.pages.dev doesn't show the playlist page."
+          exit 1
+
+  publish:
+    needs: [windows, cloud]
     if: needs.windows.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -122,10 +292,21 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      # Only the publishing script is used from the checkout; nothing is built here.
+      # Only the publishing script is used from the checkout (the commit the app was built from); nothing is
+      # built here.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'schedule' && 'master' || github.ref }}
+          ref: ${{ needs.windows.outputs.source }}
+
+      # The script's own packages (the release notes use semver). --ignore-scripts: nothing is built, so
+      # Electron isn't downloaded.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci --ignore-scripts
 
       - uses: actions/download-artifact@v7
         with:

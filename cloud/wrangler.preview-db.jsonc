@@ -1,0 +1,7 @@
+{
+  // Only for `npm run db:migrate:preview`: the previews' database (see "previews" in wrangler.jsonc), kept out of
+  // wrangler.jsonc so nothing that deploys production can ever pick it up.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "slopify-preview", "database_id": "005ff493-513d-41ec-9285-667f44e68c13", "migrations_dir": "migrations" }
+  ]
+}

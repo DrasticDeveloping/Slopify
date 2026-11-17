@@ -5,6 +5,7 @@
   "compatibility_date": "2026-10-01",
   "d1_databases": [
     // Create it with `npx wrangler d1 create slopify`, then put its id here.
+    // (The previews' database is only in "previews" below, and in wrangler.preview-db.jsonc for its migrations.)
     { "binding": "DB", "database_name": "slopify", "database_id": "d0512d09-5cff-4dd4-8ec0-1b157cf27f20", "migrations_dir": "migrations" }
   ],
   "durable_objects": {
@@ -35,5 +36,30 @@
   "vars": {
     // Your Clerk application's Publishable Key (pk_test_… or pk_live_…). It is public.
     "CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuc2xvcGlmeS51bmJsb2NrZWQubW92JA"
+  },
+  // Previews (`npx wrangler preview`, and a pull request's own: .github/workflows/cloud-preview.yml) try a branch at
+  // its own address without touching production. They don't take the settings above: their database is a separate
+  // one with no real accounts (`npm run db:migrate:preview` applies migrations to it), their call limits are
+  // counted apart, and each gets its own Listen Along rooms (Durable Objects). Daily tidying (the cron) doesn't run
+  // on them. Sign-in is the same Clerk app, so a real account signs in, with an empty library there.
+  "previews": {
+    "durable_objects": {
+      "bindings": [{ "name": "ROOMS", "class_name": "ListenAlongRoom" }]
+    },
+    "observability": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "logs": { "invocation_logs": false }
+    },
+    "d1_databases": [
+      { "binding": "DB", "database_name": "slopify-preview", "database_id": "005ff493-513d-41ec-9285-667f44e68c13", "migrations_dir": "migrations" }
+    ],
+    "ratelimits": [
+      { "name": "USER_LIMIT", "namespace_id": "1003", "simple": { "limit": 300, "period": 60 } },
+      { "name": "ADDRESS_LIMIT", "namespace_id": "1004", "simple": { "limit": 600, "period": 60 } }
+    ],
+    "vars": {
+      "CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuc2xvcGlmeS51bmJsb2NrZWQubW92JA"
+    }
   }
 }

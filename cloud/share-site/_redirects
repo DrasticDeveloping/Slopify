@@ -1,0 +1,3 @@
+# Every shared playlist's link shows p.html, which reads the playlist's id from the address (the address stays).
+# (Its target is /p, not /p.html: Pages sends addresses ending in .html to their short form, which would lose the id.)
+/p/*  /p  200

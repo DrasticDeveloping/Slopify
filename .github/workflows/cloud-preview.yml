@@ -1,0 +1,139 @@
+# A pull request that changes the online service (cloud/) gets its own Preview of it: the branch's Worker at
+# https://pr-<number>-slopify-cloud.gavdie01.workers.dev, on the previews' database (no real accounts) and
+# its own Listen Along rooms, so it can be tried before it reaches production (see "previews" in
+# cloud/wrangler.jsonc). The pull request gets a comment with its address, and the Preview is deleted when
+# the pull request closes. Production is deployed with each published release (release.yml).
+#
+# Needs the repository secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (see docs/cloud.md). Pull
+# requests from forks don't get them, so they get no Preview.
+name: Cloud preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - "cloud/**"
+      - ".github/workflows/cloud-preview.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: cloud-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  PREVIEW: pr-${{ github.event.pull_request.number }}
+
+jobs:
+  preview:
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      # Without the Cloudflare secrets (docs/cloud.md) nothing is done, and the pull request isn't held up.
+      - name: Check for the Cloudflare secrets
+        id: creds
+        shell: bash
+        # (Before the checkout, cloud/ isn't there yet.)
+        working-directory: .
+        run: |
+          if [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID isn't set, so no Preview was made or deleted."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.creds.outputs.ok == 'true'
+
+      - uses: actions/setup-node@v7
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud/package-lock.json
+
+      - name: Install
+        if: steps.creds.outputs.ok == 'true'
+        run: npm ci
+
+      - name: Typecheck
+        if: steps.creds.outputs.ok == 'true'
+        run: npm run typecheck
+
+      # The previews share one database: a pull request's new migrations are applied to it here.
+      - name: Migrate the previews' database
+        if: steps.creds.outputs.ok == 'true'
+        run: npm run db:migrate:preview
+
+      - name: Deploy the Preview
+        if: steps.creds.outputs.ok == 'true'
+        run: |
+          npx wrangler preview --name "$PREVIEW" --message "#$NUMBER at ${SHA::7}" --json > "$RUNNER_TEMP/preview.json"
+          url=$(node -p "require(process.argv[1]).preview.urls[0]" "$RUNNER_TEMP/preview.json")
+          echo "PREVIEW_URL=$url" >> "$GITHUB_ENV"
+          echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+
+      - name: Say where it is
+        if: steps.creds.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          body="**Cloud preview:** $PREVIEW_URL (at ${SHA::7})
+
+          The online service from this branch, on the previews' database: sign in with any account, and its library there starts empty. Point a development build at it with \`SLOPIFY_CLOUD_URL=$PREVIEW_URL npm run dev\`."
+          gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body" --edit-last --create-if-none
+
+  delete:
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      # Without the Cloudflare secrets (docs/cloud.md) nothing is done, and the pull request isn't held up.
+      - name: Check for the Cloudflare secrets
+        id: creds
+        shell: bash
+        # (Before the checkout, cloud/ isn't there yet.)
+        working-directory: .
+        run: |
+          if [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID isn't set, so no Preview was made or deleted."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.creds.outputs.ok == 'true'
+
+      - uses: actions/setup-node@v7
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud/package-lock.json
+
+      - name: Install
+        if: steps.creds.outputs.ok == 'true'
+        run: npm ci
+
+      # (A pull request whose Preview was never made, or was already deleted, has nothing to delete.)
+      - name: Delete the Preview
+        if: steps.creds.outputs.ok == 'true'
+        run: npx wrangler preview delete --name "$PREVIEW" --skip-confirmation || echo "No Preview named $PREVIEW."

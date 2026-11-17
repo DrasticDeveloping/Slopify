@@ -194,13 +194,14 @@ export function trackForSong(song: SharedSong) {
 
 /* ───────────────────────── sharing your playlists ───────────────────────── */
 
-export const shareLink = (shareId: string) => `${cloudConfig.url}/p/${shareId}`;
-/** The share id in a pasted playlist link, or null. */
+export const shareLink = (shareId: string) => `${cloudConfig.shareUrl || cloudConfig.url}/p/${shareId}`;
+/** The share id in a pasted playlist link, or null: on the share site, or on the service itself (older links). */
 export function parseShareLink(text: string) {
   const match = /\/p\/([a-z0-9]{16})\/?(?:[?#].*)?$/.exec(text.trim());
   if (!match || !cloudConfig.url) return null;
   try {
-    return new URL(text.trim()).origin === new URL(cloudConfig.url).origin ? match[1] : null;
+    const origin = new URL(text.trim()).origin;
+    return [cloudConfig.url, cloudConfig.shareUrl].some((home) => home && new URL(home).origin === origin) ? match[1] : null;
   } catch {
     return null;
   }

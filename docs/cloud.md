@@ -51,6 +51,36 @@ npm.cmd run deploy          # prints the service's address, e.g. https://slopify
 
 When updating the service later, run `npm.cmd run db:migrate` again before `npm.cmd run deploy`: a new version may need tables the old one didn't have. Migration `v3` (`wrangler.jsonc`) ended every Listen Along room open at the time: rooms from before it are removed, and people start a new one.
 
+### Shared playlists' links
+
+Links to shared playlists open on `https://slopify-app.pages.dev/p/<id>` (`shareUrl` in `release.config.json`), a static Cloudflare Pages site in `cloud/share-site/` that hands the link to the desktop app, like the service's own `/p/<id>` page. It reaches no Worker, so it has no request limit. Links on the service's address keep working, and the app accepts both when one is pasted. Deploy it from outside `cloud/`, so wrangler doesn't take `cloud/wrangler.jsonc` for it:
+
+```sh
+npx wrangler pages deploy <repo>/cloud/share-site --project-name slopify-app --branch master
+```
+
+### Deploying with releases, and previews
+
+Each published release, nightly or stable (`.github/workflows/release.yml`), first deploys the service from the same commit: `npm run db:migrate`, the Worker, then the shared-playlist link site. If that fails, the release isn't published. Deploy by hand only to fix production between releases.
+
+Every version of the app, on either channel, uses this one service, so a nightly's deploy reaches Stable's users too. That's why the service must keep answering the versions people have, and why:
+- only a release from master deploys it. Publishing from another branch fails before anything is deployed;
+- the Worker is deployed only when `cloud/` (outside `share-site/`) changed since the commit that's live, which its deployment message names. Each deploy restarts Listen Along rooms (the app reconnects within seconds), so app-only releases leave them alone;
+- after deploying, the workflow checks the Worker is on production's database and answers `/v1/health`. If not, it rolls back to the version that was live and doesn't publish. A migration isn't undone, so migrations must keep working with the version before them.
+
+A release published from a PC (`npm run release:stable`) deploys nothing: deploy the service first if it needs a change.
+
+A pull request that changes `cloud/` gets its own Preview (`.github/workflows/cloud-preview.yml`, Cloudflare's Worker Previews): the branch's Worker at `https://pr-<number>-slopify-cloud.gavdie01.workers.dev`, posted as a comment, and deleted when the pull request closes. Previews use the `previews` settings in `wrangler.jsonc`:
+- a separate database, `slopify-preview`, with no real accounts;
+- their own call limits and Listen Along rooms;
+- no daily cron.
+
+Sign-in is the same Clerk app, so any account signs in there with an empty library. Renewing sign-ins needs `CLERK_SECRET_KEY` as a Preview secret (`npx wrangler preview secret put`); without it, previews answer that staying signed in isn't set up. Try one by hand with `npx wrangler preview --name <name>` in `cloud/`. `npm run db:migrate:preview` applies migrations to the previews' database; the workflow runs it before each Preview. That database is only named in the `previews` settings and in `wrangler.preview-db.jsonc`, never in production's settings.
+
+Both workflows need two repository secrets:
+- `CLOUDFLARE_ACCOUNT_ID`;
+- `CLOUDFLARE_API_TOKEN`: an account API token with Workers Scripts, D1 and Cloudflare Pages edit permissions (the "Edit Cloudflare Workers" template, plus D1 and Pages).
+
 ### 3. The app
 
 In `release.config.json`, set `cloudUrl` to the service's address and `clerkPublishableKey` to the same Publishable Key. The next `npm run desktop`, `node server/main.mjs --open` or EXE build includes them (`SLOPIFY_CLOUD_URL` and `SLOPIFY_CLERK_PUBLISHABLE_KEY` override them for one build).
