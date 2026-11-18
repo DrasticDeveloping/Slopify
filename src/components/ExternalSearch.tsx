@@ -4,7 +4,7 @@ import { formatTime } from "../lib/format";
 import { navigate, playList, togglePlay } from "../state/actions";
 import { getState, useStore } from "../state/store";
 import {
-  askToSavePlaylist, canStream, cancelImport, failureText, getImport, inputIsLink, isAudioOnlySource, spotifySongLinks, type PlaylistFollow, isDownloadable, isPlaylist, PROVIDERS, providerLabel, registerStreams,
+  askToSavePlaylist, canStream, cancelImport, failureText, inputIsLink, isAudioOnlySource, isYouTubeVideo, spotifySongLinks, type PlaylistFollow, isDownloadable, isPlaylist, PROVIDERS, providerLabel, registerStreams,
   playlistOwnedTrack, resultPlatform, resultStreamKey, saveSearchResults, searchDiscovery, showTransferInline, stageLabel, streamTrackId, useImport, type Candidate, type ImportState, type MediaKind,
   type PlaylistSaveOptions, type PlaylistSaved, type Provider, type Resolution,
 } from "../state/importer";
@@ -173,22 +173,14 @@ function followLookup(lookup: LinkLookup, wanted: { current: (at: number) => boo
 }
 
 /**
- * Searches the music platforms for `query`, reusing a review the importer has already resolved for it.
- * A playlist link's songs show as they are matched (`resolution.matching` is set until they all are).
+ * Searches the music platforms for `query`. A playlist link's songs show as they are matched (`resolution.matching`
+ * is set until they all are).
  */
 function usePlatformSearch(query: string, kind: MediaKind, attempt: number) {
   const [result, setResult] = useState<{ query: string; kind: MediaKind; resolution: Resolution } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  // A suggestion sent here for review arrives already resolved, with its exact source. Decided on arrival only:
-  // saving songs from these results also leaves them in the importer, and that's no reason to stop following them.
-  // A link already being looked up here is followed instead.
-  const reviewing = useMemo(() => {
-    const transfer = getImport();
-    const known = lookups.get(lookupKey(query, kind));
-    return !attempt && transfer.source === query && transfer.resolution?.mediaKind === kind && !(known && !known.error);
-  }, [query, kind, attempt]);
-  const link = inputIsLink(query) && !reviewing;
+  const link = inputIsLink(query);
   const lookup = useLinkLookup(query, kind, attempt, link);
   useEffect(() => {
     if (link) return;
@@ -201,10 +193,6 @@ function usePlatformSearch(query: string, kind: MediaKind, attempt: number) {
     setLoading(true);
     setError("");
     setResult(null);
-    if (reviewing) {
-      show(getImport().resolution!);
-      return () => controller.abort();
-    }
     const timer = window.setTimeout(() => {
       searchTyped(query, AbortSignal.any([controller.signal, AbortSignal.timeout(IDLE_TIMEOUT)]), kind)
         .then(show)
@@ -219,7 +207,6 @@ function usePlatformSearch(query: string, kind: MediaKind, attempt: number) {
       window.clearTimeout(timer);
       controller.abort();
     };
-    // `reviewing` follows from these.
   }, [query, kind, attempt, link]);
   if (link) return { lookup, resolution: lookup?.resolution ?? null, reading: lookup?.reading ?? null, loading: !lookup?.done, error: lookup?.error ?? "" };
   return { lookup: null, resolution: result?.query === query && result.kind === kind ? result.resolution : null, reading: null, loading, error };
@@ -300,7 +287,12 @@ function useNearView(onVisible: () => void, active: boolean) {
 /** Songs, videos and playlists from YouTube, Spotify and SoundCloud: play them in full, or save them to the library. */
 export function ExternalSearch({ query }: { query: string }) {
   const transfer = useImport((s) => s);
-  const [kind, setKind] = useState<MediaKind>("audio");
+  /**
+   * What a pasted YouTube playlist is saved as (chosen beside its Save button, with no new lookup: the list is the
+   * same either way). Anything else is saved as a song, or, a YouTube video's row, as whichever its Save says.
+   */
+  const [listKind, setKind] = useState<MediaKind>("audio");
+  const kind: MediaKind = inputIsLink(query) && looksLikePlaylist(query) ? listKind : "audio";
   const [attempt, setAttempt] = useState(0);
   const [provider, setProvider] = useState<"all" | Provider>("all");
   /**
@@ -310,8 +302,9 @@ export function ExternalSearch({ query }: { query: string }) {
    * waiting song found as a "Check match", a "Check match" confirmed by ear).
    */
   const [ticks, setTicks] = useState<{ mode: "default" | "all" | "none"; chosen: Record<number, boolean> }>({ mode: "default", chosen: {} });
-  const { lookup, resolution: first, reading, loading, error } = usePlatformSearch(query, kind, attempt);
-  const { resolution: r, loadMore, loadingMore, moreError, hasMore, stalled } = useMoreResults(first, kind);
+  // Everything is looked up as songs: how it's saved is chosen when saving.
+  const { lookup, resolution: first, reading, loading, error } = usePlatformSearch(query, "audio", attempt);
+  const { resolution: r, loadMore, loadingMore, moreError, hasMore, stalled } = useMoreResults(first, "audio");
   const paged = first?.kind === "search_results";
   // Re-armed after each page, so a short page that leaves the end still in view loads the next one too.
   // A page with nothing new waits to be asked, rather than searching again on its own.
@@ -322,7 +315,7 @@ export function ExternalSearch({ query }: { query: string }) {
   // A playlist's songs already in the library: listed apart, never offered for saving again.
   const tracks = useStore((s) => s.tracks);
   const artists = useStore((s) => s.artists);
-  const ownedIds = useMemo(() => (playlist && r ? r.candidates.map((c) => playlistOwnedTrack(c, r.mediaKind, { tracks, artists })) : []), [playlist, r, tracks, artists]);
+  const ownedIds = useMemo(() => (playlist && r ? r.candidates.map((c) => playlistOwnedTrack(c, kind, { tracks, artists })) : []), [playlist, r, kind, tracks, artists]);
   const ownedAt = (index: number) => ownedIds[index];
   /** Whether a row is ticked: the user's own choice for it, else what the mode gives a song like it. */
   const tickedFor = (i: number, c: Candidate | undefined) => ticks.chosen[i] ?? (ticks.mode === "default" ? !unsure(c) : ticks.mode === "all");
@@ -340,13 +333,13 @@ export function ExternalSearch({ query }: { query: string }) {
   const saveNow = (options: PlaylistSaveOptions) => {
     if (!r) return;
     const follow = matching && lookup ? followLookup(lookup, wanted, new Set(selected)) : undefined;
-    void saveSearchResults(query, r, selected, follow, options);
+    void saveSearchResults(query, { ...r, mediaKind: kind }, selected, follow, options);
   };
   // The dialog answers after this render: it starts whatever save this page holds by then (more songs may be found).
   const saveRef = useRef(saveNow);
   saveRef.current = saveNow;
   const save = () => askToSavePlaylist(
-    { count: toSave, owned: ownedIds.filter(Boolean).length, name: playlistTitle, matching: Boolean(matching) },
+    { count: toSave, owned: ownedIds.filter(Boolean).length, name: playlistTitle, matching: Boolean(matching), video: kind === "video" },
     (options) => saveRef.current(options),
   );
   // Songs YouTube kept turning away: searched again on request (the ones found come back from the server's memory).
@@ -426,15 +419,14 @@ export function ExternalSearch({ query }: { query: string }) {
     return () => observer.disconnect();
   }, [playlist]);
 
-  useEffect(() => {
-    if (isAudioOnlySource(query)) setKind("audio");
-  }, [query]);
-  // New results start unfiltered, with every song of a playlist selected.
+  // A new link starts as songs (the choice isn't remembered from one playlist to the next).
+  useEffect(() => setKind("audio"), [query]);
+  // New results start unfiltered, with every song of a playlist selected. Switching Save as keeps the ticks.
   useEffect(() => {
     setProvider("all");
     setTicks({ mode: "default", chosen: {} });
     setOpenGroups({ missing: null, owned: false });
-  }, [query, kind, attempt]);
+  }, [query, attempt]);
 
   const context = { label: `Search: ${query}`, route: { name: "search", q: query } as const };
   /** The track a result plays as: your saved copy if you have one (a saved video plays as a video), else a stream of it. */
@@ -446,6 +438,10 @@ export function ExternalSearch({ query }: { query: string }) {
     registerStreams([{ key, candidate: c, title, artist, artwork: c.importMetadata?.artworkURL || c.thumbnailURL || undefined, kind: "discover-search", ...(kind === "video" ? { video: platformFor(c) === "youtube" } : {}) }]);
     return streamTrackId(key);
   };
+  /** Whether a result can be saved as a video too (a YouTube video, searched for or pasted). */
+  const savesVideo = (c: Candidate) => !playlist && isYouTubeVideo(c);
+  /** Saves one result, as a song or (a YouTube video) as a video. */
+  const saveAs = (index: number, as: MediaKind) => void saveSearchResults(query, { ...r!, mediaKind: as }, [index]);
   const play = (c: Candidate, index?: number) => {
     const id = trackFor(c, index);
     if (getState().currentId === id) return togglePlay();
@@ -453,15 +449,22 @@ export function ExternalSearch({ query }: { query: string }) {
   };
   const menu = (e: MouseEvent, c: Candidate, index: number) => {
     const source = c.importMetadata?.sourceURL || c.sourcePageURL || c.sourceURL;
-    const save = isDownloadable(c) && !busy ? () => void saveSearchResults(query, r!, [index]) : null;
-    const mine = ownedAt(index) ?? ownedIndex(getState()).find({ sources: candidateSources(c) })[0];
+    const copies = ownedIndex(getState()).find({ sources: candidateSources(c) });
+    const savedAs = (as: MediaKind) => copies.some((id) => getState().tracks[id]?.kind === as);
+    const canSave = isDownloadable(c) && !busy;
+    // A playlist row saves as the list does (Save as), unless it's already saved that way; a YouTube video, as a song
+    // or as a video, as on its row.
+    const listSave = canSave && !ownedAt(index) ? () => saveAs(index, kind) : null;
+    const save = playlist ? (kind === "audio" ? listSave : null) : canSave && !savedAs("audio") ? () => saveAs(index, "audio") : null;
+    const saveVideo = playlist ? (kind === "video" ? listSave : undefined) : !savesVideo(c) ? undefined : canSave && !savedAs("video") ? () => saveAs(index, "video") : null;
+    const mine = ownedAt(index) ?? copies[0];
     if (!mine && !canStream(c)) {
       const { title, artist } = describe(c);
-      return openSearchResultMenu(e, title, artist, { source, save: playlist ? undefined : save });
+      return openSearchResultMenu(e, title, artist, { source, save: playlist ? undefined : save, saveVideo });
     }
     const id = trackFor(c, index);
     if (!getState().tracks[id]) return;
-    openTrackMenu(e, [id], { context: { ...context, ids: [id] }, stream: { searchResult: true, source, save } });
+    openTrackMenu(e, [id], { context: { ...context, ids: [id] }, stream: { searchResult: true, source, save, saveVideo } });
   };
 
   // A single song's sources all describe that one song.
@@ -478,13 +481,14 @@ export function ExternalSearch({ query }: { query: string }) {
       kind={kind}
       playlist={playlist}
       featured={!playlist && index === results[0]?.index}
+      savesVideo={savesVideo(c)}
       busy={busy}
       owned={ownedAt(index)}
       selected={c.pending || c.reading ? tickedNow(index) : selected.includes(index)}
       onSelect={() => setTicks((t) => ({ ...t, chosen: { ...t.chosen, [index]: !tickedNow(index) } }))}
       onPlay={() => play(c, index)}
       onMenu={(e) => menu(e, c, index)}
-      onSave={() => void saveSearchResults(query, r!, [index])}
+      onSave={(as) => saveAs(index, as)}
       rowId={playlist ? `playlist-row-${index}` : undefined}
     />
   );
@@ -497,16 +501,6 @@ export function ExternalSearch({ query }: { query: string }) {
           {/* Once results are in, they explain themselves; the line only helps while waiting. */}
           {r ? null : <p className="muted small">Search YouTube, Spotify and SoundCloud, or paste a song or playlist link.</p>}
         </div>
-        {/* A Spotify or SoundCloud playlist has no videos: nothing to switch between. */}
-        {playlist && isAudioOnlySource(query) ? null : (
-          <div className="segmented sm" role="group" aria-label="Search media type">
-            {(["audio", "video"] as const).map((k) => (
-              <button key={k} type="button" className={kind === k ? "on" : ""} aria-pressed={kind === k} disabled={k === "video" && isAudioOnlySource(query)} onClick={() => setKind(k)}>
-                {k === "audio" ? "Songs" : "Videos"}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
       {busy && !savingHere ? (
         <div className="import-status" role="status">
@@ -538,7 +532,6 @@ export function ExternalSearch({ query }: { query: string }) {
           ) : null}
           {r.playlist?.unavailableCount ? <p className="muted small">{countSongs(r.playlist.unavailableCount)} in this playlist {r.playlist.unavailableCount === 1 ? "isn't" : "aren't"} available on {r.kind === "soundcloud_playlist" ? "SoundCloud" : "Spotify"}.</p> : null}
           {r.unavailableProviders?.length ? <p className="muted small">{r.unavailableProviders.map((p) => ({ spotify: "Spotify", soundcloud: "SoundCloud", youtube: "YouTube" })[p] ?? p).join(" and ")} search isn't responding right now, so these results come from the others.</p> : null}
-          {kind === "video" ? <p className="muted small">YouTube results play and save as videos. SoundCloud and Spotify have no video, so theirs play as audio.</p> : null}
           {r.kind === "search_results" && new Set(r.candidates.map(platformFor)).size > 1 ? <ProviderFilter resolution={r} value={provider} onChange={setProvider} /> : null}
           {playlist ? (
             <>
@@ -567,6 +560,17 @@ export function ExternalSearch({ query }: { query: string }) {
                     {stats.waiting ? <li className="waiting"><b>{stats.waiting}</b> to go</li> : null}
                   </ul>
                   <div className="import-actions">
+                    {/* A YouTube playlist is saved as songs or as videos, chosen here beside its Save (Spotify and SoundCloud have no videos). */}
+                    {isAudioOnlySource(query) ? null : (
+                      <div className="segmented sm save-as" role="group" aria-label="Save as">
+                        {(["audio", "video"] as const).map((k) => (
+                          <button key={k} type="button" className={kind === k ? "on" : ""} aria-pressed={kind === k} disabled={busy} onClick={() => setKind(k)}>
+                            <Icon name={k === "audio" ? "music" : "video"} size={14} />
+                            {k === "audio" ? "Songs" : "Videos"}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <button type="button" className="text-btn" disabled={fixedSelection || (selected.length === downloadable(r).filter((i) => !ownedAt(i)).length && stats.waitingTicked === stats.waiting)} onClick={() => setTicks({ mode: "all", chosen: {} })}>Select all</button>
                     <button type="button" className="text-btn" disabled={fixedSelection || (!selected.length && !stats.waitingTicked)} onClick={() => setTicks({ mode: "none", chosen: {} })}>Clear</button>
                     {savingHere ? (
@@ -586,7 +590,7 @@ export function ExternalSearch({ query }: { query: string }) {
                         onClick={save}
                         title={matching ? "Saves the songs found so far, then each one as it's found, even if you leave this page." : undefined}
                       >
-                        {`Save ${countSongs(toSave)}`}
+                        {`Save ${kind === "video" ? `${toSave} video${toSave === 1 ? "" : "s"}` : countSongs(toSave)}`}
                       </button>
                     ) : savedPlaylist ? (
                       <button type="button" className="btn primary" onClick={() => navigate({ name: "playlist", id: savedPlaylist })}>Open playlist</button>
@@ -693,12 +697,15 @@ interface ResultProps {
   /** The library song this playlist row already is. */
   owned?: string;
   featured: boolean;
+  /** Its Save offers a video as well as a song (a YouTube video). */
+  savesVideo: boolean;
   busy: boolean;
   selected: boolean;
   onSelect: () => void;
   onPlay: () => void;
   onMenu: (e: MouseEvent) => void;
-  onSave: () => void;
+  /** Saves it as a song ("audio") or as a video. */
+  onSave: (as: MediaKind) => void;
   /** A playlist row's element id, to scroll to it. */
   rowId?: string;
 }
@@ -785,10 +792,13 @@ function ImportStatus({ matching, toGo, saving, outcome, offerOpen }: {
 }
 
 /** One search result. YouTube shows video thumbnails and channels; SoundCloud leads with the uploader. */
-function OnlineResult({ candidate: c, kind, playlist, owned, featured, busy, selected, onSelect, onPlay, onMenu, onSave, rowId }: ResultProps) {
+function OnlineResult({ candidate: c, kind, playlist, owned, featured, savesVideo, busy, selected, onSelect, onPlay, onMenu, onSave, rowId }: ResultProps) {
   // Your saved copy, when you have this result (it's what plays).
-  const found = useStore((s) => ownedIndex(s).find({ sources: candidateSources(c) })[0]);
+  const copies = useStore((s) => ownedIndex(s).find({ sources: candidateSources(c) }).map((id) => `${id}|${s.tracks[id]?.kind ?? ""}`).join(" "));
+  const found = copies ? copies.split(" ")[0].split("|")[0] : undefined;
   const mine = owned ?? found;
+  // Which ways it's already saved: that half of its Save says so instead.
+  const savedAs = { audio: copies.includes("|audio"), video: copies.includes("|video") };
   const id = mine ?? streamTrackId(keyFor(c, kind));
   const active = useStore((s) => s.currentId === id);
   const playing = useStore((s) => s.isPlaying) && active;
@@ -902,14 +912,33 @@ function OnlineResult({ candidate: c, kind, playlist, owned, featured, busy, sel
       </div>
       <div className="online-actions">
         {source ? <a className="icon-btn sm" href={source} target="_blank" rel="noreferrer" aria-label={`Open source for ${title}`} title="Open source"><Icon name="link" size={17} /></a> : null}
-        {!playlist ? (
-          <button type="button" className="btn sm" disabled={busy || !isDownloadable(c)} onClick={onSave} aria-label={`Save ${title}${kind === "video" ? " video" : ""}`}>
-            <Icon name="plus" size={16} />
-            Save{kind === "video" ? " video" : ""}
-          </button>
-        ) : null}
+        {playlist ? null : savesVideo ? (
+          // A YouTube video: saved as a song or as a video, both a click away, so the choice is made when saving.
+          <div className="save-pair" role="group" aria-label={`Save ${title}`}>
+            <SaveButton as="audio" saved={savedAs.audio} disabled={busy || !isDownloadable(c)} title={title} onSave={onSave} />
+            <SaveButton as="video" saved={savedAs.video} disabled={busy || !isDownloadable(c)} title={title} onSave={onSave} />
+          </div>
+        ) : (
+          <SaveButton saved={savedAs.audio} disabled={busy || !isDownloadable(c)} title={title} onSave={onSave} />
+        )}
       </div>
     </article>
+  );
+}
+
+/**
+ * A result's Save: as a song or as a video (`as`, one half of a YouTube video's pair), or just Save. A copy already
+ * saved that way shows as saved.
+ */
+function SaveButton({ as, saved, disabled, title, onSave }: { as?: MediaKind; saved: boolean; disabled: boolean; title: string; onSave: (as: MediaKind) => void }) {
+  const noun = as === "video" ? "video" : "song";
+  const label = saved ? `${title} is saved as a ${noun}` : as ? `Save ${title} as a ${noun}` : `Save ${title}`;
+  return (
+    <button type="button" className={`btn sm${saved ? " saved" : ""}`} disabled={disabled || saved} onClick={() => onSave(as ?? "audio")} aria-label={label} title={as === "video" ? "Picture and sound" : as ? "Audio only" : undefined}>
+      <Icon name={saved ? "check" : as === "video" ? "video" : as ? "music" : "plus"} size={16} />
+      {/* A narrow page drops the verb: "Song" and "Video" stay. */}
+      {as ? <span><span className="save-verb">{saved ? "Saved" : "Save"} </span><span className="save-noun">{noun}</span></span> : saved ? "Saved" : "Save"}
+    </button>
   );
 }
 

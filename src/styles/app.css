@@ -507,6 +507,23 @@ select.input option, .select select option { background: var(--panel-solid); }
 .online-review { font-size: 12px; color: var(--text-2); line-height: 1.5; overflow-wrap: anywhere; }
 .online-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .online-actions .btn { border-radius: 999px; }
+/* A YouTube video's Save: as a song or as a video, two halves of one pill, neither ahead of the other. */
+.save-pair { display: inline-flex; max-width: 100%; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); overflow: hidden; }
+.online-song.youtube .online-actions { flex-wrap: wrap; }
+.online-actions .save-pair .btn { border: 0; border-radius: 0; background: transparent; padding: 0 12px; }
+.online-actions .save-pair .btn + .btn { border-left: 1px solid var(--line); }
+.online-actions .save-pair .btn:hover:not(:disabled) { background: var(--press); }
+.save-pair .btn:active:not(:disabled) { transform: none; background: var(--press); }
+/* Already saved that way: it says so, rather than looking switched off. */
+.online-actions .btn.saved:disabled { opacity: 1; color: var(--text-2); }
+.online-actions .btn.saved svg { color: var(--success); }
+/* A narrow page keeps both halves named, without the verb: "Song | Video". */
+@container main (max-width: 520px) {
+  .save-pair .save-verb { display: none; }
+  .save-pair .save-noun { text-transform: capitalize; }
+  .online-actions .save-pair .btn { padding: 0 11px; }
+}
+.save-as button:disabled { opacity: 0.45; cursor: default; }
 .online-play { position: relative; width: 48px; height: 48px; flex: none; overflow: hidden; border-radius: 6px; }
 .search-cover { width: 100%; height: 100%; display: grid; place-items: center; background: var(--raised); }
 .search-cover img { width: 100%; height: 100%; object-fit: cover; }
@@ -1814,6 +1831,16 @@ button.th:not(:disabled):hover { color: var(--text); }
 /* Saving a pasted list's songs: the playlist's name, under its toggle. */
 .save-songs-modal .set-row.save-name { flex-direction: column; align-items: stretch; gap: 6px; }
 .save-songs-modal .set-row.save-name small { font-size: 12.5px; }
+/* Checking a match made by name only: the song chosen above the upload that would be saved. */
+.match-pair { display: grid; margin: 0; border: 1px solid var(--line); border-radius: var(--r-lg); }
+.match-pair > div { display: grid; gap: 3px; padding: 11px 14px; min-width: 0; }
+.match-pair > div + div { border-top: 1px solid var(--line); }
+.match-pair dt { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.match-pair dd { margin: 0; display: grid; gap: 1px; min-width: 0; }
+.match-pair strong { font-weight: 650; overflow-wrap: anywhere; }
+.match-pair a { color: inherit; }
+.match-pair a:hover strong { color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; }
+.match-pair span { font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
 /* The songs a playlist save left out. */
 .missing-list { list-style: none; margin: 0; padding: 0; max-height: min(52vh, 420px); overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r-lg); }
 .missing-list li { display: grid; gap: 1px; padding: 9px 14px; }

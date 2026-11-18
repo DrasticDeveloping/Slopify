@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from "react";
-import { plural } from "../../lib/format";
+import { formatTime, plural } from "../../lib/format";
 import { closeModal, navigate, toast } from "../../state/actions";
-import { startPlaylistSave } from "../../state/importer";
-import { useStore, type ImportMissing } from "../../state/store";
+import { answerMatchCheck, listenToMatch, matchCheckTrack, startPlaylistSave } from "../../state/importer";
+import { useStore, type ImportMissing, type Modal } from "../../state/store";
 import { Icon } from "../Icon";
 import { Shell, Toggle } from "./Shell";
 
@@ -12,7 +12,10 @@ import { Shell, Toggle } from "./Shell";
  * when asked (while matching, more are added as they're found). `owned`: the playlist's songs already in the
  * library, which a new playlist can include in their places.
  */
-export function SavePlaylistModal({ count, owned, name: suggested, matching }: { count: number; owned: number; name: string; matching: boolean }) {
+export function SavePlaylistModal({ count, owned, name: suggested, matching, video = false }: { count: number; owned: number; name: string; matching: boolean; video?: boolean }) {
+  // Saved as chosen beside the list's Save button: songs, or videos.
+  const noun = video ? "video" : "song";
+  const nouns = `${noun}s`;
   const [download, setDownload] = useState(true);
   const [makePlaylist, setMakePlaylist] = useState(true);
   const [name, setName] = useState(suggested);
@@ -23,8 +26,8 @@ export function SavePlaylistModal({ count, owned, name: suggested, matching }: {
   const onlyPlaylist = count === 0 && !matching;
   // Streaming the songs only makes sense in a playlist.
   const playlistNeeded = onlyPlaylist || !download;
-  const title = onlyPlaylist ? "Make a playlist" : download ? `Save ${plural(count, "song")}` : `Make a playlist of ${plural(count, "song")}`;
-  const subtitle = !matching ? undefined : download ? "Songs still being found are saved as they're found." : "Songs still being found are added as they're found.";
+  const title = onlyPlaylist ? "Make a playlist" : download ? `Save ${plural(count, noun)}` : `Make a playlist of ${plural(count, noun)}`;
+  const subtitle = !matching ? undefined : download ? `${video ? "Videos" : "Songs"} still being found are saved as they're found.` : `${video ? "Videos" : "Songs"} still being found are added as they're found.`;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -39,10 +42,10 @@ export function SavePlaylistModal({ count, owned, name: suggested, matching }: {
             <div className="set-row">
               <span className="set-icon"><Icon name="download" size={19} /></span>
               <span className="set-copy">
-                <strong>Download the songs</strong>
+                <strong>Download the {nouns}</strong>
                 <small>{download ? "Kept in your library, to play anywhere and offline." : "Not downloaded: the playlist streams them from YouTube and SoundCloud."}</small>
               </span>
-              <Toggle checked={download} onChange={setDownload} label="Download the songs" />
+              <Toggle checked={download} onChange={setDownload} label={`Download the ${nouns}`} />
             </div>
           )}
           {onlyPlaylist ? null : (
@@ -51,7 +54,7 @@ export function SavePlaylistModal({ count, owned, name: suggested, matching }: {
               <span className="set-icon"><Icon name="playlists" size={19} /></span>
               <span className="set-copy">
                 <strong>Make a playlist</strong>
-                <small>{download ? "With the saved songs, in the list's order." : "The songs stream from it, in the list's order."}</small>
+                <small>{download ? `With the saved ${nouns}, in the list's order.` : `The ${nouns} stream from it, in the list's order.`}</small>
               </span>
               <Toggle checked={makePlaylist || !download} onChange={setMakePlaylist} label="Make a playlist" disabled={!download} />
             </div>
@@ -63,16 +66,16 @@ export function SavePlaylistModal({ count, owned, name: suggested, matching }: {
                   Playlist name
                   <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={suggested} maxLength={80} data-autofocus />
                 </span>
-                {existing ? <small className="muted">You already have this playlist: the songs are added to it.</small> : null}
+                {existing ? <small className="muted">You already have this playlist: the {nouns} are added to it.</small> : null}
               </label>
               {owned && !onlyPlaylist ? (
                 <div className="set-row">
                   <span className="set-icon"><Icon name="library" size={19} /></span>
                   <span className="set-copy">
-                    <strong>Include songs you already have</strong>
-                    <small>{plural(owned, "song")} of this list {owned === 1 ? "is" : "are"} already in your library.</small>
+                    <strong>Include {nouns} you already have</strong>
+                    <small>{plural(owned, noun)} of this list {owned === 1 ? "is" : "are"} already in your library.</small>
                   </span>
-                  <Toggle checked={includeOwned} onChange={setIncludeOwned} label="Include songs you already have" />
+                  <Toggle checked={includeOwned} onChange={setIncludeOwned} label={`Include ${nouns} you already have`} />
                 </div>
               ) : null}
             </>
@@ -83,6 +86,54 @@ export function SavePlaylistModal({ count, owned, name: suggested, matching }: {
           <button type="submit" className="btn primary">{onlyPlaylist || !download ? "Make playlist" : title}</button>
         </div>
       </form>
+    </Shell>
+  );
+}
+
+/**
+ * Before saving a song matched to its upload by name only (the upload may be another recording): what was asked for,
+ * what would be saved, a way to listen, and Save. Shown over the page the save started on; closing it saves nothing.
+ */
+export function CheckMatchModal({ song, artist, upload, uploader, duration, provider, url, canListen, video }: Extract<Modal, { type: "checkMatch" }>) {
+  const playing = useStore((s) => s.isPlaying && s.currentId !== null && s.currentId === matchCheckTrack());
+  return (
+    <Shell
+      title="Check this match"
+      subtitle={`Found on ${provider} by name only, so it may be a different recording. Listen first if you're not sure.`}
+      icon="help"
+      size="sm"
+      className="check-match-modal"
+      footer={
+        <>
+          {canListen ? (
+            // Listening first is the point of the dialog, so it has focus (Enter doesn't save unchecked).
+            <button type="button" className="btn ghost" onClick={listenToMatch} data-autofocus>
+              <Icon name={playing ? "pause" : "play"} size={16} />
+              {playing ? "Pause" : "Listen"}
+            </button>
+          ) : null}
+          <span className="spacer" />
+          <button type="button" className="btn ghost" onClick={closeModal} data-autofocus={canListen ? undefined : true}>Cancel</button>
+          <button type="button" className="btn primary" onClick={() => answerMatchCheck(true)}>
+            <Icon name="download" size={16} />
+            {video ? "Save video" : "Save song"}
+          </button>
+        </>
+      }
+    >
+      <dl className="match-pair">
+        <div>
+          <dt>You chose</dt>
+          <dd><strong>{song}</strong>{artist ? <span>{artist}</span> : null}</dd>
+        </div>
+        <div>
+          <dt>Saves this upload</dt>
+          <dd>
+            {url ? <a href={url} target="_blank" rel="noreferrer"><strong>{upload}</strong></a> : <strong>{upload}</strong>}
+            <span>{[uploader, duration ? formatTime(duration) : "", provider].filter(Boolean).join(" · ")}</span>
+          </dd>
+        </div>
+      </dl>
     </Shell>
   );
 }

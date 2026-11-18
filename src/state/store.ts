@@ -41,7 +41,9 @@ export type Modal =
   | { type: "sharePlaylist"; id: string }
   /** The desktop app's waiting update: what's changed in it (UpdateBanner.tsx). */
   | { type: "whatsNew" }
-  | { type: "savePlaylist"; count: number; owned: number; name: string; matching: boolean }
+  | { type: "savePlaylist"; count: number; owned: number; name: string; matching: boolean; video?: boolean }
+  /** Before saving a song matched to an upload by name only: the song asked for, and the upload that would be saved (importer.ts confirmMatch). */
+  | { type: "checkMatch"; check: number; song: string; artist: string; upload: string; uploader: string; duration: number; provider: string; url: string; canListen: boolean; video: boolean }
   | { type: "importSummary"; saved: number; playlistId: string | null; playlistName: string | null; missing: ImportMissing[]; streamed?: boolean };
 
 /** A playlist song a save left out: never matched to an upload, or matched but not downloadable. */

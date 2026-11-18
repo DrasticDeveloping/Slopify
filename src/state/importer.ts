@@ -447,7 +447,14 @@ export async function searchMore(more: string, mediaKind: MediaKind, signal: Abo
 }
 
 /** How an added suggestion carries on once it is in the library: played straight away (the default), and/or handed to `done`. */
-interface DiscoveryOptions { play?: boolean; done?: (libraryId: string) => void; /** Save it as a video (a YouTube video played as one). */ video?: boolean }
+interface DiscoveryOptions {
+  play?: boolean;
+  done?: (libraryId: string) => void;
+  /** Save it as a video (a YouTube video played as one). */
+  video?: boolean;
+  /** The streamed song it is, which the "Check this match" dialog's Listen plays. */
+  streamId?: string;
+}
 
 /** The suggestion being reviewed or added, and why it was suggested. */
 let discovery: ({ candidate: Candidate; kind: ReasonKind } & DiscoveryOptions) | null = null;
@@ -458,13 +465,107 @@ function importBusy() {
   return true;
 }
 
-/** Shows just this suggestion in Search, to listen to it or check its source before saving. */
-export function reviewDiscoveredSong(candidate: Candidate, kind: ReasonKind, options: DiscoveryOptions = {}) {
-  if (!isDownloadable(candidate) || importBusy()) return;
-  discovery = { candidate, kind, ...options };
-  prepareImportDialog();
-  navigate({ name: "search", q: state.source });
+/** How long a closing dialog takes to leave (ModalHost keeps it 180 ms to animate out, then focus goes back). */
+const MODAL_GONE_MS = 240;
+/** Counts match checks, so each one's dialog is told apart from an older one's. */
+let matchChecks = 0;
+/** When the last dialog closed, so a match check opens only once it has gone (see confirmMatch). */
+let modalClosedAt = 0;
+let modalWasOpen = Boolean(getState().modal);
+subscribeApp(() => {
+  const open = Boolean(getState().modal);
+  if (modalWasOpen && !open) modalClosedAt = Date.now();
+  modalWasOpen = open;
+});
+
+/** The match the "Check this match" dialog is asking about, and how to answer it. */
+let matchCheck: { candidate: Candidate; kind: ReasonKind; streamId?: string; answer: (save: boolean) => void } | null = null;
+
+/**
+ * Asks, over whatever is on screen, whether to save a song matched to its upload by name only (`requiresReview`):
+ * the upload may be another recording. Answers true when the user chooses Save; closing the dialog answers false.
+ * `streamId`: the streamed song this is, which Listen plays (else Listen streams the upload itself).
+ */
+function confirmMatch(candidate: Candidate, kind: ReasonKind, streamId?: string, video = false): Promise<boolean> {
+  matchCheck?.answer(false);
+  const meta = candidate.importMetadata;
+  return new Promise<boolean>((resolve) => {
+    let opened = false;
+    const check = { candidate, kind, streamId, answer: (save: boolean) => {
+      if (matchCheck !== check) return;
+      matchCheck = null;
+      stop();
+      resolve(save);
+    } };
+    matchCheck = check;
+    const token = ++matchChecks;
+    const open = () => openModal({
+      type: "checkMatch",
+      check: token,
+      song: meta?.title || candidate.title || "This song",
+      artist: meta?.artist || "",
+      upload: candidate.title || candidate.sourceURL || "",
+      uploader: candidate.artist || "",
+      duration: candidate.durationSeconds || meta?.durationSeconds || 0,
+      provider: candidate.sourceProvider === "soundcloud" ? "SoundCloud" : "YouTube",
+      url: candidate.sourcePageURL || candidate.sourceURL || "",
+      canListen: canStream(candidate),
+      video,
+    });
+    // It waits for any dialog already open (a queued save mustn't close one being used), and for that dialog to be
+    // gone and have handed focus back, so closing this one returns focus to the page. Once it's shown, any other way
+    // it goes (Cancel, Escape, a click outside, another dialog) saves nothing.
+    let later = 0;
+    const openWhenClear = () => {
+      // Once scheduled, other changes in the app don't put it off again.
+      if (later) return;
+      later = window.setTimeout(() => {
+        later = 0;
+        if (!getState().modal && matchCheck === check && !opened) open();
+      }, Math.max(0, modalClosedAt + MODAL_GONE_MS - Date.now()));
+    };
+    const stop = subscribeApp(() => {
+      const modal = getState().modal;
+      // (Its own dialog: not an older check's still on screen.)
+      if (modal?.type === "checkMatch" && modal.check === token) opened = true;
+      else if (opened) check.answer(false);
+      else if (!modal && matchCheck === check) openWhenClear();
+      // An older check's dialog still showing is replaced by this one.
+      else if (modal?.type === "checkMatch" && matchCheck === check) open();
+    });
+    // An older check's dialog on screen is replaced straight away; otherwise it opens once the last dialog has gone.
+    if (getState().modal?.type === "checkMatch") open();
+    else if (!getState().modal) openWhenClear();
+  });
 }
+
+/** The "Check this match" dialog's answer: closes it, and saves the song if `save`. */
+export function answerMatchCheck(save: boolean) {
+  const check = matchCheck;
+  check?.answer(save);
+  closeModal();
+}
+
+/** Plays (or pauses) the upload the "Check this match" dialog is asking about, as a streamed song. */
+export function listenToMatch() {
+  const check = matchCheck;
+  if (!check || !canStream(check.candidate)) return;
+  let id = check.streamId && getState().tracks[check.streamId] ? check.streamId : undefined;
+  if (!id) {
+    const meta = check.candidate.importMetadata;
+    const key = `check:${check.candidate.sourceURL}`;
+    registerStreams([{ key, candidate: check.candidate, title: meta?.title || check.candidate.title || "Untitled", artist: meta?.artist || check.candidate.artist || "Unknown artist", artwork: meta?.artworkURL || check.candidate.thumbnailURL || undefined, kind: check.kind, video: false }]);
+    id = streamTrackId(key);
+  }
+  if (getState().currentId === id) return togglePlay();
+  playList([id], id, { label: "Checking a match", route: getState().route });
+}
+
+/** The streamed song a "Check this match" dialog's Listen plays: whether it is playing now. */
+export const matchCheckTrack = () => {
+  const check = matchCheck;
+  return check ? (check.streamId && getState().tracks[check.streamId] ? check.streamId : streamTrackId(`check:${check.candidate.sourceURL}`)) : null;
+};
 
 /**
  * A playlist still being matched, for a save that keeps going: `next` waits for more songs to save (matched and
@@ -497,7 +598,7 @@ let saveStarter: ((options: PlaylistSaveOptions) => void) | null = null;
  * Asks how to save a playlist's songs (the Save dialog: whether to make a playlist, and its name), then `start`s the
  * save with the answer. Closing the dialog saves nothing.
  */
-export function askToSavePlaylist(details: { count: number; owned: number; name: string; matching: boolean }, start: (options: PlaylistSaveOptions) => void) {
+export function askToSavePlaylist(details: { count: number; owned: number; name: string; matching: boolean; video?: boolean }, start: (options: PlaylistSaveOptions) => void) {
   if (importBusy()) return;
   saveStarter = start;
   openModal({ type: "savePlaylist", ...details });
@@ -535,10 +636,17 @@ export async function saveSearchResults(source: string, resolution: Resolution, 
   await confirmImport();
 }
 
-/** Downloads a suggestion into the library and plays it. Matches that need a source check go through review instead. */
+/**
+ * Downloads a suggestion into the library and plays it. A match made by name only is checked first, in a dialog
+ * over the current page; cancelling it saves nothing.
+ */
 export async function addDiscoveredSong(candidate: Candidate, kind: ReasonKind, options: DiscoveryOptions = {}) {
-  if (!isDownloadable(candidate)) return;
-  if (candidate.requiresReview) return reviewDiscoveredSong(candidate, kind, options);
+  if (!isDownloadable(candidate) || importBusy()) return;
+  if (candidate.requiresReview) {
+    if (!(await confirmMatch(candidate, kind, options.streamId, options.video))) return;
+    // Another save may have started while the dialog was open: this one waits for it.
+    await whenImportIdle();
+  }
   if (importBusy()) return;
   discovery = { candidate, kind, ...options };
   prepareImportDialog();
@@ -571,7 +679,7 @@ const streamSources = new Map<string, { candidate: Candidate; kind: ReasonKind; 
  * A result that is a YouTube video (not a YouTube Music track, and not a match
  * found for a Spotify or SoundCloud song), so it has a picture worth streaming.
  */
-const isYouTubeVideo = (c: Candidate) =>
+export const isYouTubeVideo = (c: Candidate) =>
   c.sourceProvider === "youtube" && (!c.searchProvider || c.searchProvider === "youtube") && c.importMetadata?.provider !== "spotify" && c.importMetadata?.provider !== "soundcloud";
 
 export const streamTrackId = (key: string) => `stream_${hashString(key).toString(36)}`;
@@ -690,7 +798,7 @@ function keptStream(id: string): StreamSong | null {
     artist: c.artist,
     durationSeconds: c.durationSeconds,
     thumbnailURL: c.thumbnailURL,
-    // How sure the match is, so saving it later still asks for a look where it should (reviewDiscoveredSong).
+    // How sure the match is, so saving it later still asks for a look where it should (confirmMatch).
     score: c.score,
     confidence: c.confidence,
     requiresReview: c.requiresReview,
@@ -918,64 +1026,50 @@ function whenImportIdle() {
   });
 }
 
-/**
- * Resolves once the user has finished reviewing `candidate` in Search: they saved
- * it (and the save finished), or left that search, which abandons the review.
- */
-function whenReviewFinished(candidate: Candidate) {
-  return new Promise<void>((resolve) => {
-    const check = () => {
-      const route = getState().route;
-      const reviewing = discovery?.candidate === candidate;
-      if (reviewing && (route.name !== "search" || route.q !== state.source)) discovery = null;
-      if (discovery?.candidate === candidate || state.busy === "import") return;
-      stopApp();
-      stopImport();
-      resolve();
-    };
-    const stopApp = subscribeApp(check);
-    const stopImport = subscribe(check);
-    check();
-  });
-}
-
 /** Saves of streamed songs, run one after another so none is turned away while another imports. */
 let saving: Promise<void> = Promise.resolve();
 /** Songs waiting to be saved, each with everything to do once it is in the library (join a playlist, get liked…). */
 const queuedSaves = new Map<string, Array<(libraryId: string) => void>>();
 
-/** Adds a streamed song to the library without restarting playback, then hands `then` its library id. */
-function saveStreamToLibrary(id: string, then?: (libraryId: string) => void) {
+/** Whether a streamed song can be saved as a video too (a YouTube video, not a song matched to one): its menu offers both. */
+function streamSavesVideo(id: string) {
+  const source = streamSources.get(id);
+  return Boolean(source && source.candidate.sourceProvider !== "soundcloud" && (source.saveVideo || isYouTubeVideo(source.candidate)));
+}
+
+/**
+ * Adds a streamed song to the library without restarting playback, then hands `then` its library id. `video`
+ * saves it as a video (or, false, as a song) whatever it was found as; left out, it's saved as it was found.
+ */
+function saveStreamToLibrary(id: string, then?: (libraryId: string) => void, { video }: { video?: boolean } = {}) {
   const source = streamSources.get(id);
   if (!source) return;
-  // Already queued: this request waits for the same import instead of starting another.
-  const waiting = queuedSaves.get(id);
+  const asVideo = video ?? source.saveVideo;
+  // Already queued (as the same kind): this request waits for the same import instead of starting another.
+  const queueKey = `${id}|${asVideo ? "video" : "audio"}`;
+  const waiting = queuedSaves.get(queueKey);
   if (waiting) {
     if (then) waiting.push(then);
     return;
   }
   if (state.busy === "import" || queuedSaves.size) toast(`“${source.candidate.importMetadata?.title || source.candidate.title || "This song"}” will be added next`);
-  queuedSaves.set(id, then ? [then] : []);
+  queuedSaves.set(queueKey, then ? [then] : []);
   const done = (libraryId: string) => {
     linkSavedStream(id, libraryId);
-    for (const next of queuedSaves.get(id) ?? []) next(libraryId);
+    for (const next of queuedSaves.get(queueKey) ?? []) next(libraryId);
   };
   saving = saving
     .then(whenImportIdle)
-    .then(async () => {
-      if (source.candidate.requiresReview) {
-        reviewDiscoveredSong(source.candidate, source.kind, { play: false, done, video: source.saveVideo });
-        await whenReviewFinished(source.candidate);
-        await whenImportIdle();
-      } else await addDiscoveredSong(source.candidate, source.kind, { play: false, done, video: source.saveVideo });
-    })
+    // A match made by name only is checked first, in a dialog over the current page (see addDiscoveredSong).
+    .then(() => addDiscoveredSong(source.candidate, source.kind, { play: false, done, video: asVideo, streamId: id }))
     .catch(() => undefined)
-    .finally(() => queuedSaves.delete(id));
+    .finally(() => queuedSaves.delete(queueKey));
 }
 
 connectStreams({
   source: streamSource,
   save: saveStreamToLibrary,
+  savesVideo: streamSavesVideo,
   dismiss: (id) => {
     const source = streamSources.get(id);
     if (source) hideDiscovery(source.key, source.kind);
@@ -1346,7 +1440,8 @@ export function prepareImportDialog() {
     // Opened from a discovery card: the dialog shows only that suggestion, already selected.
     const { candidate } = discovery;
     const kind: MediaKind = discovery.video ? "video" : "audio";
-    if (state.resolution?.candidates[0] === candidate) return;
+    // Already set up for this song, saved this way (a song and its video are saved separately).
+    if (state.resolution?.candidates[0] === candidate && state.resolution.mediaKind === kind && state.selected[0] === 0) return;
     stopPreview({ resume: true });
     resolveController?.abort();
     resolveController = null;
