@@ -96,6 +96,30 @@ Each release's notes list the commits since the previous release on the same cha
 
 The app's update notification reads these lists. **What's new** (desktop/changelog.cjs) shows every change between the installed version and the update, newest build first, with the builds grouped. It uses one request to GitHub's releases API when an update is found. A nightly update lists nightlies only and a stable update lists stable releases only, because each kind's notes only cover changes since the last release of that kind. When the notes have no list, or GitHub can't be reached, the notification links to the release page instead.
 
+### Updates for one app only
+
+Each release's notes also record which apps its changes are for: the Windows app, the phone app, both, or neither. Each app only offers the updates that change it, so a nightly with just a phone fix doesn't show the update notification on PCs. The Windows app passes over a release that doesn't change it and takes the newest one before it that does, or stays as it is once it reaches its own version (on Nightly it never goes back to an older build for this). What's new leaves out the builds it passed over. The record is a hidden `<!-- Platforms: mobile -->` comment (`desktop`, `mobile`, both, or `none`), with a line saying so when it isn't both. Releases without one, including every release from before it, count for both apps.
+
+`scripts/publish-release.mjs` works it out from each change on the branch since the previous release on the same channel: a pull request's merge counts as its whole change, and a squashed or direct commit as itself. By default the files decide (desktop/platforms.cjs):
+
+| Files | App |
+| --- | --- |
+| `ios/`, `mobile/`, `capacitor.config.json`, `scripts/ios-*` | Phone |
+| `desktop/`, `electron-builder.json`, `scripts/package-windows.mjs`, `scripts/run-desktop.mjs` | Windows |
+| `docs/`, `cloud/`, `.github/`, `work/`, Markdown files, `scripts/test-*`, `scripts/publish-release.mjs` | Neither |
+| Everything else (`src/`, `server/`, `package.json`, …) | Both |
+
+Most changes for one app are in shared code (`src/`), so a pull request can say which app it's for with a label: **mobile only** or **desktop only**. **Without the label, a phone change in `src/` counts for both apps and PCs are offered it, as before.** The label wins over its files. Add it before the release that includes the pull request is published (a nightly can follow a merge within the hour); the notes are written then. The pull request is found from its merge commit ("Merge pull request #N") or a squashed commit ending "(#N)"; a rebase-merged one goes by its files. If GitHub can't list every change's files (more than 300 in one, say), the release counts for both.
+
+To correct a release that's already out, edit its notes on GitHub and change the hidden comment, for example to `<!-- Platforms: mobile -->`. The Windows app reads the newest releases' notes at every check, so it takes effect within 10 minutes (an update it has already downloaded still installs); for a release further back than the newest 100, from the next release or restart. The labels are created once with:
+
+```powershell
+gh label create "mobile only" --repo DrasticDeveloping/Slopify --color 1d76db --description "Only changes the phone app: PCs don't offer the update"
+gh label create "desktop only" --repo DrasticDeveloping/Slopify --color 5319e7 --description "Only changes the Windows app"
+```
+
+Releases are still built and published as before, with Windows downloads, whichever apps they change. The phone app doesn't check for updates yet; `changesPlatform(notes, "mobile")` in desktop/platforms.cjs is what it would use.
+
 The workflow needs the work committed and pushed. Manual runs default to publishing disabled and retain a downloadable `slopify-windows-nightly` or `slopify-windows-stable` artifact for 14 days. GitHub-hosted Actions runners are free for this public repository.
 
 Nightlies are off until you switch them on, so nothing is published on a schedule before you're ready. To switch them on, set the repository variable (**Settings → Secrets and variables → Actions → Variables**, or the command below); to pause them, set it to anything else or delete it:

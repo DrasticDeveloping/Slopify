@@ -250,3 +250,24 @@ test("A change hidden by an older notes' revert line comes back when a later bui
   ]));
   assert.deepEqual(texts(log), [["Later"], ["Feature"]]);
 });
+
+test("Builds for the phone app only aren't in the Windows app's What's new, but their reverts still apply", () => {
+  const phone = (lines, extra = []) => `<!-- Platforms: mobile -->\n${notes("x", lines, extra)}`;
+  const log = changelogOf(nightlies([
+    notes("x", ["- Installed (#1) 0000001"]),
+    notes("x", ["- Windows fix (#2) aaaaaaa", "- Shared thing (#3) bbbbbbb"]),
+    phone(["- Phone swipe (#4) ccccccc"], ["", "<!-- Reverted: bbbbbbb -->"]),
+    `<!-- Platforms: desktop mobile -->\n${notes("x", ["- Both (#5) ddddddd"])}`,
+  ]));
+  assert.deepEqual(texts(log), [["Both"], ["Windows fix"]]);
+  assert.equal(log.total, 2);
+  assert.equal(log.complete, true);
+  // The phone app's What's new is the other way round.
+  const releases = nightlies([
+    notes("x", ["- Installed (#1) 0000001"]),
+    `<!-- Platforms: desktop -->\n${notes("x", ["- Windows fix (#2) aaaaaaa"])}`,
+    phone(["- Phone swipe (#4) ccccccc"]),
+  ]);
+  const mobile = buildChangelog(releases, { current: releases[0].tag_name.slice(1), target: releases.at(-1).tag_name.slice(1), owner: "o", repo: "r", platform: "mobile" });
+  assert.deepEqual(texts(mobile), [["Phone swipe"]]);
+});

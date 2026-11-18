@@ -1,4 +1,5 @@
 const semver = require("semver");
+const { changesPlatform } = require("./platforms.cjs");
 
 /*
  * What's new in an update: the changes listed in the notes of every GitHub release
@@ -6,7 +7,8 @@ const semver = require("semver");
  * from scripts/publish-release.mjs: a "### What's changed since …" heading, then one
  * line per commit ("- Subject (#45) abc1234"), sometimes "- …and 12 more", then a
  * full-changelog link. Releases whose notes have no such list are left out. Reverts, and
- * what they reverted, are left out of both the notes and the list here.
+ * what they reverted, are left out of both the notes and the list here. So are builds that
+ * don't change this app (desktop/platforms.cjs), which it never offered.
  */
 
 /** Builds shown at most; older ones are counted as left out. */
@@ -133,9 +135,10 @@ function dropReverted(builds) {
  * The changelog from `current` (installed) to `target`, from GitHub's releases list
  * (any order). Null when the target isn't listed or its own notes have no change list
  * (then the release page is the place to look). `complete` is false when some builds in
- * between couldn't be listed (too many, or notes without a list).
+ * between couldn't be listed (too many, or notes without a list). Builds in between that
+ * don't change `platform`'s app aren't shown.
  */
-function buildChangelog(releases, { current, target, owner, repo }) {
+function buildChangelog(releases, { current, target, owner, repo, platform = "desktop" }) {
   const usable = releases
     .filter((r) => !r.draft && r.published_at && semver.valid(r.tag_name) && (!semver.prerelease(r.tag_name) || isNightly(r.tag_name)))
     .map((r) => ({ version: semver.clean(r.tag_name), tag: r.tag_name, date: r.published_at, body: r.body }))
@@ -158,10 +161,13 @@ function buildChangelog(releases, { current, target, owner, repo }) {
   for (const r of older.slice(0, MAX_BUILDS - 1)) {
     const { listed: hasList, ...notes } = parseNotes(r.body);
     if (!hasList) { complete = false; continue; }
-    listed.push({ version: r.version, date: r.date, nightly: isNightly(r.version), ...notes });
+    listed.push({ version: r.version, date: r.date, nightly: isNightly(r.version), skipped: !changesPlatform(r.body, platform), ...notes });
   }
   // An older build left with nothing once reverts are gone isn't shown; the update itself always is.
-  const builds = dropReverted(listed).filter((b, i) => i === 0 || b.changes.length || b.more);
+  // Nor is one for the other app only. (Its reverts still apply first: they may undo changes listed here.)
+  const builds = dropReverted(listed)
+    .filter((b, i) => i === 0 || (!b.skipped && (b.changes.length || b.more)))
+    .map(({ skipped, ...build }) => build);
   const base = `https://github.com/${owner}/${repo}`;
   const targetTag = usable[top].tag;
   return {
@@ -182,13 +188,13 @@ function stampTime(version) {
 }
 
 /** Fetches and builds the changelog; null if GitHub can't be reached or doesn't list the update. */
-async function loadChangelog({ owner, repo, current, target, fetch }) {
+async function loadChangelog({ owner, repo, current, target, fetch, platform }) {
   const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases?per_page=60`, {
     headers: { accept: "application/vnd.github+json", "user-agent": "Slopify" },
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
-  return buildChangelog(await response.json(), { current, target, owner, repo });
+  return buildChangelog(await response.json(), { current, target, owner, repo, platform });
 }
 
 module.exports = { parseNotes, revertTarget, withoutReverts, buildChangelog, loadChangelog };
