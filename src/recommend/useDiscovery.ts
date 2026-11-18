@@ -72,8 +72,13 @@ function keep(id: string, entry: Kept) {
 export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, queries, limit = 30, withOwned = false }: Options = {}) {
   const tracks = useStore((s) => s.tracks);
   const hidden = useStore((s) => s.taste.hiddenDiscoveries);
+  const tasteRev = useStore((s) => s.taste.rev);
+  const tasteWide = !seedIds && !fixedSeeds && !queries;
+  // Suggestions from your taste before you have any (popular songs) give way as soon as you do.
+  const cold = useMemo(() => tasteWide && !discoverySeeds(getState()).artists.length, [tasteWide, tracks, tasteRev]);
   // The surface, whatever your taste is at the moment: its kept songs stand until Find more or they get old.
-  const id = JSON.stringify([scope, seedIds ?? null, queries ?? null, limit, withOwned, ...(fixedSeeds ? [fixedSeeds] : [])]);
+  const surface = JSON.stringify([scope, seedIds ?? null, queries ?? null, limit, withOwned, ...(fixedSeeds ? [fixedSeeds] : [])]);
+  const id = cold ? `${surface}|cold` : surface;
   const [edition, setEdition] = useState(() => keptFor(id)?.edition ?? 0);
   const [songs, setSongs] = useState<DiscoveredSong[]>(() => keptFor(id)?.songs ?? []);
   const [loading, setLoading] = useState(false);
@@ -83,17 +88,21 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
   const before = useRef<DiscoveredSong[]>([]);
   /** Find more asks for a search even when this edition is kept. */
   const wanted = useRef(-1);
+  /** A first taste: the popular songs stay on show until songs from it arrive. */
+  const keepShown = useRef(false);
 
   useEffect(() => {
     const hit = keptFor(id);
     const switched = shown.current.id !== id;
     if (switched) {
+      keepShown.current = shown.current.id === `${id}|cold`;
       shown.current = { id, keys: new Set(hit?.shown ?? []) };
       // A Find more asked for on the last surface isn't asked of this one.
       wanted.current = -1;
     }
     // Kept (and not asked to find more): shown as it was.
     if (hit && (switched || (hit.edition === edition && wanted.current !== edition))) {
+      keepShown.current = false;
       setSongs(hit.songs);
       setNote(hit.note);
       setLoading(false);
@@ -108,15 +117,23 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
 
     const controller = new AbortController();
     const live = () => !controller.signal.aborted;
+    /** The picks so far: what's shown, and kept, if the searches run out of time. */
+    let found: DiscoveredSong[] = [];
+    /** Found while the chart was down: shown, but not kept (the next visit tries again). */
+    let stopgap = false;
     const deadline = window.setTimeout(() => {
       controller.abort();
       setLoading(false);
-      setNote("Music searches took too long. Try again later.");
+      if (!found.length) return setNote("Music searches took too long. Try again later.");
+      wanted.current = -1;
+      if (!stopgap) keep(id, { songs: found, note: "", edition, shown: [...shown.current.keys], at: Date.now() });
     }, 90_000);
     // Each edition rotates which of the surface's songs lead the seeds.
     const seeds = fixedSeeds ?? (seedIds ? seedsForIds(seedIds, edition * 5) : discoverySeeds(getState()));
     setLoading(true);
-    setSongs([]);
+    const keeping = keepShown.current;
+    if (!keeping) setSongs([]);
+    keepShown.current = false;
     setNote("");
     discover({
       seeds,
@@ -128,11 +145,20 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
       withOwned,
       // A handful of suggestions doesn't need the full search budget.
       budget: limit <= 5 ? 12 : 48,
-      onSongs: (next) => live() && setSongs(next),
+      // Suggestions from your whole taste lean on popular songs while there's little of it.
+      popular: tasteWide ? 0 : undefined,
+      onSongs: (next, noChart) => {
+        if (!live() || (keeping && !next.length)) return;
+        found = next;
+        stopgap = noChart;
+        setSongs(next);
+      },
     })
       .then(
         (result) => {
           if (!live()) return;
+          // A first taste that found nothing leaves the popular songs up.
+          if (keeping && !result.songs.length) return setNote(result.note);
           const nothingNew = !result.songs.length && edition > 0 && before.current.length > 0;
           const next = nothingNew ? before.current : result.songs;
           // An outage isn't "nothing new": say the searches didn't work.
@@ -140,9 +166,10 @@ export function useDiscovery(scope: string, { seedIds, seeds: fixedSeeds, querie
           setSongs(next);
           setNote(nextNote);
           // Only a search that found something is kept: an empty one (even when the
-          // previous songs stay on screen) leaves the kept songs to age as before.
+          // previous songs stay on screen) leaves the kept songs to age as before. Neither is a stand-in
+          // for popular songs while the chart was down, so the next visit tries again.
           wanted.current = -1;
-          if (result.songs.length) {
+          if (result.songs.length && !result.noChart) {
             keep(id, { songs: result.songs, note: result.note, edition, shown: [...shown.current.keys], at: Date.now() });
           }
         },

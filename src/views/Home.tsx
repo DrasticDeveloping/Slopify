@@ -70,7 +70,7 @@ function FeaturedMix({ mix }: { mix: Mix }) {
             <Icon name={state.playing ? "pause" : "play"} size={22} />
             <span>{state.playing ? "Pause" : "Play"}</span>
           </button>
-          <button type="button" className="spot-context" onClick={open}>{ids.length ? plural(ids.length, "song") : "Open mix"}</button>
+          <button type="button" className="spot-context" onClick={open}>{ids.length ? plural(ids.length, "song") : mix.complete || mix.note ? "Open mix" : "Finding songs…"}</button>
         </div>
       </div>
     </div>
@@ -190,23 +190,34 @@ export function HomeView() {
       </div>
 
       {!recent.length ? (
-        <section className="panel home-empty" aria-labelledby="home-empty-title">
-          <div>
-            <strong id="home-empty-title">Start with some music</strong>
-            <ul className="home-steps">
-              <li><strong>Search</strong> YouTube, Spotify and SoundCloud, or <strong>paste a link</strong> to a song or a whole playlist.</li>
-              <li><strong>Play</strong> streams a song right away; <strong>Save</strong> keeps it in your library, on every device you sign in on.</li>
-              <li>Files from this device play until you reload{touch ? "" : " (or drop them anywhere on the window)"}.</li>
-              <li>Likes, saves and what you listen to shape your recommendations here.</li>
-            </ul>
-          </div>
-          <div className="home-empty-actions">
-            <button type="button" className="btn primary" onClick={() => findMusic()}>
-              <Icon name="search" size={18} />
-              Find music
+        <section className="home-start" aria-labelledby="home-start-title">
+          <h2 id="home-start-title">Start with some music</h2>
+          <div className="home-start-row">
+            <button type="button" className="home-start-search" onClick={() => findMusic()}>
+              <Icon name="search" size={20} />
+              <span className="home-start-prompt">Search for a song or artist, or paste a link</span>
+              <span className="home-start-sources">YouTube · Spotify · SoundCloud</span>
             </button>
-            <ChooseFiles />
+            <ChooseFiles className="btn home-start-files" label="Your files" note={false} />
           </div>
+          <p className="home-start-note">Links can be a song or a whole playlist. Files from this device play until you reload{touch ? "" : ", or drop them anywhere on the window"}.</p>
+          <ol className="home-start-steps">
+            <li>
+              <span className="home-start-icon"><Icon name="play" size={16} /></span>
+              <strong>Play anything</strong>
+              <span>Songs stream in full, straight away.</span>
+            </li>
+            <li>
+              <span className="home-start-icon"><Icon name="plus" size={16} /></span>
+              <strong>Save what you love</strong>
+              <span>Your library follows you to every device you sign in on.</span>
+            </li>
+            <li>
+              <span className="home-start-icon"><Icon name="sparkle" size={16} /></span>
+              <strong>Get picks for you</strong>
+              <span>Likes, saves and listens shape Home and Discover Weekly.</span>
+            </li>
+          </ol>
         </section>
       ) : null}
 
