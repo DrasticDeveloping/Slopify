@@ -66,6 +66,7 @@ export function TopBar({ scrolled }: { scrolled: boolean }) {
         : account.status === "signedOut" ? account.error ?? "Sync your library and add friends" : `On ${thisDevice}`,
       items: [
         ...(account.status === "signedOut" ? [{ label: "Sign in", icon: "user", accent: true, run: signIn }, { separator: true }] : []),
+        ...(account.status === "signedIn" ? [{ label: "Your profile", icon: "user", run: () => navigate({ name: "profile" }) }] : []),
         ...(cloudEnabled ? [{ label: "Friends", icon: "users", run: () => navigate({ name: "friends" }) }] : []),
         { label: "Your stats & history", icon: "stats", run: () => navigate({ name: "history" }) },
         { label: "Song storage", icon: "storage", run: () => navigate({ name: "storage" }) },

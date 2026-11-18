@@ -1,7 +1,7 @@
 import { useSyncExternalStore, type ReactNode } from "react";
 import { hashString, likedPlaylist, paletteFromSeed } from "../data/library";
 import type { HeaderInfo } from "../components/Hero";
-import type { Album, Artist, ClipRange, Playlist, Track } from "../data/types";
+import type { Album, Artist, ClipRange, Palette, Playlist, Track } from "../data/types";
 import { restoreTaste, type ReasonKind, type TasteState } from "../recommend/taste";
 import type { StreamSong } from "./importer";
 
@@ -26,6 +26,8 @@ export type Route =
   | { name: "server" }
   | { name: "history" }
   | { name: "friends" }
+  /** A friend’s profile, or yours without an id. */
+  | { name: "profile"; id?: string }
   /** A playlist someone shared (src/state/social.ts), by share id. */
   | { name: "shared"; id: string };
 
@@ -82,6 +84,8 @@ export type MenuPanel = { type: "snoozeUntil"; ids: string[] };
 /** The picture at the top of a menu: a song's or playlist's cover, an image, or an initial. */
 export interface MenuArt {
   trackId?: string;
+  /** Generated art (a person without a picture), under `image` if there is one. */
+  palette?: Palette;
   playlistId?: string;
   image?: string;
   initial?: string;
